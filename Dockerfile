@@ -3,7 +3,7 @@
 # ============================================================================
 
 # Stage 1: Builder
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -68,4 +68,4 @@ CMD ["term", "--help"]
 # Labels
 LABEL org.opencontainers.image.source="https://github.com/PlatformNetwork/term-challenge"
 LABEL org.opencontainers.image.description="Term Challenge - Terminal Benchmark for AI Agents"
-LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.licenses="MIT"
