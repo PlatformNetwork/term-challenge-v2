@@ -1,0 +1,13 @@
+#!/bin/bash
+set -e
+
+echo "Running pre-commit checks..."
+
+# Format code
+echo "Formatting code..."
+cargo fmt --all
+
+# Add formatted files back to staging
+git add -u
+
+echo "Pre-commit checks passed!"

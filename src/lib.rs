@@ -1,0 +1,115 @@
+#![allow(dead_code, unused_variables, unused_imports)]
+//! Terminal Benchmark Challenge for Mini-Chain Subnet 100
+//!
+//! This challenge evaluates AI agents on terminal-based tasks.
+//! Agents are run in Docker containers and scored based on task completion.
+//!
+//! ## Features
+//!
+//! - **Agent Submission**: Miners submit Python source code with module whitelist
+//! - **Pre-verification**: Rate limiting based on epochs (e.g., 0.5 = 1 agent per 2 epochs)
+//! - **Code Distribution**: Source to top 3 validators + root, obfuscated to others
+//! - **Secure Execution**: Agents run in isolated Docker containers
+//! - **Scoring**: Based on task completion rate and execution time
+//! - **Real-time Progress**: Track task execution via API
+//!
+//! ## Configuration
+//!
+//! The challenge includes:
+//! - **Module Whitelist**: Allowed Python modules
+//! - **Model Whitelist**: Allowed LLM models (OpenAI, Anthropic)
+//! - **Pricing**: Max cost per task and total evaluation
+//!
+//! ## Root Validator
+//!
+//! The root validator hotkey is: `5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At`
+//! This validator always receives the source code.
+
+pub mod agent_registry;
+pub mod agent_submission;
+pub mod bench;
+pub mod chain_storage;
+pub mod challenge;
+pub mod config;
+pub mod distributed_store;
+pub mod docker;
+pub mod emission;
+pub mod evaluation_pipeline;
+pub mod evaluator;
+pub mod python_whitelist;
+pub mod reward_decay;
+pub mod rpc;
+pub mod scoring;
+pub mod secure_submission;
+pub mod storage_schema;
+pub mod submission_manager;
+pub mod sudo;
+pub mod task;
+pub mod task_execution;
+pub mod validator_distribution;
+pub mod weight_calculator;
+
+pub use agent_registry::{AgentEntry, AgentRegistry, AgentStatus, RegistryConfig};
+pub use agent_submission::{
+    AgentSubmission, AgentSubmissionHandler, SubmissionError, SubmissionStatus,
+};
+pub use chain_storage::{
+    allowed_data_keys, ChainStorage, ConsensusResult, Leaderboard as ChainLeaderboard,
+    LeaderboardEntry, OnChainEvaluationResult, ValidatorVote,
+};
+pub use challenge::{create_terminal_bench_challenge, TerminalBenchChallenge};
+pub use config::{
+    ChallengeConfig, EvaluationConfig, ExecutionConfig, ModelWhitelist, ModuleWhitelist,
+    PricingConfig,
+};
+pub use distributed_store::{DistributedStore, StoreError, TERM_BENCH_CHALLENGE_ID};
+pub use docker::{DockerConfig, DockerExecutor};
+pub use emission::{
+    AggregatedMinerScore, CompetitionWeights, EmissionAllocation, EmissionConfig, EmissionManager,
+    EmissionSummary, FinalWeights, MinerScore, WeightCalculator,
+    WeightStrategy as EmissionWeightStrategy, MAX_WEIGHT, MIN_WEIGHT,
+};
+pub use evaluation_pipeline::{
+    AgentSubmission as PipelineAgentSubmission, EvaluationPipeline,
+    EvaluationResult as PipelineEvaluationResult, PackageType, ReceiveResult, ReceiveStatus,
+    TaskEvalResult,
+};
+pub use evaluator::{AgentInfo, TaskEvaluator};
+pub use python_whitelist::{ModuleVerification, PythonWhitelist, WhitelistConfig};
+pub use reward_decay::{
+    AppliedDecay, CompetitionDecayState, DecayConfig, DecayCurve, DecayEvent, DecayResult,
+    DecaySummary, RewardDecayManager, TopAgentState, BURN_UID,
+};
+pub use rpc::{RpcConfig as TermRpcConfig, TermChallengeRpc};
+pub use scoring::{AggregateScore, Leaderboard, ScoreCalculator};
+pub use secure_submission::{
+    DecryptedAgent, LocalEvaluation, SecureStatus, SecureSubmissionError, SecureSubmissionHandler,
+    SecureSubmissionStatus, CHALLENGE_ID,
+};
+pub use submission_manager::{ContentRecord, SubmissionState, TermSubmissionManager};
+pub use sudo::{
+    Competition, CompetitionStatus, CompetitionTask, DynamicLimits, DynamicPricing,
+    DynamicWhitelist, SudoAuditEntry, SudoConfigExport, SudoController, SudoError, SudoKey,
+    SudoLevel, SudoPermission, TaskDifficulty as SudoTaskDifficulty, WeightStrategy,
+};
+pub use task::{
+    AddTaskRequest, Difficulty, Task, TaskConfig, TaskDescription, TaskInfo, TaskRegistry,
+    TaskResult,
+};
+pub use task_execution::{
+    EvaluationProgress, EvaluationResult, EvaluationStatus, LLMCallInfo, ProgressStore,
+    TaskExecutionResult, TaskExecutionState, TaskExecutor, TaskStatus,
+};
+pub use validator_distribution::{
+    CodePackage, DistributionConfig, ValidatorDistributor, ValidatorInfo,
+};
+pub use weight_calculator::TermWeightCalculator;
+
+/// Root validator hotkey - always receives source code
+pub const ROOT_VALIDATOR_HOTKEY: &str = "5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At";
+
+/// Default max agents per epoch (0.5 = 1 agent per 2 epochs)
+pub const DEFAULT_MAX_AGENTS_PER_EPOCH: f64 = 0.5;
+
+/// Number of top validators by stake to receive source code (plus root)
+pub const TOP_VALIDATORS_FOR_SOURCE: usize = 3;

@@ -1,0 +1,18 @@
+#!/bin/bash
+set -e
+
+echo "Running pre-push CI checks..."
+
+# Format check
+echo "Checking format..."
+cargo fmt --all -- --check
+
+# Clippy
+echo "Running clippy..."
+cargo clippy --all-targets --workspace -- -W clippy::all
+
+# Tests
+echo "Running tests..."
+cargo test --workspace
+
+echo "All CI checks passed!"

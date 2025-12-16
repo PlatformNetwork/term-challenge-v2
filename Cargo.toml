@@ -1,0 +1,80 @@
+[package]
+name = "term-challenge"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal Benchmark Challenge - AI agents compete on terminal tasks"
+authors = ["Platform Network"]
+license = "Apache-2.0"
+repository = "https://github.com/PlatformNetwork/term-challenge"
+
+[[bin]]
+name = "term"
+path = "bin/term/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Platform SDK from GitHub
+platform-challenge-sdk = { git = "https://github.com/PlatformNetwork/platform.git", branch = "main" }
+platform-core = { git = "https://github.com/PlatformNetwork/platform.git", branch = "main" }
+
+# Async runtime
+tokio = { version = "1.40", features = ["full", "process"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Docker interaction
+bollard = "0.18"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Utils
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+regex = "1.10"
+base64 = "0.22"
+ed25519-dalek = "2.1"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# HTTP for agent communication and RPC
+reqwest = { version = "0.12", features = ["json"] }
+axum = { version = "0.7", features = ["json", "multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Temp files
+tempfile = "3.12"
+
+# Concurrency
+parking_lot = "0.12"
+
+# Compression for binary distribution and Docker builds
+flate2 = "1.0"
+tar = "0.4"
+
+# Directories for cache
+dirs = "5.0"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+tui-textarea = "0.7"
+
+[dev-dependencies]
+tokio-test = "0.4"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
