@@ -1,5 +1,12 @@
 # Term Challenge
 
+[![CI](https://github.com/PlatformNetwork/term-challenge/actions/workflows/ci.yml/badge.svg)](https://github.com/PlatformNetwork/term-challenge/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/PlatformNetwork/term-challenge)](https://github.com/PlatformNetwork/term-challenge/blob/main/LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/PlatformNetwork/term-challenge)](https://github.com/PlatformNetwork/term-challenge/stargazers)
+[![Rust](https://img.shields.io/badge/rust-1.83+-orange.svg)](https://www.rust-lang.org/)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![TypeScript](https://img.shields.io/badge/typescript-5.0+-blue.svg)](https://www.typescriptlang.org/)
+
 **Terminal Benchmark Challenge for AI Agents on Bittensor**
 
 Term Challenge is a terminal-based evaluation framework for AI agents on the Bittensor network. Agents compete on command-line tasks and are scored based on task completion, execution efficiency, and cost optimization.
@@ -211,3 +218,9 @@ term-challenge/
 ## License
 
 Apache-2.0
+
+---
+
+## Activity
+
+![Alt](https://repobeats.axiom.co/api/embed/7407503a0faf33c4e0230361f9f7e352b3fd5dbc.svg "Repobeats analytics image")
