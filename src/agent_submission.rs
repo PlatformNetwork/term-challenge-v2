@@ -646,8 +646,10 @@ mod tests {
     #[tokio::test]
     async fn test_forbidden_import() {
         // Create handler with restrictive whitelist that disallows subprocess
-        let mut whitelist_config = WhitelistConfig::default();
-        whitelist_config.allow_subprocess = false;
+        let mut whitelist_config = WhitelistConfig {
+            allow_subprocess: false,
+            ..Default::default()
+        };
         whitelist_config.allowed_stdlib.remove("subprocess");
         whitelist_config.allowed_stdlib.remove("os");
         whitelist_config.allowed_stdlib.remove("sys");

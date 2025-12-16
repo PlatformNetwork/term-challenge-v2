@@ -627,8 +627,8 @@ impl DistributedStore {
                     .entries
                     .values()
                     .filter(|e| e.metadata.created_at_block >= from_block)
-                    .cloned()
                     .take(100) // Limit batch size
+                    .cloned()
                     .collect();
 
                 let has_more = self
@@ -812,7 +812,7 @@ impl DistributedStore {
         for key in keys {
             if let Some(entry) = partition.entries.get(key) {
                 hasher.update(key.as_bytes());
-                hasher.update(&entry.metadata.value_hash);
+                hasher.update(entry.metadata.value_hash);
             }
         }
 

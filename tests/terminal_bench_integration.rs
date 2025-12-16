@@ -3,8 +3,10 @@
 //! Tests the Rust term-challenge code with real terminal-bench tasks
 //! using OpenRouter for LLM inference.
 
+#[allow(unused_imports)]
 use std::path::PathBuf;
 use std::time::Instant;
+#[allow(unused_imports)]
 use term_challenge::{
     ChallengeConfig, DistributionConfig, PackageType, PipelineAgentSubmission,
     PipelineEvaluationResult, PythonWhitelist, ReceiveResult, ReceiveStatus, Task, TaskConfig,

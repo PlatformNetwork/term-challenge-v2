@@ -136,7 +136,7 @@ impl TaskEvaluator {
                     .await;
 
                 // Fallback to simpler echo if cat heredoc fails or complex content
-                if let Err(_) = write_result {
+                if write_result.is_err() {
                     let _ = container
                         .exec(&[
                             "sh",

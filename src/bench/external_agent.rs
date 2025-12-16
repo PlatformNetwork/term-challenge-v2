@@ -75,7 +75,7 @@ impl AgentLanguage {
             }
             Self::Rust => {
                 // Compile and run with cargo, or run binary
-                if path.extension().map_or(false, |e| e == "rs") {
+                if path.extension().is_some_and(|e| e == "rs") {
                     let mut c = Command::new("cargo");
                     c.args(["run", "--release", "--manifest-path"]);
                     // Find Cargo.toml

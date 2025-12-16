@@ -19,9 +19,10 @@ use std::collections::HashMap;
 pub const BURN_UID: u16 = 0;
 
 /// Decay curve types
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum DecayCurve {
     /// Linear decay: burn_percent = decay_rate * epochs_stale
+    #[default]
     Linear,
     /// Exponential decay: burn_percent = 1 - (1 - decay_rate)^epochs_stale
     Exponential,
@@ -31,12 +32,6 @@ pub enum DecayCurve {
     Logarithmic,
     /// Custom decay with specific percentages per epoch
     Custom { percentages: Vec<f64> },
-}
-
-impl Default for DecayCurve {
-    fn default() -> Self {
-        DecayCurve::Linear
-    }
 }
 
 /// Configuration for the reward decay system

@@ -128,7 +128,7 @@ pub async fn run_task(
     max_steps: u32,
 ) -> Result<()> {
     let task = Task::from_path(&task_path)?;
-    let provider = Provider::from_str(provider_str)?;
+    let provider = Provider::parse(provider_str)?;
 
     println!("\n  🚀 Running task: {}\n", task.name);
     println!("  Provider: {}", provider);
@@ -207,7 +207,7 @@ pub async fn run_benchmark(
     max_steps: u32,
 ) -> Result<()> {
     let (name, version) = RegistryClient::parse_dataset_spec(dataset_spec);
-    let provider = Provider::from_str(provider_str)?;
+    let provider = Provider::parse(provider_str)?;
 
     println!("\n  🏁 Starting benchmark: {}@{}\n", name, version);
     println!("  Provider:   {}", provider);

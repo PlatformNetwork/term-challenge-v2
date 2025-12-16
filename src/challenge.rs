@@ -81,7 +81,7 @@ impl TerminalBenchChallenge {
         // Use a deterministic ID for development/testing
         // In production this might come from configuration or be randomized
         let id_str = "00000000-0000-0000-0000-000000000001";
-        let id = ChallengeId::from_str(id_str).unwrap_or_else(|| ChallengeId::new());
+        let id = ChallengeId::from_str(id_str).unwrap_or_default();
 
         Self {
             id,

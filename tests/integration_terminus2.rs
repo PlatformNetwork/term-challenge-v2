@@ -2,6 +2,7 @@
 //!
 //! This test runs the complete evaluation pipeline with the terminus2 agent
 
+#[allow(unused_imports)]
 use std::collections::HashSet;
 use term_challenge::{
     ChallengeConfig, DistributionConfig, PackageType, PipelineAgentSubmission,

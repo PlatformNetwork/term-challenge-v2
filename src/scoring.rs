@@ -88,9 +88,7 @@ impl ScoreCalculator {
             }
 
             // Track by difficulty
-            let stats = by_difficulty
-                .entry(task.config.difficulty)
-                .or_insert(DifficultyStats::default());
+            let stats = by_difficulty.entry(task.config.difficulty).or_default();
             stats.total += 1;
             if result.passed {
                 stats.passed += 1;

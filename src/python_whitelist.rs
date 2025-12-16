@@ -209,47 +209,44 @@ impl PythonWhitelist {
         let import_regex = Regex::new(r"^\s*import\s+([\w\.,\s]+?)(?:\s+as\s+|\s*$)").unwrap();
         let from_import_regex = Regex::new(r"^\s*from\s+([\w\.]+)\s+import").unwrap();
 
-        let mut dangerous_patterns = vec![];
-
-        // Subprocess patterns
-        dangerous_patterns.push((
-            Regex::new(r"subprocess\.(run|call|Popen|check_output|check_call)").unwrap(),
-            "subprocess execution".to_string(),
-        ));
-        dangerous_patterns.push((
-            Regex::new(r"os\.(system|popen|exec|spawn)").unwrap(),
-            "os command execution".to_string(),
-        ));
-
-        // Code execution patterns
-        dangerous_patterns.push((
-            Regex::new(r"\bexec\s*\(").unwrap(),
-            "exec() call".to_string(),
-        ));
-        dangerous_patterns.push((
-            Regex::new(r"\beval\s*\(").unwrap(),
-            "eval() call".to_string(),
-        ));
-        dangerous_patterns.push((
-            Regex::new(r"\bcompile\s*\(").unwrap(),
-            "compile() call".to_string(),
-        ));
-        dangerous_patterns.push((
-            Regex::new(r"__import__\s*\(").unwrap(),
-            "__import__() call".to_string(),
-        ));
-
-        // Pickle (arbitrary code execution)
-        dangerous_patterns.push((
-            Regex::new(r"pickle\.(loads?|dump)").unwrap(),
-            "pickle serialization (security risk)".to_string(),
-        ));
-
-        // ctypes (memory manipulation)
-        dangerous_patterns.push((
-            Regex::new(r"\bctypes\b").unwrap(),
-            "ctypes module (memory access)".to_string(),
-        ));
+        let dangerous_patterns = vec![
+            // Subprocess patterns
+            (
+                Regex::new(r"subprocess\.(run|call|Popen|check_output|check_call)").unwrap(),
+                "subprocess execution".to_string(),
+            ),
+            (
+                Regex::new(r"os\.(system|popen|exec|spawn)").unwrap(),
+                "os command execution".to_string(),
+            ),
+            // Code execution patterns
+            (
+                Regex::new(r"\bexec\s*\(").unwrap(),
+                "exec() call".to_string(),
+            ),
+            (
+                Regex::new(r"\beval\s*\(").unwrap(),
+                "eval() call".to_string(),
+            ),
+            (
+                Regex::new(r"\bcompile\s*\(").unwrap(),
+                "compile() call".to_string(),
+            ),
+            (
+                Regex::new(r"__import__\s*\(").unwrap(),
+                "__import__() call".to_string(),
+            ),
+            // Pickle (arbitrary code execution)
+            (
+                Regex::new(r"pickle\.(loads?|dump)").unwrap(),
+                "pickle serialization (security risk)".to_string(),
+            ),
+            // ctypes (memory manipulation)
+            (
+                Regex::new(r"\bctypes\b").unwrap(),
+                "ctypes module (memory access)".to_string(),
+            ),
+        ];
 
         Self {
             config,
@@ -377,8 +374,10 @@ import numpy as np
     #[test]
     fn test_forbidden_module() {
         // Create a restrictive config that disallows subprocess
-        let mut config = WhitelistConfig::default();
-        config.allow_subprocess = false;
+        let mut config = WhitelistConfig {
+            allow_subprocess: false,
+            ..Default::default()
+        };
         config.allowed_stdlib.remove("subprocess");
         config.allowed_stdlib.remove("os");
         config.allowed_stdlib.remove("sys");

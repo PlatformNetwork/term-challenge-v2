@@ -222,7 +222,7 @@ pub fn create_agent(
         model
             .unwrap_or(provider.default_model())
             .split('/')
-            .last()
+            .next_back()
             .unwrap_or("unknown")
     );
 

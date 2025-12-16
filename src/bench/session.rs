@@ -119,7 +119,7 @@ impl TmuxSession {
         let wait_cmd = format!(
             "timeout {}s tmux wait-for done-{}",
             timeout_sec as u64,
-            marker.split('-').last().unwrap_or("x")
+            marker.split('-').next_back().unwrap_or("x")
         );
         let _ = self
             .env

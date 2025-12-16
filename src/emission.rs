@@ -170,9 +170,10 @@ pub struct AggregatedMinerScore {
 // ============================================================================
 
 /// Strategy for calculating weights from scores
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum WeightStrategy {
     /// Linear: weight proportional to score
+    #[default]
     Linear,
     /// Softmax: exponential emphasis on top performers
     Softmax { temperature: u32 }, // temperature * 100 (e.g., 100 = 1.0)
@@ -182,12 +183,6 @@ pub enum WeightStrategy {
     Ranked,
     /// Quadratic: score squared (more reward to top)
     Quadratic,
-}
-
-impl Default for WeightStrategy {
-    fn default() -> Self {
-        WeightStrategy::Linear
-    }
 }
 
 /// Weight calculation result for a single competition
@@ -958,8 +953,10 @@ mod tests {
 
     #[test]
     fn test_rebalance() {
-        let mut config = EmissionConfig::default();
-        config.auto_rebalance = true;
+        let mut config = EmissionConfig {
+            auto_rebalance: true,
+            ..Default::default()
+        };
 
         config
             .set_allocation(EmissionAllocation {

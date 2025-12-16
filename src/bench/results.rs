@@ -229,13 +229,13 @@ impl ResultExporter {
         if let Some(ended) = results.ended_at {
             md.push_str(&format!("- **Ended**: {}\n", ended));
         }
-        md.push_str("\n");
+        md.push('\n');
 
         // Statistics
         let s = &results.summary;
         md.push_str("## Statistics\n\n");
-        md.push_str(&format!("| Metric | Value |\n"));
-        md.push_str(&format!("|--------|-------|\n"));
+        md.push_str("| Metric | Value |\n");
+        md.push_str("|--------|-------|\n");
         md.push_str(&format!("| Total Tasks | {} |\n", s.total_tasks));
         md.push_str(&format!(
             "| Passed | {} ({:.1}%) |\n",
@@ -250,7 +250,7 @@ impl ResultExporter {
             s.average_duration_sec
         ));
         md.push_str(&format!("| Average Steps | {:.1} |\n", s.average_steps));
-        md.push_str("\n");
+        md.push('\n');
 
         // Results table
         md.push_str("## Results\n\n");
@@ -273,10 +273,11 @@ impl ResultExporter {
 
     /// Export all formats
     pub fn export_all(&self, results: &BenchmarkResults) -> Result<Vec<PathBuf>> {
-        let mut paths = vec![];
-        paths.push(self.export_json(results)?);
-        paths.push(self.export_csv(results)?);
-        paths.push(self.export_markdown(results)?);
+        let paths = vec![
+            self.export_json(results)?,
+            self.export_csv(results)?,
+            self.export_markdown(results)?,
+        ];
         Ok(paths)
     }
 }

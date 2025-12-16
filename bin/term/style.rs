@@ -1,5 +1,6 @@
 //! Terminal styling utilities for beautiful CLI output
 
+#![allow(dead_code)]
 /// ANSI color codes
 pub mod colors {
     pub const RESET: &str = "\x1b[0m";

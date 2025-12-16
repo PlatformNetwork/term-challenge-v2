@@ -118,10 +118,7 @@ impl DockerExecutor {
         self.ensure_image(image).await?;
 
         // Create unique container name
-        let container_name = format!(
-            "term-challenge-{}",
-            uuid::Uuid::new_v4().to_string()[..8].to_string()
-        );
+        let container_name = format!("term-challenge-{}", &uuid::Uuid::new_v4().to_string()[..8]);
 
         // Parse memory limit
         let memory = parse_memory_limit(&config.memory_limit)?;
@@ -336,13 +333,14 @@ impl ContainerRun {
             let mut stream = self
                 .docker
                 .wait_container(&self.container_id, Some(options));
-            while let Some(result) = stream.next().await {
+            if let Some(result) = stream.next().await {
                 match result {
-                    Ok(response) => return Ok(response.status_code),
-                    Err(e) => return Err(anyhow::anyhow!("Wait error: {}", e)),
+                    Ok(response) => Ok(response.status_code),
+                    Err(e) => Err(anyhow::anyhow!("Wait error: {}", e)),
                 }
+            } else {
+                Ok(0)
             }
-            Ok(0)
         })
         .await
         {

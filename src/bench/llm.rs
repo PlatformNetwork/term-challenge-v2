@@ -18,7 +18,7 @@ pub enum Provider {
 }
 
 impl Provider {
-    pub fn from_str(s: &str) -> Result<Self> {
+    pub fn parse(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
             "openrouter" | "or" => Ok(Self::OpenRouter),
             "chutes" | "ch" => Ok(Self::Chutes),
@@ -383,14 +383,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_provider_from_str() {
-        assert_eq!(
-            Provider::from_str("openrouter").unwrap(),
-            Provider::OpenRouter
-        );
-        assert_eq!(Provider::from_str("OR").unwrap(), Provider::OpenRouter);
-        assert_eq!(Provider::from_str("chutes").unwrap(), Provider::Chutes);
-        assert!(Provider::from_str("invalid").is_err());
+    fn test_provider_parse() {
+        assert_eq!(Provider::parse("openrouter").unwrap(), Provider::OpenRouter);
+        assert_eq!(Provider::parse("OR").unwrap(), Provider::OpenRouter);
+        assert_eq!(Provider::parse("chutes").unwrap(), Provider::Chutes);
+        assert!(Provider::parse("invalid").is_err());
     }
 
     #[test]

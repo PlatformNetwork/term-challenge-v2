@@ -49,11 +49,9 @@ impl DockerEnvironment {
     /// Build the Docker image for the task
     pub async fn build(&self, force: bool) -> Result<()> {
         // Check if image exists
-        if !force {
-            if self.docker.inspect_image(&self.image_name).await.is_ok() {
-                info!("Image {} already exists, skipping build", self.image_name);
-                return Ok(());
-            }
+        if !force && self.docker.inspect_image(&self.image_name).await.is_ok() {
+            info!("Image {} already exists, skipping build", self.image_name);
+            return Ok(());
         }
 
         info!("Building Docker image: {}", self.image_name);

@@ -498,8 +498,6 @@ impl SecureSubmissionHandler {
         if let Some(verified) = self.manager.read().get_verified(&hash_bytes) {
             let status = if self.local_evaluations.read().contains_key(submission_hash) {
                 SecureStatus::Evaluated
-            } else if self.decrypted_agents.read().contains_key(submission_hash) {
-                SecureStatus::Verified
             } else {
                 SecureStatus::Verified
             };
