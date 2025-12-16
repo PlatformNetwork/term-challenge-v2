@@ -365,7 +365,7 @@ pub async fn run_external_agent(
     timeout_multiplier: f64,
     max_steps: u32,
 ) -> Result<()> {
-    use crate::tui_runner::{ProgressPrinter, Spinner};
+    use crate::tui_runner::Spinner;
     use term_challenge::bench::create_external_agent;
 
     let task = Task::from_path(&task_path)?;
@@ -437,30 +437,59 @@ pub async fn run_external_agent(
         model_name: model.map(String::from),
     };
 
-    // Build container with spinner
-    let mut spinner = Spinner::new("Building Docker container...");
-    spinner.start();
-
     let runner = TrialRunner::new(config);
     info!("Created external agent: {}", agent.name());
 
-    spinner.stop(true, Some("Container ready"));
+    // Run with spinner (evaluation happens inside Docker)
+    let mut spinner = Spinner::new(&format!("Running {}...", task.name));
+    spinner.start();
 
-    // Run with progress printer
-    let mut progress = ProgressPrinter::new(&task.name, max_steps);
-    progress.start();
-    progress.update(0, "Starting evaluation...");
+    let start = std::time::Instant::now();
+    let result = runner.run(&task, &agent).await;
+    let elapsed = start.elapsed().as_secs_f64();
 
-    let result = runner.run(&task, &agent).await.map_err(|e| {
-        progress.log_error(&format!("{}", e));
-        error!("Trial failed: {:?}", e);
-        e
-    })?;
+    match &result {
+        Ok(r) => {
+            let status = if r.success() {
+                format!("{} completed", task.name)
+            } else {
+                format!("{} failed", task.name)
+            };
+            spinner.stop(r.success(), Some(&status));
 
-    // Show final results
-    progress.finish(result.success(), result.reward(), result.error.as_deref());
+            // Print results
+            println!();
+            let icon = if r.success() {
+                "\x1b[32m✓\x1b[0m"
+            } else {
+                "\x1b[31m✗\x1b[0m"
+            };
+            println!("  {} \x1b[1m{}\x1b[0m", icon, r.task_name);
+            println!(
+                "    Reward: \x1b[{}m{:.4}\x1b[0m  Steps: {}  Time: {:.1}s",
+                if r.reward() > 0.0 { "32" } else { "90" },
+                r.reward(),
+                r.steps,
+                elapsed
+            );
 
-    println!("  \x1b[90m📁 Logs:\x1b[0m {}", result.logs_path.display());
+            if let Some(ref err) = r.error {
+                println!();
+                println!("    \x1b[33m⚠ Error:\x1b[0m");
+                for line in err.lines().take(15) {
+                    println!("      \x1b[90m{}\x1b[0m", line);
+                }
+            }
+
+            println!();
+            println!("  \x1b[90m📁 Logs:\x1b[0m {}", r.logs_path.display());
+        }
+        Err(e) => {
+            spinner.stop(false, Some(&format!("Failed: {}", e)));
+            error!("Trial failed: {:?}", e);
+        }
+    }
+
     println!();
 
     Ok(())
