@@ -3,7 +3,7 @@
 # ============================================================================
 
 # Stage 1: Builder
-FROM rust:slim-trixie AS builder
+FROM rust:1.83-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -26,12 +26,12 @@ RUN cargo build --release --bin term
 RUN strip /app/target/release/term
 
 # Stage 2: Runtime - Minimal production image
-FROM debian:trixie-slim AS runtime
+FROM debian:bookworm-slim AS runtime
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libssl3t64 \
+    libssl3 \
     curl \
     docker.io \
     python3 \
