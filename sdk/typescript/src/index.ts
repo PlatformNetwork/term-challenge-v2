@@ -5,10 +5,15 @@
  * 
  * @example
  * ```typescript
- * import { Agent, AgentResponse, Command, Harness } from 'term-sdk';
+ * import { Agent, AgentResponse, Command, Harness, log } from 'term-sdk';
  * 
  * class MyAgent extends Agent {
  *   async step(instruction: string, screen: string, step: number): Promise<AgentResponse> {
+ *     log.info("Processing step", { step });
+ *     
+ *     // Your logic here...
+ *     
+ *     log.success("Generated response");
  *     return new AgentResponse({
  *       analysis: "Terminal shows prompt",
  *       plan: "Execute ls command",
@@ -24,6 +29,125 @@
  */
 
 import * as readline from 'readline';
+
+// =============================================================================
+// Agent Logger
+// =============================================================================
+
+export type LogLevel = 'debug' | 'info' | 'success' | 'warning' | 'error';
+
+export interface LogEntry {
+    level: LogLevel;
+    message: string;
+    timestamp: number;
+    data?: Record<string, any>;
+}
+
+/**
+ * Logger that captures logs for inclusion in agent responses.
+ * 
+ * Logs are captured and sent back to the harness for display.
+ * Also outputs to stderr for local debugging.
+ * 
+ * @example
+ * ```typescript
+ * import { log } from 'term-sdk';
+ * 
+ * log.info("Starting task");
+ * log.debug("Details", { key: "value" });
+ * log.success("Task completed!");
+ * log.warning("Something might be wrong");
+ * log.error("Something failed", { error: e.message });
+ * ```
+ */
+export class AgentLogger {
+    private entries: LogEntry[] = [];
+    private stepEntries: LogEntry[] = [];
+    private verbose: boolean = true;
+
+    private _log(level: LogLevel, message: string, data?: Record<string, any>): void {
+        const entry: LogEntry = {
+            level,
+            message,
+            timestamp: Date.now() / 1000,
+            data
+        };
+        this.entries.push(entry);
+        this.stepEntries.push(entry);
+
+        // Also output to stderr for local debugging
+        if (this.verbose) {
+            const icons: Record<LogLevel, string> = {
+                debug: '🔍',
+                info: 'ℹ️',
+                success: '✅',
+                warning: '⚠️',
+                error: '❌'
+            };
+            const extra = data ? ' ' + Object.entries(data).map(([k, v]) => `${k}=${v}`).join(' ') : '';
+            console.error(`${icons[level]} [${level.toUpperCase()}] ${message}${extra}`);
+        }
+    }
+
+    debug(message: string, data?: Record<string, any>): void {
+        this._log('debug', message, data);
+    }
+
+    info(message: string, data?: Record<string, any>): void {
+        this._log('info', message, data);
+    }
+
+    success(message: string, data?: Record<string, any>): void {
+        this._log('success', message, data);
+    }
+
+    warning(message: string, data?: Record<string, any>): void {
+        this._log('warning', message, data);
+    }
+
+    warn(message: string, data?: Record<string, any>): void {
+        this.warning(message, data);
+    }
+
+    error(message: string, data?: Record<string, any>): void {
+        this._log('error', message, data);
+    }
+
+    llmRequest(provider: string, model: string, promptTokens: number = 0): void {
+        this._log('info', `LLM request: ${provider}/${model}`, { provider, model, promptTokens });
+    }
+
+    llmResponse(model: string, completionTokens: number, cost: number, latencyMs: number): void {
+        this._log('success', `LLM response: ${completionTokens} tokens, $${cost.toFixed(4)}, ${latencyMs}ms`, 
+            { model, completionTokens, cost, latencyMs });
+    }
+
+    llmError(error: string): void {
+        this._log('error', `LLM error: ${error}`, { error });
+    }
+
+    getStepLogs(): LogEntry[] {
+        const logs = [...this.stepEntries];
+        this.stepEntries = [];
+        return logs;
+    }
+
+    getAllLogs(): LogEntry[] {
+        return [...this.entries];
+    }
+
+    clear(): void {
+        this.entries = [];
+        this.stepEntries = [];
+    }
+
+    setVerbose(verbose: boolean): void {
+        this.verbose = verbose;
+    }
+}
+
+// Global logger instance
+export const log = new AgentLogger();
 
 // =============================================================================
 // Types
@@ -68,34 +192,43 @@ export class AgentResponse {
     plan: string;
     commands: Command[];
     taskComplete: boolean;
+    logs: LogEntry[];
 
     constructor(options: {
         analysis?: string;
         plan?: string;
         commands?: Command[];
         taskComplete?: boolean;
+        logs?: LogEntry[];
     } = {}) {
         this.analysis = options.analysis ?? '';
         this.plan = options.plan ?? '';
         this.commands = options.commands ?? [];
         this.taskComplete = options.taskComplete ?? false;
+        this.logs = options.logs ?? [];
     }
 
     toJSON(): object {
-        return {
+        const obj: Record<string, any> = {
             analysis: this.analysis,
             plan: this.plan,
             commands: this.commands.map(c => c.toJSON()),
             task_complete: this.taskComplete
         };
+        if (this.logs.length > 0) {
+            obj.logs = this.logs;
+        }
+        return obj;
     }
 
     static error(message: string): AgentResponse {
+        log.error(message);
         return new AgentResponse({
             analysis: `Error: ${message}`,
             plan: 'Cannot continue due to error',
             commands: [],
-            taskComplete: false
+            taskComplete: false,
+            logs: log.getStepLogs()
         });
     }
 }
@@ -293,9 +426,18 @@ export class Harness {
         }
 
         const { instruction, screen, step } = request;
+        log.info(`Step ${step}: Processing...`);
 
         // Call agent
-        return await this.agent.step(instruction, screen, step);
+        const response = await this.agent.step(instruction, screen, step);
+
+        // Attach logs to response
+        if (response.logs.length === 0) {
+            response.logs = log.getStepLogs();
+        }
+
+        log.info(`Step ${step}: Complete`, { taskComplete: response.taskComplete });
+        return response;
     }
 }
 
@@ -561,5 +703,7 @@ export default {
     Command,
     Harness,
     LLMClient,
-    run
+    run,
+    log,
+    AgentLogger
 };

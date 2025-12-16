@@ -7,10 +7,16 @@ with the Term Challenge harness via stdin/stdout JSON protocol.
 Example:
     ```python
     from term_sdk import Agent, AgentResponse, Command
-    from term_sdk.harness import Harness
+    from term_sdk.harness import Harness, log
     
     class MyAgent(Agent):
         async def step(self, instruction: str, screen: str, step: int) -> AgentResponse:
+            log.info("Processing step", step=step)
+            log.debug("Screen content", screen=screen[:100])
+            
+            # Your agent logic...
+            
+            log.success("Generated response")
             return AgentResponse(
                 analysis="Terminal shows prompt",
                 plan="Execute ls command",
@@ -30,12 +36,148 @@ import json
 import asyncio
 import logging
 import traceback
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field, asdict
-from typing import List, Optional, Dict, Any, Callable, TypeVar, Union
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any
 from enum import Enum
 
-# Configure logging to stderr (stdout is reserved for protocol)
+
+# =============================================================================
+# Agent Logger - Captures logs and includes them in responses
+# =============================================================================
+
+class LogLevel(Enum):
+    DEBUG = "debug"
+    INFO = "info"
+    SUCCESS = "success"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+@dataclass
+class LogEntry:
+    """A single log entry."""
+    level: str
+    message: str
+    timestamp: float
+    data: Optional[Dict[str, Any]] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        d = {
+            "level": self.level,
+            "message": self.message,
+            "timestamp": self.timestamp
+        }
+        if self.data:
+            d["data"] = self.data
+        return d
+
+
+class AgentLogger:
+    """
+    Logger that captures logs for inclusion in agent responses.
+    
+    Logs are captured and sent back to the harness for display.
+    Also outputs to stderr for local debugging.
+    
+    Usage:
+        from term_sdk.harness import log
+        
+        log.info("Starting task")
+        log.debug("Details", key="value")
+        log.success("Task completed!")
+        log.warning("Something might be wrong")
+        log.error("Something failed", error=str(e))
+    """
+    
+    def __init__(self):
+        self._entries: List[LogEntry] = []
+        self._step_entries: List[LogEntry] = []
+        self._verbose = True
+    
+    def _log(self, level: LogLevel, message: str, **kwargs):
+        """Internal log method."""
+        entry = LogEntry(
+            level=level.value,
+            message=message,
+            timestamp=time.time(),
+            data=kwargs if kwargs else None
+        )
+        self._entries.append(entry)
+        self._step_entries.append(entry)
+        
+        # Also output to stderr for local debugging
+        if self._verbose:
+            extra = ""
+            if kwargs:
+                extra = " " + " ".join(f"{k}={v}" for k, v in kwargs.items())
+            icon = {"debug": "🔍", "info": "ℹ️", "success": "✅", "warning": "⚠️", "error": "❌"}.get(level.value, "•")
+            print(f"{icon} [{level.value.upper()}] {message}{extra}", file=sys.stderr)
+    
+    def debug(self, message: str, **kwargs):
+        """Log debug message."""
+        self._log(LogLevel.DEBUG, message, **kwargs)
+    
+    def info(self, message: str, **kwargs):
+        """Log info message."""
+        self._log(LogLevel.INFO, message, **kwargs)
+    
+    def success(self, message: str, **kwargs):
+        """Log success message."""
+        self._log(LogLevel.SUCCESS, message, **kwargs)
+    
+    def warning(self, message: str, **kwargs):
+        """Log warning message."""
+        self._log(LogLevel.WARNING, message, **kwargs)
+    
+    def warn(self, message: str, **kwargs):
+        """Log warning message (alias)."""
+        self.warning(message, **kwargs)
+    
+    def error(self, message: str, **kwargs):
+        """Log error message."""
+        self._log(LogLevel.ERROR, message, **kwargs)
+    
+    def llm_request(self, provider: str, model: str, prompt_tokens: int = 0):
+        """Log LLM request."""
+        self._log(LogLevel.INFO, f"LLM request: {provider}/{model}", 
+                  provider=provider, model=model, prompt_tokens=prompt_tokens)
+    
+    def llm_response(self, model: str, completion_tokens: int, cost: float, latency_ms: int):
+        """Log LLM response."""
+        self._log(LogLevel.SUCCESS, f"LLM response: {completion_tokens} tokens, ${cost:.4f}, {latency_ms}ms",
+                  model=model, completion_tokens=completion_tokens, cost=cost, latency_ms=latency_ms)
+    
+    def llm_error(self, error: str):
+        """Log LLM error."""
+        self._log(LogLevel.ERROR, f"LLM error: {error}", error=error)
+    
+    def get_step_logs(self) -> List[Dict[str, Any]]:
+        """Get logs for current step and clear."""
+        logs = [e.to_dict() for e in self._step_entries]
+        self._step_entries = []
+        return logs
+    
+    def get_all_logs(self) -> List[Dict[str, Any]]:
+        """Get all logs."""
+        return [e.to_dict() for e in self._entries]
+    
+    def clear(self):
+        """Clear all logs."""
+        self._entries = []
+        self._step_entries = []
+    
+    def set_verbose(self, verbose: bool):
+        """Enable/disable stderr output."""
+        self._verbose = verbose
+
+
+# Global logger instance
+log = AgentLogger()
+
+
+# Configure standard logging to stderr (stdout is reserved for protocol)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -94,28 +236,35 @@ class AgentResponse:
         plan: Your plan for the next steps.
         commands: List of commands to execute.
         task_complete: Set True when task is finished.
+        logs: Optional list of log entries from this step.
     """
     analysis: str = ""
     plan: str = ""
     commands: List[Command] = field(default_factory=list)
     task_complete: bool = False
+    logs: List[Dict[str, Any]] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "analysis": self.analysis,
             "plan": self.plan,
             "commands": [c.to_dict() if isinstance(c, Command) else c for c in self.commands],
             "task_complete": self.task_complete
         }
+        if self.logs:
+            d["logs"] = self.logs
+        return d
     
     @classmethod
     def error(cls, message: str) -> "AgentResponse":
         """Create an error response."""
+        log.error(message)
         return cls(
             analysis=f"Error: {message}",
             plan="Cannot continue due to error",
             commands=[],
-            task_complete=False
+            task_complete=False,
+            logs=log.get_step_logs()
         )
 
 
@@ -270,7 +419,7 @@ class Harness:
             logger.error(f"Invalid JSON: {e}")
             return AgentResponse.error(f"Invalid JSON: {e}")
         
-        logger.debug(f"Step {request.step}: Processing...")
+        log.info(f"Step {request.step}: Processing...")
         
         # Call agent
         response = await self.agent.step(
@@ -279,7 +428,11 @@ class Harness:
             request.step
         )
         
-        logger.debug(f"Step {request.step}: Complete (task_complete={response.task_complete})")
+        # Attach logs to response
+        if not response.logs:
+            response.logs = log.get_step_logs()
+        
+        log.info(f"Step {request.step}: Complete", task_complete=response.task_complete)
         return response
     
     def _send_response(self, response: AgentResponse) -> None:

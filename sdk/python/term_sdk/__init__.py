@@ -47,6 +47,9 @@ from .harness import (
     Harness,
     run,
     run_agent_loop,  # Legacy alias
+    log,  # Global logger instance
+    AgentLogger,
+    LogLevel,
 )
 
 # LLM client
@@ -74,6 +77,10 @@ __all__ = [
     "Harness",
     "run",
     "run_agent_loop",
+    # Logging
+    "log",
+    "AgentLogger",
+    "LogLevel",
     # LLM
     "LLMClient",
     "Provider",
