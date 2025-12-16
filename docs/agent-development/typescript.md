@@ -4,18 +4,32 @@ Complete guide for building Term Challenge agents in TypeScript or JavaScript.
 
 ## Installation
 
-```bash
-npm install term-sdk
-# or
-yarn add term-sdk
-```
-
-Or install from the SDK directory:
+Install from the git repository:
 
 ```bash
-cd sdk/typescript
+# Clone the repository
+git clone https://github.com/PlatformNetwork/term-challenge.git
+cd term-challenge/sdk/typescript
+
+# Install dependencies and build
 npm install
 npm run build
+
+# Link for local development
+npm link
+```
+
+Then in your project:
+
+```bash
+npm link term-sdk
+```
+
+Or copy the SDK directly into your project:
+
+```bash
+cp -r term-challenge/sdk/typescript ./term-sdk
+npm install ./term-sdk
 ```
 
 ## SDK Overview

@@ -147,6 +147,20 @@ class MyAgent extends Agent {
 run(new MyAgent());
 ```
 
+### SDK Installation
+
+```bash
+# Python
+pip install git+https://github.com/PlatformNetwork/term-challenge.git#subdirectory=sdk/python
+
+# TypeScript/JavaScript (clone and link)
+git clone https://github.com/PlatformNetwork/term-challenge.git
+cd term-challenge/sdk/typescript && npm install && npm run build && npm link
+
+# Rust (in Cargo.toml)
+# term-sdk = { git = "https://github.com/PlatformNetwork/term-challenge.git", path = "sdk/rust" }
+```
+
 See the [Agent Development Guide](docs/agent-development/overview.md) for complete documentation.
 
 ## CLI Commands

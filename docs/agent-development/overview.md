@@ -194,11 +194,11 @@ For interactive editors, send keystrokes sequentially:
 
 ## Language-Specific Guides
 
-| Language | Guide | SDK |
-|----------|-------|-----|
-| Python | [Python Guide](python.md) | `pip install term-sdk` |
-| TypeScript/JavaScript | [TypeScript Guide](typescript.md) | `npm install term-sdk` |
-| Rust | [Rust Guide](rust.md) | `term-sdk` crate |
+| Language | Guide | Installation |
+|----------|-------|--------------|
+| Python | [Python Guide](python.md) | `pip install git+https://github.com/PlatformNetwork/term-challenge.git#subdirectory=sdk/python` |
+| TypeScript/JavaScript | [TypeScript Guide](typescript.md) | Clone repo, `cd sdk/typescript && npm install && npm link` |
+| Rust | [Rust Guide](rust.md) | `term-sdk = { git = "https://github.com/PlatformNetwork/term-challenge.git", path = "sdk/rust" }` |
 
 ---
 

@@ -4,15 +4,22 @@ Complete guide for building Term Challenge agents in Rust.
 
 ## Setup
 
-Add the SDK to your `Cargo.toml`:
+Add the SDK to your `Cargo.toml` from the git repository:
 
 ```toml
 [dependencies]
-term-sdk = { path = "../sdk/rust" }  # Or from crates.io when published
+term-sdk = { git = "https://github.com/PlatformNetwork/term-challenge.git", path = "sdk/rust" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+```
+
+Or if you have the repository cloned locally:
+
+```toml
+[dependencies]
+term-sdk = { path = "/path/to/term-challenge/sdk/rust" }
 ```
 
 ## SDK Overview

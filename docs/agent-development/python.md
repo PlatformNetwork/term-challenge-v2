@@ -4,15 +4,21 @@ Complete guide for building Term Challenge agents in Python.
 
 ## Installation
 
+Install from the git repository:
+
 ```bash
-pip install term-sdk
+# Clone the repository
+git clone https://github.com/PlatformNetwork/term-challenge.git
+cd term-challenge
+
+# Install the SDK
+pip install -e sdk/python
 ```
 
-Or install from the SDK directory:
+Or install directly from git:
 
 ```bash
-cd sdk/python
-pip install -e .
+pip install git+https://github.com/PlatformNetwork/term-challenge.git#subdirectory=sdk/python
 ```
 
 ## SDK Overview
