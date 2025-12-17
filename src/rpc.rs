@@ -723,9 +723,8 @@ async fn run_evaluation_with_progress(
 
         let execution_time_ms = task_start.elapsed().as_millis() as u64;
 
-        // Estimate cost based on execution time and difficulty
-        let difficulty_multiplier = task.difficulty_weight();
-        let cost_usd = 0.001 * (execution_time_ms as f64 / 1000.0) * difficulty_multiplier;
+        // Estimate cost based on execution time
+        let cost_usd = 0.001 * (execution_time_ms as f64 / 1000.0);
 
         if passed {
             passed_tasks += 1;
@@ -733,7 +732,7 @@ async fn run_evaluation_with_progress(
             failed_tasks += 1;
         }
         total_cost += cost_usd;
-        total_score += score * difficulty_multiplier;
+        total_score += score;
 
         // Update progress store
         if let Some(mut prog) = progress_store.get(&evaluation_id) {
