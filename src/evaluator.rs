@@ -1,7 +1,9 @@
 //! Task evaluator for running agents against tasks
 
 use crate::docker::{ContainerRun, DockerConfig, DockerExecutor};
+use crate::llm_client::Agent;
 use crate::task::{Task, TaskResult};
+use crate::terminal_harness::{HarnessConfig, TerminalHarness};
 use anyhow::Result;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
@@ -183,13 +185,49 @@ impl TaskEvaluator {
             }
         }
 
-        // Run the agent (this is where the agent does its work)
-        // The agent should read /app/INSTRUCTION.txt and perform the task
-        info!("Running agent on task...");
-        let _agent_result = self.run_agent_in_container(&container, agent).await;
+        // Run the agent using terminal harness
+        info!("Running agent on task with terminal harness...");
+        let harness_result = self
+            .run_agent_in_container(
+                &container,
+                agent,
+                task.instruction(),
+                task.config.timeout_secs as u64,
+                50, // max_steps
+            )
+            .await;
 
-        // Get agent output
-        let agent_output = container.logs().await.unwrap_or_default();
+        // Get agent output from harness
+        let agent_output = match &harness_result {
+            Ok(result) => {
+                let mut output = String::new();
+                for step in &result.steps {
+                    output.push_str(&format!(
+                        "=== Step {} ===\nCommand: {:?}\nExit: {}\nOutput:\n{}\n\n",
+                        step.step,
+                        step.command,
+                        step.exit_code,
+                        step.output
+                    ));
+                }
+                output
+            }
+            Err(e) => format!("Harness error: {}", e),
+        };
+
+        // Log harness result
+        match &harness_result {
+            Ok(result) => {
+                info!(
+                    "Harness completed: steps={}, task_complete={}",
+                    result.steps.len(),
+                    result.task_complete
+                );
+            }
+            Err(e) => {
+                warn!("Harness failed: {}", e);
+            }
+        }
 
         // Run the test script
         info!("Running test script");
@@ -244,35 +282,49 @@ impl TaskEvaluator {
         }
     }
 
-    /// Run the agent inside the container
+    /// Run the agent inside the container using terminal harness
     async fn run_agent_in_container(
         &self,
         container: &ContainerRun,
         agent: &AgentInfo,
-    ) -> Result<()> {
-        // Check if agent has an endpoint (API-based agent)
-        if let Some(endpoint) = &agent.endpoint {
-            // For API-based agents, we'd communicate via HTTP
-            // This is a simplified version
-            debug!("Agent endpoint: {}", endpoint);
-        }
+        instruction: &str,
+        task_timeout_secs: u64,
+        max_steps: u32,
+    ) -> Result<crate::terminal_harness::HarnessResult> {
+        info!(
+            "Running agent {} (max_steps={}, timeout={}s)",
+            agent.hash, max_steps, task_timeout_secs
+        );
 
-        // For Docker-based agents, we exec into the container
-        let cmd = if agent.source_code.is_some() {
-            // Run injected python script
-            vec!["python3", "/agent/main.py"]
-        } else {
-            // Run standard entrypoint
-            vec![
-                "sh", "-c",
-                "if [ -f /agent/run.sh ]; then /agent/run.sh; elif [ -f /run.sh ]; then /run.sh; else echo 'No agent entrypoint found'; fi"
-            ]
+        // Configure harness
+        let harness_config = HarnessConfig {
+            max_steps,
+            step_timeout_secs: 60,
+            total_timeout_secs: task_timeout_secs,
+            working_dir: "/app".to_string(),
         };
 
-        let result = container.exec(&cmd).await?;
+        // Create terminal harness
+        let mut harness = TerminalHarness::new(container, harness_config);
 
-        debug!("Agent execution result: exit_code={}", result.exit_code);
-        Ok(())
+        // Agent must provide source code - this is a code challenge
+        let code = match &agent.source_code {
+            Some(code) if !code.trim().is_empty() => code.clone(),
+            _ => {
+                return Err(anyhow::anyhow!("No agent source code provided - submission rejected"));
+            }
+        };
+
+        info!("Running agent code ({} bytes)", code.len());
+        harness
+            .run(instruction, |request| {
+                let code = code.clone();
+                async move {
+                    let agent = Agent::from_source(code);
+                    agent.execute(request).await
+                }
+            })
+            .await
     }
 
     /// Evaluate an agent on multiple tasks

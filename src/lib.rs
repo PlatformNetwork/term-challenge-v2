@@ -37,6 +37,7 @@ pub mod emission;
 pub mod encrypted_api_key;
 pub mod evaluation_pipeline;
 pub mod evaluator;
+pub mod llm_client;
 pub mod python_whitelist;
 pub mod reward_decay;
 pub mod rpc;
@@ -47,6 +48,7 @@ pub mod submission_manager;
 pub mod sudo;
 pub mod task;
 pub mod task_execution;
+pub mod terminal_harness;
 pub mod validator_distribution;
 pub mod weight_calculator;
 
