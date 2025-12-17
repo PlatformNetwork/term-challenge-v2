@@ -277,23 +277,57 @@ impl TaskEvaluator {
 
     /// Evaluate an agent on multiple tasks
     pub async fn evaluate_tasks(&self, tasks: &[&Task], agent: &AgentInfo) -> Vec<TaskResult> {
-        let mut results = Vec::new();
+        self.evaluate_tasks_with_progress(tasks, agent, None::<fn(u32, u32, &TaskResult)>)
+            .await
+    }
 
-        for task in tasks {
-            match self.evaluate_task(task, agent).await {
-                Ok(result) => results.push(result),
+    /// Evaluate an agent on multiple tasks with progress callback
+    /// The callback is called after each task completes with (task_index, total_tasks, result)
+    pub async fn evaluate_tasks_with_progress<F>(
+        &self,
+        tasks: &[&Task],
+        agent: &AgentInfo,
+        progress_callback: Option<F>,
+    ) -> Vec<TaskResult>
+    where
+        F: Fn(u32, u32, &TaskResult) + Send + Sync,
+    {
+        let mut results = Vec::new();
+        let total_tasks = tasks.len() as u32;
+
+        for (index, task) in tasks.iter().enumerate() {
+            let task_index = (index + 1) as u32;
+
+            let result = match self.evaluate_task(task, agent).await {
+                Ok(result) => result,
                 Err(e) => {
                     error!("Evaluation error for task {}: {}", task.id(), e);
-                    results.push(TaskResult::failure(
+                    TaskResult::failure(
                         task.id().to_string(),
                         agent.hash.clone(),
                         0,
                         String::new(),
                         String::new(),
                         format!("Evaluation error: {}", e),
-                    ));
+                    )
                 }
+            };
+
+            // Call progress callback if provided
+            if let Some(ref callback) = progress_callback {
+                callback(task_index, total_tasks, &result);
             }
+
+            info!(
+                "Task [{}/{}] completed: {} - passed={} score={:.2}",
+                task_index,
+                total_tasks,
+                task.id(),
+                result.passed,
+                result.score
+            );
+
+            results.push(result);
         }
 
         results

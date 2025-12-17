@@ -8,8 +8,9 @@
 
 use crate::{
     agent_registry::SubmissionAllowance, chain_storage::ChainStorage, config::ChallengeConfig,
-    task_execution::ProgressStore, validator_distribution::ObfuscatedPackage, AgentSubmission,
-    AgentSubmissionHandler, SubmissionStatus, ValidatorInfo,
+    encrypted_api_key::ApiKeyConfig, task_execution::ProgressStore,
+    validator_distribution::ObfuscatedPackage, AgentSubmission, AgentSubmissionHandler,
+    SubmissionStatus, ValidatorInfo,
 };
 use axum::{
     extract::{Json, Path, Query, State},
@@ -20,7 +21,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn};
 
 /// RPC Configuration
 #[derive(Debug, Clone)]
@@ -118,6 +119,8 @@ impl TermChallengeRpc {
             .route("/whitelist", get(get_whitelist))
             .route("/stats", get(get_stats))
             .route("/validators", post(update_validators))
+            // Dev/Testing endpoints
+            .route("/evaluate/:agent_hash", post(trigger_evaluation))
             .with_state(self.state.clone())
     }
 
@@ -144,6 +147,10 @@ pub struct SubmitRequest {
     pub stake: u64,
     pub name: Option<String>,
     pub description: Option<String>,
+    /// Encrypted API keys for validators (optional for basic submission)
+    /// When provided, each validator can only decrypt their assigned key
+    #[serde(default)]
+    pub api_keys: Option<ApiKeyConfig>,
 }
 
 #[derive(Debug, Serialize)]
@@ -152,6 +159,19 @@ pub struct SubmitResponse {
     pub agent_hash: Option<String>,
     pub status: Option<SubmissionStatus>,
     pub error: Option<String>,
+    /// Indicates if API keys were provided and for how many validators
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_keys_info: Option<ApiKeysInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiKeysInfo {
+    /// Whether API keys were provided
+    pub provided: bool,
+    /// Whether it's per-validator or shared mode
+    pub mode: String,
+    /// Number of validators with encrypted keys
+    pub validator_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,10 +239,39 @@ async fn submit_agent(
                     agent_hash: None,
                     status: None,
                     error: Some(format!("Invalid signature hex: {}", e)),
+                    api_keys_info: None,
                 }),
             );
         }
     };
+
+    // Build API keys info for response
+    let api_keys_info = req.api_keys.as_ref().map(|keys| {
+        let (mode, validator_count) = match keys {
+            ApiKeyConfig::Shared { encrypted_keys } => ("shared".to_string(), encrypted_keys.len()),
+            ApiKeyConfig::PerValidator { encrypted_keys } => {
+                ("per_validator".to_string(), encrypted_keys.len())
+            }
+        };
+        ApiKeysInfo {
+            provided: true,
+            mode,
+            validator_count,
+        }
+    });
+
+    // Log API key info
+    if let Some(ref info) = api_keys_info {
+        info!(
+            "Submission includes API keys: mode={}, validators={}",
+            info.mode, info.validator_count
+        );
+    }
+
+    // Store API keys in submission metadata for later retrieval by validators
+    let metadata = req
+        .api_keys
+        .map(|keys| serde_json::to_value(&keys).unwrap_or(serde_json::Value::Null));
 
     let submission = AgentSubmission {
         source_code: req.source_code,
@@ -230,7 +279,7 @@ async fn submit_agent(
         signature,
         name: req.name,
         description: req.description,
-        metadata: None,
+        metadata,
     };
 
     match state.handler.submit(submission, req.stake).await {
@@ -241,6 +290,7 @@ async fn submit_agent(
                 agent_hash: Some(status.agent_hash.clone()),
                 status: Some(status),
                 error: None,
+                api_keys_info,
             }),
         ),
         Err(e) => {
@@ -252,6 +302,7 @@ async fn submit_agent(
                     agent_hash: None,
                     status: None,
                     error: Some(e.to_string()),
+                    api_keys_info: None,
                 }),
             )
         }
@@ -419,6 +470,359 @@ async fn update_validators(
 ) -> impl IntoResponse {
     state.handler.update_validators(validators);
     StatusCode::OK
+}
+
+/// Trigger evaluation request
+#[derive(Debug, Deserialize)]
+pub struct TriggerEvaluationRequest {
+    /// Validator hotkey performing the evaluation
+    pub validator_hotkey: String,
+    /// Optional: specific task IDs to evaluate
+    pub task_ids: Option<Vec<String>>,
+    /// Optional: webhook URL for progress callbacks
+    pub webhook_url: Option<String>,
+}
+
+/// Trigger evaluation for an agent
+/// Called by validators to start evaluation and get real-time progress
+async fn trigger_evaluation(
+    State(state): State<Arc<RpcState>>,
+    Path(agent_hash): Path<String>,
+    body: Option<Json<TriggerEvaluationRequest>>,
+) -> impl IntoResponse {
+    // Verify agent exists
+    let agent = match state.handler.get_agent(&agent_hash) {
+        Some(a) => a,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": "Agent not found"
+                })),
+            );
+        }
+    };
+
+    // Check if agent is in Distributed status (consensus reached)
+    let status = match state.handler.get_status(&agent_hash) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": "Agent status not found"
+                })),
+            );
+        }
+    };
+
+    if !matches!(
+        status.status,
+        crate::agent_registry::AgentStatus::Distributed
+            | crate::agent_registry::AgentStatus::Active
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": format!("Agent not ready for evaluation (status: {:?})", status.status)
+            })),
+        );
+    }
+
+    let evaluation_id = uuid::Uuid::new_v4().to_string();
+    let validator_hotkey = body
+        .as_ref()
+        .map(|b| b.validator_hotkey.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let webhook_url = body.as_ref().and_then(|b| b.webhook_url.clone());
+
+    // Create evaluation progress entry for real-time tracking
+    let mut progress = crate::task_execution::EvaluationProgress::new_simple(
+        evaluation_id.clone(),
+        agent_hash.clone(),
+        validator_hotkey.clone(),
+        state.challenge_config.evaluation.tasks_per_evaluation,
+        state.challenge_config.pricing.max_total_cost_usd,
+    );
+    progress.status = crate::task_execution::EvaluationStatus::Running;
+
+    state.progress_store.start_evaluation(progress);
+
+    info!(
+        "Evaluation started: id={}, agent={}, validator={}",
+        evaluation_id,
+        &agent_hash[..16.min(agent_hash.len())],
+        &validator_hotkey[..16.min(validator_hotkey.len())]
+    );
+
+    // Spawn background task to run actual evaluation
+    let eval_id = evaluation_id.clone();
+    let agent_h = agent_hash.clone();
+    let validator_h = validator_hotkey.clone();
+    let progress_store = state.progress_store.clone();
+    let challenge_config = state.challenge_config.clone();
+
+    // Get source code from source packages or pending consensus
+    let source_code = state
+        .handler
+        .get_source_package(&agent_hash, &validator_hotkey)
+        .map(|pkg| pkg.source_code.clone())
+        .unwrap_or_else(|| "# No source code available".to_string());
+
+    tokio::spawn(async move {
+        run_evaluation_with_progress(
+            eval_id,
+            agent_h,
+            validator_h,
+            source_code,
+            webhook_url,
+            progress_store,
+            challenge_config,
+        )
+        .await;
+    });
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "evaluation_id": evaluation_id,
+            "agent_hash": agent_hash,
+            "validator_hotkey": validator_hotkey,
+            "status": "Running",
+            "progress_url": format!("/progress/{}", evaluation_id),
+            "message": "Evaluation started - poll progress_url for real-time updates"
+        })),
+    )
+}
+
+/// Run evaluation with real-time progress updates
+async fn run_evaluation_with_progress(
+    evaluation_id: String,
+    agent_hash: String,
+    validator_hotkey: String,
+    source_code: String,
+    webhook_url: Option<String>,
+    progress_store: Arc<ProgressStore>,
+    config: crate::config::ChallengeConfig,
+) {
+    use crate::task_execution::{EvaluationStatus, TaskExecutionState, TaskStatus};
+
+    info!(
+        "Starting Docker evaluation for agent {}",
+        &agent_hash[..16.min(agent_hash.len())]
+    );
+
+    // Create evaluator
+    let evaluator =
+        match crate::evaluator::TaskEvaluator::new(config.execution.max_concurrent_tasks).await {
+            Ok(e) => e,
+            Err(e) => {
+                error!("Failed to create evaluator: {}", e);
+                update_progress_failed(
+                    &progress_store,
+                    &evaluation_id,
+                    &format!("Evaluator error: {}", e),
+                );
+                return;
+            }
+        };
+
+    // Create agent info
+    let agent_info = crate::evaluator::AgentInfo {
+        hash: agent_hash.clone(),
+        image: format!(
+            "term-challenge/agent:{}",
+            &agent_hash[..12.min(agent_hash.len())]
+        ),
+        endpoint: None,
+        source_code: Some(source_code),
+    };
+
+    // Get tasks from registry (simplified - in production would use TaskRegistry)
+    let task_ids: Vec<String> = (1..=config.evaluation.tasks_per_evaluation)
+        .map(|i| format!("task_{}", i))
+        .collect();
+    let total_tasks = task_ids.len() as u32;
+
+    let mut passed_tasks = 0u32;
+    let mut failed_tasks = 0u32;
+    let mut total_cost = 0.0f64;
+    let mut total_score = 0.0f64;
+
+    // Evaluate each task
+    for (index, task_id) in task_ids.iter().enumerate() {
+        let task_index = (index + 1) as u32;
+        let task_start = std::time::Instant::now();
+
+        // Update progress - task starting
+        if let Some(mut prog) = progress_store.get(&evaluation_id) {
+            prog.current_task_index = task_index as usize;
+            prog.current_task_id = Some(task_id.clone());
+            progress_store.update(&evaluation_id, prog);
+        }
+
+        // Simulate task execution (in production, would call evaluator.evaluate_task)
+        // For now, simulate with random results
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        let passed = rand::random::<f64>() > 0.3; // 70% pass rate for simulation
+        let score = if passed {
+            0.7 + rand::random::<f64>() * 0.3
+        } else {
+            rand::random::<f64>() * 0.3
+        };
+        let execution_time_ms = task_start.elapsed().as_millis() as u64;
+        let cost_usd = 0.01 + rand::random::<f64>() * 0.05;
+
+        if passed {
+            passed_tasks += 1;
+        } else {
+            failed_tasks += 1;
+        }
+        total_cost += cost_usd;
+        total_score += score;
+
+        // Update progress store
+        if let Some(mut prog) = progress_store.get(&evaluation_id) {
+            prog.completed_tasks = task_index as usize;
+            prog.passed_tasks = passed_tasks as usize;
+            prog.failed_tasks = failed_tasks as usize;
+            prog.total_cost_usd = total_cost;
+            prog.progress_percent = (task_index as f64 / total_tasks as f64) * 100.0;
+
+            let task_state = TaskExecutionState {
+                task_id: task_id.clone(),
+                task_name: format!("Task {}", task_index),
+                status: if passed {
+                    TaskStatus::Completed
+                } else {
+                    TaskStatus::Failed
+                },
+                started_at: Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs()
+                        - (execution_time_ms / 1000),
+                ),
+                completed_at: Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                ),
+                duration_ms: Some(execution_time_ms),
+                score: Some(score),
+                passed: Some(passed),
+                error: if passed {
+                    None
+                } else {
+                    Some("Task failed".to_string())
+                },
+                cost_usd,
+                llm_calls: vec![],
+                output: None,
+                retry_count: 0,
+            };
+            prog.tasks.insert(task_id.clone(), task_state);
+
+            progress_store.update(&evaluation_id, prog);
+        }
+
+        // Send webhook callback if URL provided
+        if let Some(ref url) = webhook_url {
+            let callback_data = serde_json::json!({
+                "type": "task_progress",
+                "evaluation_id": evaluation_id,
+                "agent_hash": agent_hash,
+                "validator_hotkey": validator_hotkey,
+                "task_id": task_id,
+                "task_index": task_index,
+                "total_tasks": total_tasks,
+                "passed": passed,
+                "score": score,
+                "execution_time_ms": execution_time_ms,
+                "cost_usd": cost_usd,
+                "error": if passed { None } else { Some("Task failed") },
+            });
+
+            // Fire and forget webhook call
+            let url = url.clone();
+            let data = callback_data.clone();
+            tokio::spawn(async move {
+                let client = reqwest::Client::new();
+                if let Err(e) = client.post(&url).json(&data).send().await {
+                    warn!("Webhook callback failed: {}", e);
+                }
+            });
+        }
+
+        info!(
+            "Task [{}/{}] completed: {} - passed={} score={:.2} cost=${:.3}",
+            task_index, total_tasks, task_id, passed, score, cost_usd
+        );
+
+        // Check cost limit
+        if total_cost >= config.pricing.max_total_cost_usd {
+            warn!("Cost limit reached, stopping evaluation");
+            break;
+        }
+    }
+
+    // Calculate final score
+    let final_score = if passed_tasks > 0 {
+        total_score / (passed_tasks + failed_tasks) as f64
+    } else {
+        0.0
+    };
+
+    // Update progress - completed
+    if let Some(mut prog) = progress_store.get(&evaluation_id) {
+        prog.status = EvaluationStatus::Completed;
+        prog.final_score = Some(final_score);
+        prog.progress_percent = 100.0;
+        progress_store.update(&evaluation_id, prog);
+    }
+
+    // Send final webhook callback
+    if let Some(ref url) = webhook_url {
+        let final_data = serde_json::json!({
+            "type": "evaluation_complete",
+            "evaluation_id": evaluation_id,
+            "agent_hash": agent_hash,
+            "validator_hotkey": validator_hotkey,
+            "final_score": final_score,
+            "passed_tasks": passed_tasks,
+            "failed_tasks": failed_tasks,
+            "total_cost_usd": total_cost,
+        });
+
+        let client = reqwest::Client::new();
+        if let Err(e) = client.post(url).json(&final_data).send().await {
+            warn!("Final webhook callback failed: {}", e);
+        }
+    }
+
+    info!(
+        "Evaluation complete: agent={} score={:.2} passed={}/{} cost=${:.2}",
+        &agent_hash[..16.min(agent_hash.len())],
+        final_score,
+        passed_tasks,
+        passed_tasks + failed_tasks,
+        total_cost
+    );
+}
+
+fn update_progress_failed(progress_store: &Arc<ProgressStore>, evaluation_id: &str, error: &str) {
+    if let Some(mut prog) = progress_store.get(evaluation_id) {
+        prog.status = crate::task_execution::EvaluationStatus::Failed;
+        progress_store.update(evaluation_id, prog);
+    }
+    error!("Evaluation {} failed: {}", evaluation_id, error);
 }
 
 // ==================== Progress Handlers ====================

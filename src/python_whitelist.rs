@@ -108,6 +108,11 @@ impl Default for WhitelistConfig {
         let mut allowed_third_party = HashSet::new();
         // Safe third-party modules for AI agents
         for module in &[
+            // Term SDK (official SDK)
+            "term_sdk",
+            "term-sdk",
+            "termsdk",
+            // AI/ML libraries
             "numpy",
             "pandas",
             "scipy",
@@ -369,6 +374,37 @@ import numpy as np
 
         let result = whitelist.verify(code);
         assert!(result.valid, "Errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_term_sdk_allowed() {
+        let whitelist = PythonWhitelist::new(WhitelistConfig::default());
+
+        // Test all variants of term_sdk
+        let code1 = "import term_sdk\nfrom term_sdk import Agent";
+        let code2 = "from term_sdk.agent import BaseAgent";
+        let code3 = "import termsdk";
+
+        let result1 = whitelist.verify(code1);
+        assert!(
+            result1.valid,
+            "term_sdk should be allowed: {:?}",
+            result1.errors
+        );
+
+        let result2 = whitelist.verify(code2);
+        assert!(
+            result2.valid,
+            "term_sdk.agent should be allowed: {:?}",
+            result2.errors
+        );
+
+        let result3 = whitelist.verify(code3);
+        assert!(
+            result3.valid,
+            "termsdk should be allowed: {:?}",
+            result3.errors
+        );
     }
 
     #[test]

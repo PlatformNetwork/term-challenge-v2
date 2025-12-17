@@ -34,6 +34,7 @@ pub mod config;
 pub mod distributed_store;
 pub mod docker;
 pub mod emission;
+pub mod encrypted_api_key;
 pub mod evaluation_pipeline;
 pub mod evaluator;
 pub mod python_whitelist;
@@ -68,6 +69,10 @@ pub use emission::{
     AggregatedMinerScore, CompetitionWeights, EmissionAllocation, EmissionConfig, EmissionManager,
     EmissionSummary, FinalWeights, MinerScore, WeightCalculator,
     WeightStrategy as EmissionWeightStrategy, MAX_WEIGHT, MIN_WEIGHT,
+};
+pub use encrypted_api_key::{
+    decode_ss58, decrypt_api_key, encode_ss58, encrypt_api_key, parse_hotkey, ApiKeyConfig,
+    ApiKeyConfigBuilder, ApiKeyError, EncryptedApiKey, SecureSubmitRequest, SS58_PREFIX,
 };
 pub use evaluation_pipeline::{
     AgentSubmission as PipelineAgentSubmission, EvaluationPipeline,

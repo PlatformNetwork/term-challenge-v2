@@ -19,11 +19,11 @@ COPY src ./src
 COPY bin ./bin
 COPY tests ./tests
 
-# Build release binary
-RUN cargo build --release --bin term
+# Build release binaries (CLI and Server)
+RUN cargo build --release --bin term --bin term-server
 
-# Strip binary for smaller size
-RUN strip /app/target/release/term
+# Strip binaries for smaller size
+RUN strip /app/target/release/term /app/target/release/term-server
 
 # Stage 2: Runtime - Minimal production image
 FROM debian:bookworm-slim AS runtime
@@ -45,8 +45,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy binary from builder
+# Copy binaries from builder
 COPY --from=builder /app/target/release/term /usr/local/bin/
+COPY --from=builder /app/target/release/term-server /usr/local/bin/
 
 # Copy SDK for agent development
 COPY sdk /app/sdk
@@ -63,7 +64,7 @@ EXPOSE 8080
 
 # Use tini as init system
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["term", "--help"]
+CMD ["term-server"]
 
 # Labels
 LABEL org.opencontainers.image.source="https://github.com/PlatformNetwork/term-challenge"

@@ -197,6 +197,41 @@ impl EvaluationProgress {
         }
     }
 
+    /// Create new evaluation progress with simple params (no task list)
+    pub fn new_simple(
+        evaluation_id: String,
+        agent_hash: String,
+        validator_hotkey: String,
+        total_tasks: usize,
+        cost_limit: f64,
+    ) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        Self {
+            evaluation_id,
+            agent_hash,
+            validator_hotkey,
+            total_tasks,
+            completed_tasks: 0,
+            passed_tasks: 0,
+            failed_tasks: 0,
+            current_task_index: 0,
+            current_task_id: None,
+            progress_percent: 0.0,
+            total_cost_usd: 0.0,
+            cost_limit_usd: cost_limit,
+            cost_limit_reached: false,
+            started_at: now,
+            estimated_completion: None,
+            tasks: HashMap::new(),
+            status: EvaluationStatus::Pending,
+            final_score: None,
+        }
+    }
+
     /// Update progress after task completion
     pub fn update_task(&mut self, task_id: &str, state: TaskExecutionState) {
         let was_pending = self

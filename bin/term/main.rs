@@ -7,6 +7,7 @@ mod commands;
 mod style;
 mod tui;
 mod tui_runner;
+mod wizard;
 
 use clap::{Parser, Subcommand};
 use style::*;
@@ -34,7 +35,7 @@ struct Cli {
         short,
         long,
         env = "VALIDATOR_RPC",
-        default_value = "http://localhost:8080",
+        default_value = "https://chain.platform.network",
         global = true
     )]
     rpc: String,
@@ -49,6 +50,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Interactive submission wizard (recommended for first-time users)
+    #[command(visible_alias = "w")]
+    Wizard,
+
     /// Test an agent locally with real-time progress
     #[command(visible_alias = "t")]
     Test {
@@ -87,6 +92,19 @@ enum Commands {
         /// Agent name (optional)
         #[arg(long)]
         name: Option<String>,
+
+        /// LLM API key to encrypt for validators (OpenAI, Anthropic, etc.)
+        /// Will be encrypted so only validators can decrypt it
+        #[arg(long, env = "LLM_API_KEY")]
+        api_key: Option<String>,
+
+        /// Use per-validator API keys (more secure, requires --api-keys-file)
+        #[arg(long)]
+        per_validator: bool,
+
+        /// JSON file with per-validator API keys: {"validator_hotkey": "api_key", ...}
+        #[arg(long)]
+        api_keys_file: Option<std::path::PathBuf>,
     },
 
     /// Check agent status and results
@@ -293,6 +311,7 @@ async fn main() {
     }
 
     let result = match cli.command {
+        Commands::Wizard => wizard::run_submit_wizard(&cli.rpc).await,
         Commands::Test {
             agent,
             tasks,
@@ -300,8 +319,24 @@ async fn main() {
             timeout,
             no_tui,
         } => commands::test::run(agent, tasks, difficulty, timeout, no_tui, cli.verbose).await,
-        Commands::Submit { agent, key, name } => {
-            commands::submit::run(&cli.rpc, agent, key, name).await
+        Commands::Submit {
+            agent,
+            key,
+            name,
+            api_key,
+            per_validator,
+            api_keys_file,
+        } => {
+            commands::submit::run(
+                &cli.rpc,
+                agent,
+                key,
+                name,
+                api_key,
+                per_validator,
+                api_keys_file,
+            )
+            .await
         }
         Commands::Status { hash, watch } => commands::status::run(&cli.rpc, hash, watch).await,
         Commands::Leaderboard { limit } => commands::leaderboard::run(&cli.rpc, limit).await,
