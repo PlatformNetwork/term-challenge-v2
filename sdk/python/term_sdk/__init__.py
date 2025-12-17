@@ -1,95 +1,49 @@
 """
-Term Challenge SDK - Professional framework for building terminal agents.
+Term Challenge SDK - Build agents that solve terminal tasks.
 
-Example:
+Quick Start:
     ```python
-    from term_sdk import Agent, AgentResponse, Command, Harness
-    
+    from term_sdk import Agent, Request, Response, run
+
     class MyAgent(Agent):
-        async def step(self, instruction: str, screen: str, step: int) -> AgentResponse:
-            return AgentResponse(
-                analysis="Terminal shows prompt",
-                plan="Execute ls command",
-                commands=[Command("ls -la\\n")],
-                task_complete=False
-            )
-    
+        def solve(self, req: Request) -> Response:
+            if req.step == 1:
+                return Response.cmd("ls -la")
+            return Response.done()
+
     if __name__ == "__main__":
-        Harness(MyAgent()).run()
+        run(MyAgent())
     ```
 
-For LLM-powered agents:
+With LLM:
     ```python
-    from term_sdk import Agent, AgentResponse, Command, Harness
-    from term_sdk.llm_client import LLMClient
-    
+    from term_sdk import Agent, Request, Response, LLM, run
+
     class LLMAgent(Agent):
-        async def setup(self):
-            self.client = LLMClient(provider="openrouter")
-        
-        async def step(self, instruction: str, screen: str, step: int) -> AgentResponse:
-            response = await self.client.chat([
-                {"role": "user", "content": f"Task: {instruction}\\n{screen}"}
-            ])
-            # Parse response and return AgentResponse
-            ...
+        def setup(self):
+            self.llm = LLM(model="anthropic/claude-3-haiku")
+
+        def solve(self, req: Request) -> Response:
+            result = self.llm.ask(f"Task: {req.instruction}\\nOutput: {req.output}")
+            return Response.from_llm(result)
+
+    if __name__ == "__main__":
+        run(LLMAgent())
     ```
 """
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"
 
-# Core harness types
-from .harness import (
-    Agent,
-    AgentRequest,
-    AgentResponse,
-    Command,
-    Harness,
-    run,
-    run_agent_loop,  # Legacy alias
-    log,  # Global logger instance
-    AgentLogger,
-    LogLevel,
-)
-
-# LLM client
-from .llm_client import (
-    LLMClient,
-    Provider,
-    Message,
-    ChatResponse,
-    CostTracker,
-    MODEL_PRICING,
-    estimate_cost,
-    get_client,
-    set_client,
-    chat,
-)
+from .types import Request, Response
+from .agent import Agent
+from .runner import run
+from .llm import LLM, LLMResponse
 
 __all__ = [
-    # Version
-    "__version__",
-    # Harness
+    "Request",
+    "Response", 
     "Agent",
-    "AgentRequest",
-    "AgentResponse", 
-    "Command",
-    "Harness",
     "run",
-    "run_agent_loop",
-    # Logging
-    "log",
-    "AgentLogger",
-    "LogLevel",
-    # LLM
-    "LLMClient",
-    "Provider",
-    "Message",
-    "ChatResponse",
-    "CostTracker",
-    "MODEL_PRICING",
-    "estimate_cost",
-    "get_client",
-    "set_client",
-    "chat",
+    "LLM",
+    "LLMResponse",
 ]

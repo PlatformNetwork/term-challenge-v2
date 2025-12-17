@@ -1,691 +1,236 @@
-# Rust Agent Development
+# Rust SDK
 
-Complete guide for building Term Challenge agents in Rust.
+Build Term Challenge agents in Rust.
 
-## Setup
+## Installation
 
-Add the SDK to your `Cargo.toml` from the git repository:
-
-```toml
-[dependencies]
-term-sdk = { git = "https://github.com/PlatformNetwork/term-challenge.git", path = "sdk/rust" }
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-anyhow = "1"
-```
-
-Or if you have the repository cloned locally:
+Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-term-sdk = { path = "/path/to/term-challenge/sdk/rust" }
+term-sdk = { path = "sdk/rust" }
 ```
 
-## SDK Overview
+## Quick Start
 
 ```rust
-use term_sdk::{
-    // Core types
-    Agent,           // Agent trait
-    AgentRequest,    // Request from harness
-    AgentResponse,   // Response to harness
-    Command,         // Terminal command
-    Harness,         // Agent runner
-    
-    // LLM client
-    LlmClient,
-    Provider,
-    Message,
-    ChatResponse,
-};
-```
+use term_sdk::{Agent, Request, Response, run};
 
-## Basic Agent Structure
+struct MyAgent;
 
-```rust
-use anyhow::Result;
-use term_sdk::{Agent, AgentResponse, Command, Harness};
-
-struct MyAgent {
-    // Your state here
-}
-
-impl MyAgent {
-    fn new() -> Self {
-        Self {}
-    }
-}
-
-#[async_trait::async_trait]
 impl Agent for MyAgent {
-    fn name(&self) -> &str {
-        "my-agent"
-    }
-
-    async fn setup(&self) -> Result<()> {
-        // Initialize resources
-        Ok(())
-    }
-
-    async fn step(
-        &self,
-        instruction: &str,
-        screen: &str,
-        step: u32,
-    ) -> Result<AgentResponse> {
-        Ok(AgentResponse {
-            analysis: "What I observe...".to_string(),
-            plan: "What I'll do...".to_string(),
-            commands: vec![
-                Command::new("ls -la\n").with_duration(0.5)
-            ],
-            task_complete: false,
-        })
+    fn solve(&mut self, req: &Request) -> Response {
+        if req.is_first() { return Response::cmd("ls -la"); }
+        Response::done()
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let agent = MyAgent::new();
-    Harness::new(agent).run().await
-}
+fn main() { run(&mut MyAgent); }
 ```
 
-## Core Types
+## API Reference
 
-### Command
-
-```rust
-use term_sdk::Command;
-
-// Basic command with Enter
-let cmd = Command::new("ls -la\n");
-
-// Command with custom duration
-let cmd = Command::new("pip install numpy\n").with_duration(10.0);
-
-// From string (convenience)
-let cmd = Command::from("ls -la\n");
-
-// Special keys
-let ctrl_c = Command::new("C-c").with_duration(0.1);
-let tab = Command::new("Tab").with_duration(0.1);
-let escape = Command::new("Escape").with_duration(0.1);
-```
-
-### AgentResponse
+### Request
 
 ```rust
-use term_sdk::{AgentResponse, Command};
-
-let response = AgentResponse {
-    analysis: "Terminal shows empty directory".to_string(),
-    plan: "Create the requested file".to_string(),
-    commands: vec![
-        Command::new("echo 'Hello' > hello.txt\n").with_duration(0.3),
-        Command::new("cat hello.txt\n").with_duration(0.3),
-    ],
-    task_complete: false,
-};
-
-// Create error response
-let error = AgentResponse::error("Something went wrong");
-
-// Mark task complete
-let done = AgentResponse::complete("Task finished successfully");
-```
-
-### AgentRequest
-
-```rust
-use term_sdk::AgentRequest;
-
-// Deserialized from JSON automatically by Harness
-#[derive(Debug, Deserialize)]
-pub struct AgentRequest {
+pub struct Request {
     pub instruction: String,
-    pub screen: String,
     pub step: u32,
+    pub last_command: Option<String>,
+    pub output: Option<String>,
+    pub exit_code: Option<i32>,
+    pub cwd: String,
+}
+
+impl Request {
+    fn is_first(&self) -> bool;        // True on step 1
+    fn is_ok(&self) -> bool;           // True if exit_code == 0
+    fn failed(&self) -> bool;          // True if exit_code != 0
+    fn has(&self, pattern: &str) -> bool;
+    fn has_any(&self, patterns: &[&str]) -> bool;
 }
 ```
 
-## LLM Integration
-
-### Basic LLM Agent
+### Response
 
 ```rust
-use anyhow::Result;
-use term_sdk::{Agent, AgentResponse, Command, Harness, LlmClient, Provider, Message};
-
-struct LlmAgent {
-    client: LlmClient,
+pub struct Response {
+    pub command: Option<String>,
+    pub task_complete: bool,
 }
 
-impl LlmAgent {
-    async fn new() -> Result<Self> {
-        let client = LlmClient::new(Provider::OpenRouter)?
-            .with_model("anthropic/claude-3-haiku")
-            .with_budget(10.0);
-        
-        Ok(Self { client })
-    }
-
-    fn parse_response(&self, content: &str) -> AgentResponse {
-        // Find JSON in response
-        let start = content.find('{').unwrap_or(0);
-        let end = content.rfind('}').map(|i| i + 1).unwrap_or(content.len());
-        let json_str = &content[start..end];
-
-        match serde_json::from_str::<serde_json::Value>(json_str) {
-            Ok(data) => {
-                let commands: Vec<Command> = data["commands"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .map(|c| {
-                                Command::new(
-                                    c["keystrokes"].as_str().unwrap_or("")
-                                ).with_duration(
-                                    c["duration"].as_f64().unwrap_or(1.0)
-                                )
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                AgentResponse {
-                    analysis: data["analysis"].as_str().unwrap_or("").to_string(),
-                    plan: data["plan"].as_str().unwrap_or("").to_string(),
-                    commands,
-                    task_complete: data["task_complete"].as_bool().unwrap_or(false),
-                }
-            }
-            Err(e) => AgentResponse::error(&format!("Parse error: {}", e)),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl Agent for LlmAgent {
-    fn name(&self) -> &str {
-        "llm-agent"
-    }
-
-    async fn step(
-        &self,
-        instruction: &str,
-        screen: &str,
-        step: u32,
-    ) -> Result<AgentResponse> {
-        let prompt = format!(
-            r#"Task: {}
-
-Terminal (step {}):
-```
-{}
-```
-
-Respond with JSON:
-{{
-  "analysis": "your analysis",
-  "plan": "your plan",
-  "commands": [{{"keystrokes": "...", "duration": 1.0}}],
-  "task_complete": false
-}}"#,
-            instruction, step, screen
-        );
-
-        let response = self.client.chat(&[
-            Message::system("You are a terminal expert."),
-            Message::user(&prompt),
-        ]).await?;
-
-        Ok(self.parse_response(&response.content))
-    }
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let agent = LlmAgent::new().await?;
-    Harness::new(agent).run().await
+impl Response {
+    fn cmd(command: impl Into<String>) -> Self;
+    fn done() -> Self;
+    fn complete(self) -> Self;
+    fn from_llm(text: &str) -> Self;
+    fn to_json(&self) -> String;
 }
 ```
 
-### LlmClient Configuration
+### Agent
 
 ```rust
-use term_sdk::{LlmClient, Provider};
-
-// OpenRouter (default)
-let client = LlmClient::new(Provider::OpenRouter)?
-    .with_model("anthropic/claude-3-haiku")
-    .with_api_key("sk-or-...")  // Or use OPENROUTER_API_KEY env
-    .with_budget(5.0)
-    .with_timeout(Duration::from_secs(300));
-
-// Chutes
-let client = LlmClient::new(Provider::Chutes)?
-    .with_model("Qwen/Qwen3-32B");
-
-// OpenAI
-let client = LlmClient::new(Provider::OpenAI)?
-    .with_model("gpt-4o-mini");
-```
-
-### Chat Options
-
-```rust
-use term_sdk::Message;
-
-let response = client.chat_with_options(
-    &[
-        Message::system("You are helpful."),
-        Message::user("Hello!"),
-    ],
-    ChatOptions {
-        model: Some("gpt-4o".to_string()),
-        temperature: Some(0.7),
-        max_tokens: Some(4096),
-    }
-).await?;
-
-// Response fields
-println!("Content: {}", response.content);
-println!("Prompt tokens: {}", response.prompt_tokens);
-println!("Completion tokens: {}", response.completion_tokens);
-println!("Cost: ${:.4}", response.cost);
-println!("Latency: {}ms", response.latency_ms);
-```
-
-### Cost Tracking
-
-```rust
-let client = LlmClient::new(Provider::OpenRouter)?
-    .with_budget(10.0);
-
-// After making calls...
-println!("Total cost: ${:.4}", client.total_cost());
-println!("Total tokens: {}", client.total_tokens());
-println!("Requests: {}", client.request_count());
-```
-
-## Advanced Patterns
-
-### Stateful Agent
-
-```rust
-use std::sync::Mutex;
-
-struct StatefulAgent {
-    client: LlmClient,
-    history: Mutex<Vec<Message>>,
-}
-
-impl StatefulAgent {
-    fn new() -> Result<Self> {
-        Ok(Self {
-            client: LlmClient::new(Provider::OpenRouter)?,
-            history: Mutex::new(Vec::new()),
-        })
-    }
-}
-
-#[async_trait::async_trait]
-impl Agent for StatefulAgent {
-    async fn step(
-        &self,
-        instruction: &str,
-        screen: &str,
-        step: u32,
-    ) -> Result<AgentResponse> {
-        let mut history = self.history.lock().unwrap();
-        
-        // Add current state
-        history.push(Message::user(&format!("Step {}:\n{}", step, screen)));
-        
-        // Keep history manageable
-        if history.len() > 20 {
-            *history = history[history.len()-20..].to_vec();
-        }
-        
-        // Build messages
-        let mut messages = vec![Message::system(&format!("Task: {}", instruction))];
-        messages.extend(history.iter().cloned());
-        
-        let response = self.client.chat(&messages).await?;
-        
-        // Add response to history
-        history.push(Message::assistant(&response.content));
-        
-        Ok(self.parse_response(&response.content))
-    }
+pub trait Agent {
+    fn setup(&mut self) {}
+    fn solve(&mut self, request: &Request) -> Response;
+    fn cleanup(&mut self) {}
 }
 ```
 
-### Error Recovery
+### LLM
 
 ```rust
-#[async_trait::async_trait]
-impl Agent for RobustAgent {
-    async fn step(
-        &self,
-        instruction: &str,
-        screen: &str,
-        step: u32,
-    ) -> Result<AgentResponse> {
-        // Detect common errors
-        if screen.contains("command not found") {
-            return Ok(AgentResponse {
-                analysis: "Previous command not found".to_string(),
-                plan: "Try alternative command".to_string(),
-                commands: vec![Command::new("which python3\n").with_duration(0.3)],
-                task_complete: false,
-            });
-        }
-        
-        if screen.contains("Permission denied") {
-            return Ok(AgentResponse {
-                analysis: "Permission error detected".to_string(),
-                plan: "Try with elevated privileges".to_string(),
-                commands: vec![Command::new("sudo !!\n").with_duration(1.0)],
-                task_complete: false,
-            });
-        }
-        
-        // Normal processing...
-        self.normal_step(instruction, screen, step).await
-    }
-}
-```
+pub enum Provider { OpenRouter, OpenAI, Anthropic }
 
-### Timeout Handling
-
-```rust
-use std::time::Instant;
-
-struct TimeoutAgent {
-    client: LlmClient,
-    start_time: Mutex<Option<Instant>>,
-    max_duration: Duration,
+pub struct LLM {
+    pub total_tokens: u32,
+    pub total_cost: f64,
+    pub request_count: u32,
 }
 
-#[async_trait::async_trait]
-impl Agent for TimeoutAgent {
-    async fn setup(&self) -> Result<()> {
-        *self.start_time.lock().unwrap() = Some(Instant::now());
-        Ok(())
-    }
-
-    async fn step(
-        &self,
-        instruction: &str,
-        screen: &str,
-        step: u32,
-    ) -> Result<AgentResponse> {
-        let start = self.start_time.lock().unwrap().unwrap();
-        
-        if start.elapsed() > self.max_duration {
-            return Ok(AgentResponse::complete("Timeout reached"));
-        }
-        
-        // Normal processing...
-    }
-}
-```
-
-## Logging
-
-Use `tracing` for structured logging to stderr:
-
-```rust
-use tracing::{info, debug, warn, error};
-
-#[async_trait::async_trait]
-impl Agent for MyAgent {
-    async fn step(
-        &self,
-        instruction: &str,
-        screen: &str,
-        step: u32,
-    ) -> Result<AgentResponse> {
-        info!(step, "Processing step");
-        debug!(screen_len = screen.len(), "Screen content");
-        
-        // ...
-        
-        if let Err(e) = result {
-            error!(error = %e, "LLM call failed");
-        }
-    }
-}
-
-fn main() {
-    // Initialize logging to stderr
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .init();
+impl LLM {
+    fn new(model: impl Into<String>) -> Self;
+    fn with_provider(provider: Provider, model: impl Into<String>) -> Self;
+    fn temperature(self, t: f32) -> Self;
+    fn max_tokens(self, t: u32) -> Self;
+    fn api_key(self, key: impl Into<String>) -> Self;
     
-    // ...
+    fn ask(&mut self, prompt: &str) -> Result<LLMResponse, String>;
+    fn ask_with_system(&mut self, system: &str, prompt: &str) -> Result<LLMResponse, String>;
+    fn chat(&mut self, messages: &[Message]) -> Result<LLMResponse, String>;
+}
+
+pub struct LLMResponse {
+    pub text: String,
+    pub model: String,
+    pub tokens: u32,
+    pub cost: f64,
+    pub latency_ms: u64,
+}
+
+pub struct Message {
+    pub role: String,
+    pub content: String,
+}
+
+impl Message {
+    fn system(content: impl Into<String>) -> Self;
+    fn user(content: impl Into<String>) -> Self;
+    fn assistant(content: impl Into<String>) -> Self;
 }
 ```
 
-## Complete Example
+## Examples
+
+### Simple Agent
 
 ```rust
-//! Complete LLM-powered terminal agent for Term Challenge.
+use term_sdk::{Agent, Request, Response, run};
 
-use anyhow::Result;
-use serde_json::Value;
-use std::sync::Mutex;
-use term_sdk::{Agent, AgentResponse, Command, Harness, LlmClient, Message, Provider};
-use tracing::{info, warn};
+struct SimpleAgent;
 
-const SYSTEM_PROMPT: &str = r#"You are an expert terminal agent. Complete tasks using shell commands.
-
-Rules:
-1. Analyze the terminal output carefully
-2. Execute one logical step at a time
-3. Verify your actions worked before proceeding
-4. Use appropriate wait durations
-5. Set task_complete=true only when verified complete
-
-Respond with JSON:
-{
-  "analysis": "What you observe in the terminal",
-  "plan": "What you will do next",
-  "commands": [{"keystrokes": "command\n", "duration": 1.0}],
-  "task_complete": false
-}"#;
-
-struct TerminalAgent {
-    client: LlmClient,
-    history: Mutex<Vec<Message>>,
+impl Agent for SimpleAgent {
+    fn solve(&mut self, req: &Request) -> Response {
+        if req.is_first() { return Response::cmd("ls -la"); }
+        if req.failed() { return Response::cmd("pwd"); }
+        if req.has_any(&["hello", "world"]) { return Response::done(); }
+        
+        if req.instruction.to_lowercase().contains("file") {
+            return Response::cmd("echo 'test' > test.txt");
+        }
+        
+        Response::done()
+    }
 }
 
-impl TerminalAgent {
-    async fn new(model: &str) -> Result<Self> {
-        info!(model, "Initializing agent");
-        
-        let client = LlmClient::new(Provider::OpenRouter)?
-            .with_model(model)
-            .with_budget(10.0)
-            .with_temperature(0.3);
-        
-        Ok(Self {
-            client,
-            history: Mutex::new(Vec::new()),
-        })
+fn main() { run(&mut SimpleAgent); }
+```
+
+### LLM Agent
+
+```rust
+use term_sdk::{Agent, Request, Response, LLM, run};
+
+const SYSTEM: &str = r#"You are a terminal agent. Return JSON:
+{"command": "shell command", "task_complete": false}
+When done: {"command": null, "task_complete": true}"#;
+
+struct LLMAgent { llm: LLM }
+
+impl LLMAgent {
+    fn new() -> Self {
+        Self { llm: LLM::new("anthropic/claude-3-haiku") }
     }
+}
 
-    fn parse_response(&self, content: &str) -> AgentResponse {
-        // Remove <think> blocks (Qwen models)
-        let content = remove_think_blocks(content);
+impl Agent for LLMAgent {
+    fn solve(&mut self, req: &Request) -> Response {
+        let prompt = format!(
+            "Task: {}\nStep: {}\nOutput: {:?}\nExit: {:?}",
+            req.instruction, req.step, req.output, req.exit_code
+        );
         
-        // Find JSON
-        let start = match content.find('{') {
-            Some(i) => i,
-            None => {
-                warn!("No JSON found in response");
-                return AgentResponse::error("No JSON in response");
-            }
-        };
-        
-        let end = content.rfind('}').map(|i| i + 1).unwrap_or(content.len());
-        let json_str = &content[start..end];
-
-        match serde_json::from_str::<Value>(json_str) {
-            Ok(data) => {
-                let commands: Vec<Command> = data["commands"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|c| {
-                                let keystrokes = c["keystrokes"].as_str()?;
-                                let duration = c["duration"].as_f64().unwrap_or(1.0);
-                                Some(Command::new(keystrokes).with_duration(duration))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                AgentResponse {
-                    analysis: data["analysis"].as_str().unwrap_or("").to_string(),
-                    plan: data["plan"].as_str().unwrap_or("").to_string(),
-                    commands,
-                    task_complete: data["task_complete"].as_bool().unwrap_or(false),
-                }
-            }
+        match self.llm.ask_with_system(SYSTEM, &prompt) {
+            Ok(r) => Response::from_llm(&r.text),
             Err(e) => {
-                warn!(error = %e, "JSON parse error");
-                AgentResponse {
-                    analysis: format!("Parse error: {}", e),
-                    plan: content[..content.len().min(500)].to_string(),
-                    commands: vec![],
-                    task_complete: false,
-                }
+                eprintln!("LLM error: {}", e);
+                Response::done()
             }
+        }
+    }
+    
+    fn cleanup(&mut self) {
+        eprintln!("Cost: ${:.4}", self.llm.total_cost);
+    }
+}
+
+fn main() { run(&mut LLMAgent::new()); }
+```
+
+### With History
+
+```rust
+use term_sdk::{Agent, Request, Response, LLM, Message, run};
+
+struct HistoryAgent {
+    llm: LLM,
+    history: Vec<Message>,
+}
+
+impl HistoryAgent {
+    fn new() -> Self {
+        Self {
+            llm: LLM::new("anthropic/claude-3-haiku"),
+            history: Vec::new(),
         }
     }
 }
 
-fn remove_think_blocks(content: &str) -> String {
-    let mut result = content.to_string();
-    while let Some(start) = result.find("<think>") {
-        if let Some(end) = result.find("</think>") {
-            result = format!("{}{}", &result[..start], &result[end + 8..]);
-        } else {
-            result = result[..start].to_string();
-            break;
-        }
-    }
-    result.trim().to_string()
-}
-
-#[async_trait::async_trait]
-impl Agent for TerminalAgent {
-    fn name(&self) -> &str {
-        "terminal-agent"
-    }
-
-    async fn setup(&self) -> Result<()> {
-        info!("Agent ready");
-        Ok(())
-    }
-
-    async fn step(
-        &self,
-        instruction: &str,
-        screen: &str,
-        step: u32,
-    ) -> Result<AgentResponse> {
-        info!(step, "Processing");
-
-        let user_msg = format!(
-            r#"Task: {}
-
-Current Terminal (Step {}):
-```
-{}
-```
-
-What's your next action?"#,
-            instruction,
-            step,
-            &screen[screen.len().saturating_sub(2000)..]
-        );
-
-        // Update conversation
-        {
-            let mut history = self.history.lock().unwrap();
-            history.push(Message::user(&user_msg));
-            
-            // Keep manageable
-            if history.len() > 10 {
-                *history = history[history.len() - 10..].to_vec();
-            }
-        }
-
-        // Build messages
-        let messages: Vec<Message> = {
-            let history = self.history.lock().unwrap();
-            let mut msgs = vec![Message::system(SYSTEM_PROMPT)];
-            msgs.extend(history.iter().cloned());
-            msgs
-        };
-
-        // Call LLM
-        let response = self.client.chat(&messages).await?;
+impl Agent for HistoryAgent {
+    fn solve(&mut self, req: &Request) -> Response {
+        self.history.push(Message::user(
+            format!("Step {}: {}", req.step, req.output.as_deref().unwrap_or("start"))
+        ));
         
-        info!(
-            latency_ms = response.latency_ms,
-            cost = format!("${:.4}", response.cost),
-            "LLM response"
-        );
-
-        // Add to history
-        {
-            let mut history = self.history.lock().unwrap();
-            history.push(Message::assistant(&response.content));
+        if self.history.len() > 10 {
+            self.history = self.history[self.history.len()-10..].to_vec();
         }
-
-        Ok(self.parse_response(&response.content))
+        
+        let mut messages = vec![Message::system(format!("Task: {}", req.instruction))];
+        messages.extend(self.history.clone());
+        
+        match self.llm.chat(&messages) {
+            Ok(r) => {
+                self.history.push(Message::assistant(&r.text));
+                Response::from_llm(&r.text)
+            }
+            Err(_) => Response::done()
+        }
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter("info")
-        .init();
-
-    // Parse args
-    let model = std::env::args()
-        .skip_while(|a| a != "--model")
-        .nth(1)
-        .unwrap_or_else(|| "anthropic/claude-3-haiku".to_string());
-
-    let agent = TerminalAgent::new(&model).await?;
-    Harness::new(agent).run().await
-}
-```
-
-## Building & Running
-
-```bash
-# Build release binary
-cargo build --release
-
-# Run directly
-./target/release/my_agent
-
-# With the harness
-term bench agent -a ./target/release/my_agent -t /path/to/task
-
-# With custom model
-./target/release/my_agent --model gpt-4o
+fn main() { run(&mut HistoryAgent::new()); }
 ```
 
 ## Environment Variables
@@ -693,32 +238,5 @@ term bench agent -a ./target/release/my_agent -t /path/to/task
 | Variable | Description |
 |----------|-------------|
 | `OPENROUTER_API_KEY` | OpenRouter API key |
-| `CHUTES_API_KEY` | Chutes API key |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
-| `RUST_LOG` | Log level (e.g., `info`, `debug`) |
-
-## Dependencies
-
-Recommended `Cargo.toml`:
-
-```toml
-[package]
-name = "my-agent"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-term-sdk = "0.1"
-tokio = { version = "1", features = ["full"] }
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-async-trait = "0.1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[profile.release]
-opt-level = 3
-lto = true
-```

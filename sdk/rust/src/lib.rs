@@ -1,42 +1,72 @@
-//! Term Challenge SDK - Rust
+//! # Term SDK for Rust
 //!
-//! Professional framework for building terminal agents in Rust.
+//! Build agents for Term Challenge.
 //!
-//! # Example
+//! ## Quick Start
 //!
 //! ```rust,no_run
-//! use term_sdk::{Agent, AgentResponse, Command, Harness, log};
-//! use async_trait::async_trait;
-//! use anyhow::Result;
+//! use term_sdk::{Agent, Request, Response, run};
 //!
 //! struct MyAgent;
 //!
-//! #[async_trait]
 //! impl Agent for MyAgent {
-//!     async fn step(&self, instruction: &str, screen: &str, step: u32) -> Result<AgentResponse> {
-//!         log::info("Processing step");
-//!         
-//!         // Your logic here...
-//!         
-//!         log::success("Generated response");
-//!         Ok(AgentResponse::new()
-//!             .with_analysis("Terminal shows prompt")
-//!             .with_plan("Execute ls command")
-//!             .add_command(Command::new("ls -la\n"))
-//!             .with_logs())
+//!     fn solve(&mut self, req: &Request) -> Response {
+//!         if req.step == 1 {
+//!             return Response::cmd("ls -la");
+//!         }
+//!         if req.has("hello") {
+//!             return Response::done();
+//!         }
+//!         Response::cmd("echo hello")
 //!     }
 //! }
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<()> {
-//!     Harness::new(MyAgent).run().await
+//! fn main() {
+//!     run(&mut MyAgent);
+//! }
+//! ```
+//!
+//! ## With LLM
+//!
+//! ```rust,no_run
+//! use term_sdk::{Agent, Request, Response, LLM, run};
+//!
+//! struct LLMAgent {
+//!     llm: LLM,
+//! }
+//!
+//! impl LLMAgent {
+//!     fn new() -> Self {
+//!         Self {
+//!             llm: LLM::new("anthropic/claude-3-haiku"),
+//!         }
+//!     }
+//! }
+//!
+//! impl Agent for LLMAgent {
+//!     fn solve(&mut self, req: &Request) -> Response {
+//!         let prompt = format!(
+//!             "Task: {}\nOutput: {:?}\nReturn JSON: {{\"command\": \"...\", \"task_complete\": false}}",
+//!             req.instruction, req.output
+//!         );
+//!         match self.llm.ask(&prompt) {
+//!             Ok(resp) => Response::from_llm(&resp.text),
+//!             Err(_) => Response::done(),
+//!         }
+//!     }
+//! }
+//!
+//! fn main() {
+//!     run(&mut LLMAgent::new());
 //! }
 //! ```
 
-pub mod harness;
-pub mod llm;
-pub mod protocol;
+mod types;
+mod agent;
+mod runner;
+mod llm;
 
-pub use harness::{Agent, Harness};
-pub use llm::{LLMClient, Provider, ChatResponse, CostTracker, Message};
-pub use protocol::{log, AgentLogger, AgentRequest, AgentResponse, Command, LogEntry, LogLevel, LOGGER};
+pub use types::{Request, Response};
+pub use agent::Agent;
+pub use runner::run;
+pub use llm::{LLM, LLMResponse, Provider};

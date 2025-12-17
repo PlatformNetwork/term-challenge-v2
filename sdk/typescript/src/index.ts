@@ -1,709 +1,454 @@
 /**
- * Term Challenge SDK - TypeScript/JavaScript
+ * Term SDK for TypeScript
  * 
- * Professional framework for building terminal agents.
+ * Build agents for Term Challenge.
  * 
- * @example
+ * @example Quick Start
  * ```typescript
- * import { Agent, AgentResponse, Command, Harness, log } from 'term-sdk';
+ * import { Agent, Request, Response, run } from 'term-sdk';
  * 
- * class MyAgent extends Agent {
- *   async step(instruction: string, screen: string, step: number): Promise<AgentResponse> {
- *     log.info("Processing step", { step });
- *     
- *     // Your logic here...
- *     
- *     log.success("Generated response");
- *     return new AgentResponse({
- *       analysis: "Terminal shows prompt",
- *       plan: "Execute ls command",
- *       commands: [new Command("ls -la\n")],
- *       taskComplete: false
- *     });
+ * class MyAgent implements Agent {
+ *   solve(req: Request): Response {
+ *     if (req.step === 1) return Response.cmd("ls -la");
+ *     if (req.has("hello")) return Response.done();
+ *     return Response.cmd("echo hello");
  *   }
  * }
  * 
- * const agent = new MyAgent();
- * new Harness(agent).run();
+ * run(new MyAgent());
+ * ```
+ * 
+ * @example With LLM
+ * ```typescript
+ * import { Agent, Request, Response, LLM, run } from 'term-sdk';
+ * 
+ * class LLMAgent implements Agent {
+ *   private llm = new LLM({ model: "anthropic/claude-3-haiku" });
+ * 
+ *   async solve(req: Request): Promise<Response> {
+ *     const result = await this.llm.ask(`Task: ${req.instruction}`);
+ *     return Response.fromLLM(result.text);
+ *   }
+ * }
+ * 
+ * run(new LLMAgent());
  * ```
  */
 
 import * as readline from 'readline';
 
-// =============================================================================
-// Agent Logger
-// =============================================================================
-
-export type LogLevel = 'debug' | 'info' | 'success' | 'warning' | 'error';
-
-export interface LogEntry {
-    level: LogLevel;
-    message: string;
-    timestamp: number;
-    data?: Record<string, any>;
-}
-
-/**
- * Logger that captures logs for inclusion in agent responses.
- * 
- * Logs are captured and sent back to the harness for display.
- * Also outputs to stderr for local debugging.
- * 
- * @example
- * ```typescript
- * import { log } from 'term-sdk';
- * 
- * log.info("Starting task");
- * log.debug("Details", { key: "value" });
- * log.success("Task completed!");
- * log.warning("Something might be wrong");
- * log.error("Something failed", { error: e.message });
- * ```
- */
-export class AgentLogger {
-    private entries: LogEntry[] = [];
-    private stepEntries: LogEntry[] = [];
-    private verbose: boolean = true;
-
-    private _log(level: LogLevel, message: string, data?: Record<string, any>): void {
-        const entry: LogEntry = {
-            level,
-            message,
-            timestamp: Date.now() / 1000,
-            data
-        };
-        this.entries.push(entry);
-        this.stepEntries.push(entry);
-
-        // Also output to stderr for local debugging
-        if (this.verbose) {
-            const icons: Record<LogLevel, string> = {
-                debug: '🔍',
-                info: 'ℹ️',
-                success: '✅',
-                warning: '⚠️',
-                error: '❌'
-            };
-            const extra = data ? ' ' + Object.entries(data).map(([k, v]) => `${k}=${v}`).join(' ') : '';
-            console.error(`${icons[level]} [${level.toUpperCase()}] ${message}${extra}`);
-        }
-    }
-
-    debug(message: string, data?: Record<string, any>): void {
-        this._log('debug', message, data);
-    }
-
-    info(message: string, data?: Record<string, any>): void {
-        this._log('info', message, data);
-    }
-
-    success(message: string, data?: Record<string, any>): void {
-        this._log('success', message, data);
-    }
-
-    warning(message: string, data?: Record<string, any>): void {
-        this._log('warning', message, data);
-    }
-
-    warn(message: string, data?: Record<string, any>): void {
-        this.warning(message, data);
-    }
-
-    error(message: string, data?: Record<string, any>): void {
-        this._log('error', message, data);
-    }
-
-    llmRequest(provider: string, model: string, promptTokens: number = 0): void {
-        this._log('info', `LLM request: ${provider}/${model}`, { provider, model, promptTokens });
-    }
-
-    llmResponse(model: string, completionTokens: number, cost: number, latencyMs: number): void {
-        this._log('success', `LLM response: ${completionTokens} tokens, $${cost.toFixed(4)}, ${latencyMs}ms`, 
-            { model, completionTokens, cost, latencyMs });
-    }
-
-    llmError(error: string): void {
-        this._log('error', `LLM error: ${error}`, { error });
-    }
-
-    getStepLogs(): LogEntry[] {
-        const logs = [...this.stepEntries];
-        this.stepEntries = [];
-        return logs;
-    }
-
-    getAllLogs(): LogEntry[] {
-        return [...this.entries];
-    }
-
-    clear(): void {
-        this.entries = [];
-        this.stepEntries = [];
-    }
-
-    setVerbose(verbose: boolean): void {
-        this.verbose = verbose;
-    }
-}
-
-// Global logger instance
-export const log = new AgentLogger();
-
-// =============================================================================
+// ============================================================================
 // Types
-// =============================================================================
+// ============================================================================
 
 /**
- * A command to send to the terminal.
+ * Request from the harness.
  */
-export class Command {
-    /** The exact text to send (include \n to execute) */
-    keystrokes: string;
-    /** Seconds to wait after sending (default 1.0) */
-    duration: number;
-
-    constructor(keystrokes: string, duration: number = 1.0) {
-        this.keystrokes = keystrokes;
-        this.duration = duration;
-    }
-
-    toJSON(): object {
-        return {
-            keystrokes: this.keystrokes,
-            duration: this.duration
-        };
-    }
+export interface RequestData {
+  instruction: string;
+  step: number;
+  last_command: string | null;
+  output: string | null;
+  exit_code: number | null;
+  cwd: string;
 }
 
 /**
- * Request from harness to agent.
+ * Request wrapper with helper methods.
  */
-export interface AgentRequest {
-    instruction: string;
-    screen: string;
-    step: number;
+export class Request {
+  readonly instruction: string;
+  readonly step: number;
+  readonly lastCommand: string | null;
+  readonly output: string | null;
+  readonly exitCode: number | null;
+  readonly cwd: string;
+
+  constructor(data: RequestData) {
+    this.instruction = data.instruction;
+    this.step = data.step;
+    this.lastCommand = data.last_command;
+    this.output = data.output;
+    this.exitCode = data.exit_code;
+    this.cwd = data.cwd || "/app";
+  }
+
+  static parse(json: string): Request {
+    return new Request(JSON.parse(json));
+  }
+
+  /** True if this is the first step */
+  get first(): boolean {
+    return this.step === 1;
+  }
+
+  /** True if last command succeeded */
+  get ok(): boolean {
+    return this.exitCode === 0;
+  }
+
+  /** True if last command failed */
+  get failed(): boolean {
+    return this.exitCode !== null && this.exitCode !== 0;
+  }
+
+  /** Check if output contains any pattern (case-insensitive) */
+  has(...patterns: string[]): boolean {
+    if (!this.output) return false;
+    const lower = this.output.toLowerCase();
+    return patterns.some(p => lower.includes(p.toLowerCase()));
+  }
 }
 
 /**
- * Response from agent to harness.
+ * Response to the harness.
  */
-export class AgentResponse {
-    analysis: string;
-    plan: string;
-    commands: Command[];
-    taskComplete: boolean;
-    logs: LogEntry[];
+export class Response {
+  command: string | null;
+  taskComplete: boolean;
 
-    constructor(options: {
-        analysis?: string;
-        plan?: string;
-        commands?: Command[];
-        taskComplete?: boolean;
-        logs?: LogEntry[];
-    } = {}) {
-        this.analysis = options.analysis ?? '';
-        this.plan = options.plan ?? '';
-        this.commands = options.commands ?? [];
-        this.taskComplete = options.taskComplete ?? false;
-        this.logs = options.logs ?? [];
+  constructor(command: string | null = null, taskComplete = false) {
+    this.command = command;
+    this.taskComplete = taskComplete;
+  }
+
+  /** Create response with command */
+  static cmd(command: string): Response {
+    return new Response(command, false);
+  }
+
+  /** Create response marking task complete */
+  static done(): Response {
+    return new Response(null, true);
+  }
+
+  /** Mark task as complete */
+  complete(): Response {
+    this.taskComplete = true;
+    return this;
+  }
+
+  /** Convert to JSON string */
+  toJSON(): string {
+    return JSON.stringify({
+      command: this.command,
+      task_complete: this.taskComplete,
+    });
+  }
+
+  /** Parse response from LLM output */
+  static fromLLM(text: string): Response {
+    text = text.trim();
+
+    // Remove markdown code blocks
+    const codeMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+    if (codeMatch) {
+      text = codeMatch[1];
     }
 
-    toJSON(): object {
-        const obj: Record<string, any> = {
-            analysis: this.analysis,
-            plan: this.plan,
-            commands: this.commands.map(c => c.toJSON()),
-            task_complete: this.taskComplete
-        };
-        if (this.logs.length > 0) {
-            obj.logs = this.logs;
-        }
-        return obj;
+    // Find JSON object
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+
+    if (start >= 0 && end > start) {
+      try {
+        const data = JSON.parse(text.slice(start, end + 1));
+        return new Response(
+          data.command ?? null,
+          data.task_complete ?? false
+        );
+      } catch {
+        // Invalid JSON
+      }
     }
 
-    static error(message: string): AgentResponse {
-        log.error(message);
-        return new AgentResponse({
-            analysis: `Error: ${message}`,
-            plan: 'Cannot continue due to error',
-            commands: [],
-            taskComplete: false,
-            logs: log.getStepLogs()
-        });
-    }
+    return Response.done();
+  }
 }
 
-// =============================================================================
-// Agent Base Class
-// =============================================================================
+// ============================================================================
+// Agent
+// ============================================================================
 
 /**
- * Base class for Term Challenge agents.
- * 
- * Subclass this and implement the `step` method to create your agent.
- * 
- * @example
- * ```typescript
- * class MyAgent extends Agent {
- *   private client: LLMClient;
- * 
- *   async setup(): Promise<void> {
- *     this.client = new LLMClient({ provider: 'openrouter' });
- *   }
- * 
- *   async step(instruction: string, screen: string, step: number): Promise<AgentResponse> {
- *     const response = await this.client.chat([
- *       { role: 'user', content: `Task: ${instruction}\n\nTerminal:\n${screen}` }
- *     ]);
- *     return this.parseResponse(response.content);
- *   }
- * 
- *   async cleanup(): Promise<void> {
- *     // Clean up resources
- *   }
- * }
- * ```
+ * Agent interface.
  */
-export abstract class Agent {
-    /**
-     * Initialize the agent. Override to set up resources.
-     */
-    async setup(): Promise<void> {
-        // Default: no-op
-    }
-
-    /**
-     * Process one step of the task.
-     * 
-     * @param instruction - The task instruction/goal.
-     * @param screen - Current terminal screen content.
-     * @param step - Current step number (1-indexed).
-     * @returns AgentResponse with analysis, plan, commands, and taskComplete flag.
-     */
-    abstract step(instruction: string, screen: string, step: number): Promise<AgentResponse>;
-
-    /**
-     * Clean up resources. Override to release resources.
-     */
-    async cleanup(): Promise<void> {
-        // Default: no-op
-    }
+export interface Agent {
+  /** Initialize (optional) */
+  setup?(): void | Promise<void>;
+  
+  /** Process request and return response */
+  solve(request: Request): Response | Promise<Response>;
+  
+  /** Cleanup (optional) */
+  cleanup?(): void | Promise<void>;
 }
 
-// =============================================================================
-// Harness
-// =============================================================================
+// ============================================================================
+// Runner
+// ============================================================================
+
+function log(msg: string): void {
+  console.error(`[agent] ${msg}`);
+}
 
 /**
- * Runs an agent in the Term Challenge harness.
- * 
- * The harness handles:
- * - Reading requests from stdin
- * - Calling the agent's step method
- * - Writing responses to stdout
- * - Error handling and logging
- * 
- * @example
- * ```typescript
- * const agent = new MyAgent();
- * const harness = new Harness(agent);
- * harness.run();
- * ```
+ * Run an agent in the Term Challenge harness.
  */
-export class Harness {
-    private agent: Agent;
-    private running: boolean = false;
-    private rl: readline.Interface | null = null;
-
-    constructor(agent: Agent) {
-        this.agent = agent;
+export async function run(agent: Agent): Promise<void> {
+  try {
+    // Setup
+    if (agent.setup) {
+      await agent.setup();
     }
 
-    /**
-     * Run the agent loop (blocking).
-     * 
-     * This is the main entry point. Call this from your script.
-     */
-    async run(): Promise<void> {
-        this.running = true;
-
-        try {
-            // Setup
-            this.log('Setting up agent...');
-            await this.agent.setup();
-            this.log('Agent ready');
-
-            // Run loop
-            await this.processLoop();
-        } catch (error) {
-            this.log(`Fatal error: ${error}`);
-            throw error;
-        } finally {
-            // Cleanup
-            try {
-                await this.agent.cleanup();
-            } catch (error) {
-                this.log(`Cleanup error: ${error}`);
-            }
-            this.close();
-        }
+    // Read input
+    const input = await readStdin();
+    if (!input) {
+      log("No input received");
+      console.log(Response.done().toJSON());
+      return;
     }
 
-    /**
-     * Stop the agent loop.
-     */
-    stop(): void {
-        this.running = false;
-        this.close();
+    // Parse request
+    let request: Request;
+    try {
+      request = Request.parse(input);
+    } catch (e) {
+      log(`Invalid JSON: ${e}`);
+      console.log(Response.done().toJSON());
+      return;
     }
 
-    private close(): void {
-        if (this.rl) {
-            this.rl.close();
-            this.rl = null;
-        }
+    log(`Step ${request.step}: ${request.instruction.slice(0, 50)}...`);
+
+    // Solve
+    const response = await agent.solve(request);
+
+    // Output
+    console.log(response.toJSON());
+
+    // Cleanup
+    if (agent.cleanup) {
+      await agent.cleanup();
     }
-
-    private log(message: string): void {
-        console.error(`[term-sdk] ${message}`);
-    }
-
-    private sendResponse(response: AgentResponse): void {
-        try {
-            console.log(JSON.stringify(response.toJSON()));
-        } catch (error) {
-            this.log(`Failed to send response: ${error}`);
-            console.log(JSON.stringify({
-                analysis: `Error: ${error}`,
-                plan: '',
-                commands: [],
-                task_complete: false
-            }));
-        }
-    }
-
-    private async processLoop(): Promise<void> {
-        // Use synchronous-style line reading to properly block
-        const rl = readline.createInterface({
-            input: process.stdin,
-            terminal: false
-        });
-
-        for await (const line of rl) {
-            if (!this.running) break;
-
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-
-            try {
-                const response = await this.processRequest(trimmed);
-                this.sendResponse(response);
-                
-                // Flush stdout to ensure response is sent immediately
-                if (process.stdout.write) {
-                    await new Promise<void>(resolve => {
-                        if (!process.stdout.write('')) {
-                            process.stdout.once('drain', resolve);
-                        } else {
-                            resolve();
-                        }
-                    });
-                }
-            } catch (error) {
-                this.log(`Error processing request: ${error}`);
-                this.sendResponse(AgentResponse.error(String(error)));
-            }
-        }
-    }
-
-    private async processRequest(line: string): Promise<AgentResponse> {
-        // Parse request
-        let request: AgentRequest;
-        try {
-            request = JSON.parse(line) as AgentRequest;
-        } catch (error) {
-            return AgentResponse.error(`Invalid JSON: ${error}`);
-        }
-
-        const { instruction, screen, step } = request;
-        log.info(`Step ${step}: Processing...`);
-
-        // Call agent
-        const response = await this.agent.step(instruction, screen, step);
-
-        // Attach logs to response
-        if (response.logs.length === 0) {
-            response.logs = log.getStepLogs();
-        }
-
-        log.info(`Step ${step}: Complete`, { taskComplete: response.taskComplete });
-        return response;
-    }
+  } catch (e) {
+    log(`Error: ${e}`);
+    console.log(Response.done().toJSON());
+  }
 }
 
-// =============================================================================
+async function readStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => { data += chunk; });
+    process.stdin.on('end', () => resolve(data.trim()));
+    
+    // Handle no input
+    setTimeout(() => {
+      if (!data) resolve('');
+    }, 100);
+  });
+}
+
+// ============================================================================
 // LLM Client
-// =============================================================================
+// ============================================================================
 
-export type Provider = 'openrouter' | 'chutes' | 'openai' | 'anthropic' | 'custom';
+export type Provider = 'openrouter' | 'openai' | 'anthropic';
+
+export interface LLMOptions {
+  provider?: Provider;
+  model?: string;
+  apiKey?: string;
+  temperature?: number;
+  maxTokens?: number;
+  timeout?: number;
+}
+
+export interface LLMResponse {
+  text: string;
+  model: string;
+  tokens: number;
+  cost: number;
+  latencyMs: number;
+}
 
 export interface Message {
-    role: 'system' | 'user' | 'assistant';
-    content: string;
+  role: 'system' | 'user' | 'assistant';
+  content: string;
 }
 
-export interface ChatResponse {
-    content: string;
-    model: string;
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-    cost: number;
-    latencyMs: number;
-}
-
-export interface LLMClientOptions {
-    provider?: Provider;
-    apiKey?: string;
-    model?: string;
-    baseUrl?: string;
-    budget?: number;
-    timeout?: number;
-}
-
-const PROVIDER_CONFIG: Record<string, { baseUrl: string; envKey: string; defaultModel: string }> = {
-    openrouter: {
-        baseUrl: 'https://openrouter.ai/api/v1',
-        envKey: 'OPENROUTER_API_KEY',
-        defaultModel: 'anthropic/claude-3-haiku'
-    },
-    chutes: {
-        baseUrl: 'https://llm.chutes.ai/v1',
-        envKey: 'CHUTES_API_KEY',
-        defaultModel: 'Qwen/Qwen3-32B'
-    },
-    openai: {
-        baseUrl: 'https://api.openai.com/v1',
-        envKey: 'OPENAI_API_KEY',
-        defaultModel: 'gpt-4o-mini'
-    },
-    anthropic: {
-        baseUrl: 'https://api.anthropic.com/v1',
-        envKey: 'ANTHROPIC_API_KEY',
-        defaultModel: 'claude-3-haiku-20240307'
-    }
+const PROVIDER_CONFIG = {
+  openrouter: {
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    envKey: 'OPENROUTER_API_KEY',
+  },
+  openai: {
+    url: 'https://api.openai.com/v1/chat/completions',
+    envKey: 'OPENAI_API_KEY',
+  },
+  anthropic: {
+    url: 'https://api.anthropic.com/v1/messages',
+    envKey: 'ANTHROPIC_API_KEY',
+  },
 };
 
-const MODEL_PRICING: Record<string, [number, number]> = {
-    'anthropic/claude-3-haiku': [0.25, 1.25],
-    'anthropic/claude-3-sonnet': [3.0, 15.0],
-    'anthropic/claude-sonnet-4': [3.0, 15.0],
-    'openai/gpt-4o-mini': [0.15, 0.60],
-    'gpt-4o-mini': [0.15, 0.60],
-    'Qwen/Qwen3-32B': [0.10, 0.30]
+const PRICING: Record<string, [number, number]> = {
+  'anthropic/claude-3-haiku': [0.25, 1.25],
+  'anthropic/claude-3-sonnet': [3.0, 15.0],
+  'anthropic/claude-3-opus': [15.0, 75.0],
+  'openai/gpt-4o': [5.0, 15.0],
+  'openai/gpt-4o-mini': [0.15, 0.6],
+  'gpt-4o': [5.0, 15.0],
+  'gpt-4o-mini': [0.15, 0.6],
 };
 
 /**
- * Multi-provider LLM client with cost tracking.
+ * LLM client for multiple providers.
  */
-export class LLMClient {
-    private provider: Provider;
-    private apiKey: string;
-    private baseUrl: string;
-    model: string;
-    private timeout: number;
-    private budget: number | null;
+export class LLM {
+  private provider: Provider;
+  private model: string;
+  private apiKey: string;
+  private temperature: number;
+  private maxTokens: number;
+  private timeout: number;
+
+  totalTokens = 0;
+  totalCost = 0;
+  requestCount = 0;
+
+  constructor(options: LLMOptions = {}) {
+    this.provider = options.provider || 'openrouter';
+    this.model = options.model || 'anthropic/claude-3-haiku';
+    this.temperature = options.temperature ?? 0.3;
+    this.maxTokens = options.maxTokens ?? 1024;
+    this.timeout = options.timeout ?? 60000;
+
+    const config = PROVIDER_CONFIG[this.provider];
+    this.apiKey = options.apiKey || process.env[config.envKey] || '';
     
-    totalCost: number = 0;
-    totalTokens: number = 0;
-    requestCount: number = 0;
-
-    constructor(options: LLMClientOptions = {}) {
-        this.provider = options.provider ?? 'openrouter';
-        
-        const config = PROVIDER_CONFIG[this.provider] ?? PROVIDER_CONFIG.openrouter;
-        
-        this.baseUrl = options.baseUrl ?? config.baseUrl;
-        this.model = options.model ?? config.defaultModel;
-        this.timeout = options.timeout ?? 300000;
-        this.budget = options.budget ?? null;
-        
-        // Get API key
-        this.apiKey = options.apiKey ?? process.env[config.envKey] ?? process.env.LLM_API_KEY ?? '';
-        
-        if (!this.apiKey) {
-            throw new Error(`API key required. Set ${config.envKey} or pass apiKey option.`);
-        }
+    if (!this.apiKey) {
+      console.error(`[llm] Warning: ${config.envKey} not set`);
     }
+  }
 
-    /**
-     * Send a chat completion request.
-     */
-    async chat(
-        messages: Message[],
-        options: {
-            model?: string;
-            temperature?: number;
-            maxTokens?: number;
-        } = {}
-    ): Promise<ChatResponse> {
-        // Check budget
-        if (this.budget !== null && this.totalCost >= this.budget) {
-            throw new Error(`Over budget: $${this.totalCost.toFixed(4)} >= $${this.budget.toFixed(4)}`);
-        }
+  /** Ask a simple question */
+  async ask(prompt: string, system?: string): Promise<LLMResponse> {
+    const messages: Message[] = [];
+    if (system) messages.push({ role: 'system', content: system });
+    messages.push({ role: 'user', content: prompt });
+    return this.chat(messages);
+  }
 
-        const model = options.model ?? this.model;
-        const url = `${this.baseUrl}/chat/completions`;
+  /** Chat with messages */
+  async chat(messages: Message[]): Promise<LLMResponse> {
+    const start = Date.now();
 
-        const start = Date.now();
+    const response = this.provider === 'anthropic'
+      ? await this.chatAnthropic(messages)
+      : await this.chatOpenAI(messages);
 
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.apiKey}`,
-                'Content-Type': 'application/json',
-                'HTTP-Referer': 'https://term-challenge.ai'
-            },
-            body: JSON.stringify({
-                model,
-                messages,
-                temperature: options.temperature ?? 0.7,
-                max_tokens: options.maxTokens ?? 4096
-            }),
-            signal: AbortSignal.timeout(this.timeout)
-        });
+    response.latencyMs = Date.now() - start;
 
-        if (!response.ok) {
-            throw new Error(`API error: ${response.status} ${response.statusText}`);
-        }
+    this.totalTokens += response.tokens;
+    this.totalCost += response.cost;
+    this.requestCount++;
 
-        const result = await response.json() as any;
-        const latencyMs = Date.now() - start;
+    console.error(`[llm] ${response.model}: ${response.tokens} tokens, $${response.cost.toFixed(4)}, ${response.latencyMs}ms`);
 
-        // Parse response
-        let content = result.choices[0].message.content;
-        
-        // Remove <think> blocks (Qwen)
-        content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    return response;
+  }
 
-        // Get usage
-        const usage = result.usage ?? {};
-        const promptTokens = usage.prompt_tokens ?? 0;
-        const completionTokens = usage.completion_tokens ?? 0;
-        const totalTokens = usage.total_tokens ?? (promptTokens + completionTokens);
+  private async chatOpenAI(messages: Message[]): Promise<LLMResponse> {
+    const config = PROVIDER_CONFIG[this.provider];
 
-        // Calculate cost
-        const pricing = MODEL_PRICING[model] ?? [0.5, 1.5];
-        const cost = (promptTokens / 1_000_000) * pricing[0] + (completionTokens / 1_000_000) * pricing[1];
-
-        // Track
-        this.totalCost += cost;
-        this.totalTokens += totalTokens;
-        this.requestCount++;
-
-        return {
-            content,
-            model,
-            promptTokens,
-            completionTokens,
-            totalTokens,
-            cost,
-            latencyMs
-        };
-    }
-}
-
-// =============================================================================
-// JSON Parser Utilities
-// =============================================================================
-
-/**
- * Parse JSON from LLM response with fallback regex parsing.
- * Handles malformed JSON that LLMs sometimes produce.
- */
-export function parseJsonResponse(content: string): Record<string, any> {
-    // Find JSON in response
-    const start = content.indexOf('{');
-    const end = content.lastIndexOf('}');
-
-    if (start < 0 || end <= start) {
-        throw new Error('No JSON found in response');
-    }
-
-    const jsonStr = content.slice(start, end + 1);
-
-    // Try standard JSON parse first
-    try {
-        return JSON.parse(jsonStr);
-    } catch {
-        // Fallback: extract fields using regex
-        const analysisMatch = jsonStr.match(/"analysis"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-        const planMatch = jsonStr.match(/"plan"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-        const taskCompleteMatch = jsonStr.match(/"task_complete"\s*:\s*(true|false)/);
-        const commandsMatch = jsonStr.match(/"commands"\s*:\s*\[([\s\S]*?)\]/);
-
-        const result: Record<string, any> = {
-            analysis: analysisMatch ? unescapeString(analysisMatch[1]) : '',
-            plan: planMatch ? unescapeString(planMatch[1]) : '',
-            task_complete: taskCompleteMatch ? taskCompleteMatch[1] === 'true' : false,
-            commands: []
-        };
-
-        // Parse commands
-        if (commandsMatch) {
-            const cmdRegex = /\{\s*"keystrokes"\s*:\s*"((?:[^"\\]|\\.)*)"\s*(?:,\s*"duration"\s*:\s*([\d.]+))?\s*\}/g;
-            let cmdMatch;
-            while ((cmdMatch = cmdRegex.exec(commandsMatch[1])) !== null) {
-                result.commands.push({
-                    keystrokes: unescapeString(cmdMatch[1]),
-                    duration: cmdMatch[2] ? parseFloat(cmdMatch[2]) : 1.0
-                });
-            }
-        }
-
-        return result;
-    }
-}
-
-function unescapeString(s: string): string {
-    return s
-        .replace(/\\n/g, '\n')
-        .replace(/\\t/g, '\t')
-        .replace(/\\r/g, '\r')
-        .replace(/\\"/g, '"')
-        .replace(/\\\\/g, '\\');
-}
-
-// =============================================================================
-// Convenience Function
-// =============================================================================
-
-/**
- * Run an agent in the harness.
- * 
- * @example
- * ```typescript
- * run(new MyAgent());
- * ```
- */
-export function run(agent: Agent): void {
-    new Harness(agent).run().catch(error => {
-        console.error(`Fatal error: ${error}`);
-        process.exit(1);
+    const response = await fetch(config.url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: this.model,
+        messages,
+        temperature: this.temperature,
+        max_tokens: this.maxTokens,
+      }),
+      signal: AbortSignal.timeout(this.timeout),
     });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    const data = await response.json() as any;
+    const text = data.choices?.[0]?.message?.content || '';
+    const promptTokens = data.usage?.prompt_tokens || 0;
+    const completionTokens = data.usage?.completion_tokens || 0;
+
+    return {
+      text,
+      model: this.model,
+      tokens: promptTokens + completionTokens,
+      cost: this.calculateCost(promptTokens, completionTokens),
+      latencyMs: 0,
+    };
+  }
+
+  private async chatAnthropic(messages: Message[]): Promise<LLMResponse> {
+    const config = PROVIDER_CONFIG.anthropic;
+
+    let system: string | undefined;
+    const userMessages = messages.filter(m => {
+      if (m.role === 'system') {
+        system = m.content;
+        return false;
+      }
+      return true;
+    });
+
+    const body: any = {
+      model: this.model,
+      messages: userMessages,
+      temperature: this.temperature,
+      max_tokens: this.maxTokens,
+    };
+    if (system) body.system = system;
+
+    const response = await fetch(config.url, {
+      method: 'POST',
+      headers: {
+        'x-api-key': this.apiKey,
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.timeout),
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    const data = await response.json() as any;
+    const text = data.content?.[0]?.text || '';
+    const promptTokens = data.usage?.input_tokens || 0;
+    const completionTokens = data.usage?.output_tokens || 0;
+
+    return {
+      text,
+      model: this.model,
+      tokens: promptTokens + completionTokens,
+      cost: this.calculateCost(promptTokens, completionTokens),
+      latencyMs: 0,
+    };
+  }
+
+  private calculateCost(promptTokens: number, completionTokens: number): number {
+    const [inputPrice, outputPrice] = PRICING[this.model] || [0.5, 1.5];
+    return (promptTokens * inputPrice + completionTokens * outputPrice) / 1_000_000;
+  }
 }
-
-// =============================================================================
-// Exports
-// =============================================================================
-
-export default {
-    Agent,
-    AgentResponse,
-    Command,
-    Harness,
-    LLMClient,
-    run,
-    log,
-    AgentLogger
-};

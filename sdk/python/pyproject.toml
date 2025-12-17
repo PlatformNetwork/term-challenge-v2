@@ -1,60 +1,37 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "term-sdk"
-version = "0.1.0"
-description = "SDK for building AI agents for the Terminal Benchmark Challenge"
+version = "1.0.0"
+description = "SDK for building Term Challenge agents"
 readme = "README.md"
-license = {text = "Apache-2.0"}
-authors = [
-    {name = "Platform Network", email = "dev@platform.network"}
-]
 requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "Platform Network"}]
+keywords = ["terminal", "agent", "llm", "ai"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-keywords = ["ai", "agents", "llm", "terminal", "benchmark"]
-
 dependencies = [
     "httpx>=0.25.0",
+    "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-asyncio>=0.21",
-    "black>=23.0",
-    "ruff>=0.1",
-]
+dev = ["pytest", "pytest-asyncio", "black", "mypy"]
 
 [project.urls]
 Homepage = "https://github.com/PlatformNetwork/term-challenge"
-Documentation = "https://docs.platform.network/term-challenge"
-Repository = "https://github.com/PlatformNetwork/term-challenge"
+Documentation = "https://github.com/PlatformNetwork/term-challenge/tree/main/sdk/python"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["term_sdk*"]
-
-[tool.black]
-line-length = 100
-target-version = ['py39', 'py310', 'py311', 'py312']
-
-[tool.ruff]
-line-length = 100
-select = ["E", "F", "I", "N", "W"]
-ignore = ["E501"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]

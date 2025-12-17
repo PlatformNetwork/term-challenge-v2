@@ -1,154 +1,102 @@
 """
-Agent runner - Communicates with the Rust harness via stdin/stdout
-
-Usage:
-    from term_sdk.runner import run_agent_loop
-    from term_sdk import Agent, AgentResponse
-    
-    class MyAgent(Agent):
-        async def step(self, task: str, screen: str) -> AgentResponse:
-            ...
-    
-    if __name__ == "__main__":
-        run_agent_loop(MyAgent())
+Agent runner for Term Challenge.
 """
 
 import sys
 import json
-import asyncio
-from typing import TYPE_CHECKING
-from dataclasses import asdict
-
-if TYPE_CHECKING:
-    from .agent import Agent
-    from .protocol import AgentResponse
+import traceback
+from .types import Request, Response
+from .agent import Agent
 
 
-def run_agent_loop(agent: "Agent"):
+def log(msg: str) -> None:
+    """Log to stderr (stdout is reserved for protocol)."""
+    print(f"[agent] {msg}", file=sys.stderr)
+
+
+def run(agent: Agent) -> None:
     """
-    Run the agent in a loop, communicating with the harness via stdin/stdout.
+    Run an agent in the Term Challenge harness.
     
-    Protocol:
-    - Receives JSON on stdin: {"instruction": "...", "screen": "...", "step": 1}
-    - Sends JSON on stdout: {"analysis": "...", "plan": "...", "commands": [...], "task_complete": false}
-    """
-    asyncio.run(_run_agent_loop_async(agent))
-
-
-async def _run_agent_loop_async(agent: "Agent"):
-    """Async implementation of agent loop"""
+    This reads requests from stdin and writes responses to stdout.
     
-    # Setup agent
-    try:
-        await agent.setup()
-    except Exception as e:
-        print(json.dumps({
-            "error": f"Agent setup failed: {e}",
-            "analysis": "Setup error",
-            "plan": "Cannot continue",
-            "commands": [],
-            "task_complete": True
-        }), flush=True)
-        return
+    Args:
+        agent: Your agent instance
     
-    # Main loop - read from stdin, process, write to stdout
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+    Example:
+        ```python
+        from term_sdk import Agent, Request, Response, run
         
-        try:
-            # Parse request
-            request = json.loads(line)
-            instruction = request.get("instruction", "")
-            screen = request.get("screen", "")
-            step = request.get("step", 1)
-            
-            # Call agent step
-            response = await agent.step(instruction, screen, step)
-            
-            # Convert response to dict
-            if hasattr(response, 'to_dict'):
-                response_dict = response.to_dict()
-            elif hasattr(response, '__dataclass_fields__'):
-                response_dict = asdict(response)
-            else:
-                response_dict = dict(response)
-            
-            # Ensure required fields
-            response_dict.setdefault("analysis", "")
-            response_dict.setdefault("plan", "")
-            response_dict.setdefault("commands", [])
-            response_dict.setdefault("task_complete", False)
-            
-            # Convert commands
-            commands = []
-            for cmd in response_dict.get("commands", []):
-                if hasattr(cmd, 'to_dict'):
-                    commands.append(cmd.to_dict())
-                elif hasattr(cmd, '__dataclass_fields__'):
-                    commands.append(asdict(cmd))
-                elif isinstance(cmd, dict):
-                    commands.append(cmd)
-                else:
-                    commands.append({"keystrokes": str(cmd), "duration": 1.0})
-            response_dict["commands"] = commands
-            
-            # Output response
-            print(json.dumps(response_dict), flush=True)
-            
-        except json.JSONDecodeError as e:
-            print(json.dumps({
-                "analysis": f"JSON parse error: {e}",
-                "plan": "Invalid request",
-                "commands": [],
-                "task_complete": False
-            }), flush=True)
-        except Exception as e:
-            print(json.dumps({
-                "analysis": f"Agent error: {e}",
-                "plan": "Error occurred",
-                "commands": [],
-                "task_complete": False
-            }), flush=True)
+        class MyAgent(Agent):
+            def solve(self, req: Request) -> Response:
+                return Response.cmd("ls")
+        
+        if __name__ == "__main__":
+            run(MyAgent())
+        ```
+    """
+    try:
+        # Setup
+        agent.setup()
+        
+        # Read single request from stdin
+        input_data = sys.stdin.read().strip()
+        if not input_data:
+            log("No input received")
+            return
+        
+        # Parse request
+        request = Request.parse(input_data)
+        log(f"Step {request.step}: {request.instruction[:50]}...")
+        
+        # Solve
+        response = agent.solve(request)
+        
+        # Output response
+        print(response.to_json(), flush=True)
+        
+        # Cleanup
+        agent.cleanup()
+        
+    except json.JSONDecodeError as e:
+        log(f"Invalid JSON: {e}")
+        print(Response.done().to_json())
+    except Exception as e:
+        log(f"Error: {e}")
+        traceback.print_exc(file=sys.stderr)
+        print(Response.done().to_json())
 
 
-def main():
-    """Entry point for running agent from command line"""
-    import argparse
+def run_loop(agent: Agent) -> None:
+    """
+    Run agent in continuous loop mode (for testing).
     
-    parser = argparse.ArgumentParser(description="Run a Term Challenge agent")
-    parser.add_argument("agent_module", help="Agent module path (e.g., my_agent:MyAgent)")
-    args = parser.parse_args()
-    
-    # Import agent
-    if ":" in args.agent_module:
-        module_path, class_name = args.agent_module.rsplit(":", 1)
-    else:
-        module_path = args.agent_module
-        class_name = "Agent"
-    
-    import importlib.util
-    import os
-    
-    # Load module
-    if os.path.isfile(module_path) or os.path.isfile(module_path + ".py"):
-        # Load from file
-        file_path = module_path if module_path.endswith(".py") else module_path + ".py"
-        spec = importlib.util.spec_from_file_location("agent_module", file_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    else:
-        # Load from package
-        module = importlib.import_module(module_path)
-    
-    # Get agent class
-    agent_class = getattr(module, class_name)
-    agent = agent_class()
-    
-    # Run loop
-    run_agent_loop(agent)
-
-
-if __name__ == "__main__":
-    main()
+    Reads multiple requests, one per line.
+    """
+    try:
+        agent.setup()
+        
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            
+            try:
+                request = Request.parse(line)
+                response = agent.solve(request)
+                print(response.to_json(), flush=True)
+                
+                if response.task_complete:
+                    break
+            except Exception as e:
+                log(f"Error: {e}")
+                print(Response.done().to_json(), flush=True)
+                break
+        
+        agent.cleanup()
+        
+    except KeyboardInterrupt:
+        log("Interrupted")
+    except Exception as e:
+        log(f"Fatal: {e}")
+        traceback.print_exc(file=sys.stderr)

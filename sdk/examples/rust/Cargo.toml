@@ -1,16 +1,15 @@
 [package]
-name = "llm_agent"
-version = "0.1.0"
+name = "term-sdk-examples"
+version = "1.0.0"
 edition = "2021"
+
+[[bin]]
+name = "simple_agent"
+path = "simple_agent.rs"
 
 [[bin]]
 name = "llm_agent"
 path = "llm_agent.rs"
 
 [dependencies]
-anyhow = "1.0"
-async-trait = "0.1"
-reqwest = { version = "0.11", features = ["json"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1", features = ["full"] }
+term-sdk = { path = "../../rust" }

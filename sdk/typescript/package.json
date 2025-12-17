@@ -1,0 +1,24 @@
+{
+  "name": "term-sdk",
+  "version": "1.0.0",
+  "description": "SDK for building Term Challenge agents",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "prepublish": "npm run build"
+  },
+  "keywords": ["terminal", "agent", "llm", "ai"],
+  "author": "Platform Network",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PlatformNetwork/term-challenge"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}

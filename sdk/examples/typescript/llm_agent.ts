@@ -1,170 +1,62 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env npx ts-node
 /**
- * LLM Agent - Professional terminal agent powered by LLM.
+ * LLM-powered agent example.
  * 
- * Usage:
- *   export OPENROUTER_API_KEY="sk-or-..."
- *   npx tsx llm_agent.ts
- * 
- *   # Or with term CLI:
- *   term bench agent -a ./llm_agent.ts -t ~/.cache/term-challenge/datasets/hello-world
+ * Set OPENROUTER_API_KEY environment variable before running.
  */
+import { Agent, Request, Response, LLM, run } from '../../typescript/src/index.js';
 
-import { Agent, AgentResponse, Command, Harness, LLMClient, Message, parseJsonResponse } from '../../typescript/src/index.ts';
+const SYSTEM_PROMPT = `You are a terminal agent. Complete tasks using shell commands.
 
-// =============================================================================
-// System Prompt
-// =============================================================================
+Rules:
+1. Execute one command at a time
+2. Check command output before proceeding
+3. Use exit codes to detect errors (0 = success)
+4. Set task_complete=true only when verified complete
 
-const SYSTEM_PROMPT = `You are an expert terminal agent. Your goal is to complete tasks using only terminal commands.
+Respond with JSON:
+{"command": "shell command here", "task_complete": false}
 
-## Response Format
+When done:
+{"command": null, "task_complete": true}`;
 
-Respond with JSON only:
-\`\`\`json
-{
-  "analysis": "What you observe in the terminal",
-  "plan": "Your step-by-step plan",
-  "commands": [
-    {"keystrokes": "your_command\\n", "duration": 1.0}
-  ],
-  "task_complete": false
-}
-\`\`\`
+class LLMAgent implements Agent {
+  private llm = new LLM({ model: "anthropic/claude-3-haiku" });
+  private history: string[] = [];
 
-## Rules
+  async solve(req: Request): Promise<Response> {
+    // Build context
+    const context = `Task: ${req.instruction}
 
-1. **Commands**: Include \`\\n\` at the end to execute commands
-2. **Duration**: Use longer durations (5-30s) for slow operations
-3. **Verification**: Always verify your work before setting task_complete=true
-4. **One step at a time**: Execute one logical operation per response
+Step: ${req.step}
+Working Directory: ${req.cwd}
+Last Command: ${req.lastCommand}
+Exit Code: ${req.exitCode}
+Output:
+${req.output || "(no output)"}
+`;
 
-## Special Keys
-
-- \`\\n\` = Enter
-- \`\\t\` = Tab
-- \`\\x03\` = Ctrl+C
-- \`\\x04\` = Ctrl+D`;
-
-// =============================================================================
-// LLM Agent
-// =============================================================================
-
-class LLMAgent extends Agent {
-    private client: LLMClient | null = null;
-    private conversationHistory: Message[] = [];
-
-    async setup(): Promise<void> {
-        const provider = (process.env.LLM_PROVIDER ?? 'openrouter') as 'openrouter' | 'chutes';
-        const model = process.env.LLM_MODEL;
-        const budget = parseFloat(process.env.LLM_BUDGET ?? '10.0');
-
-        this.client = new LLMClient({
-            provider,
-            model,
-            budget
-        });
-
-        console.error(`[LLMAgent] Initialized: ${provider}/${this.client.model}`);
+    // Keep history manageable
+    this.history.push(`Step ${req.step}:\n${context}`);
+    if (this.history.length > 5) {
+      this.history = this.history.slice(-5);
     }
 
-    async step(instruction: string, screen: string, step: number): Promise<AgentResponse> {
-        if (!this.client) {
-            return AgentResponse.error('Client not initialized');
-        }
+    // Call LLM
+    const prompt = this.history.join("\n---\n") + "\n\nYour response (JSON):";
 
-        // Build prompt
-        const userMessage = `## Task
-${instruction}
-
-## Terminal (Step ${step})
-\`\`\`
-${screen}
-\`\`\`
-
-Analyze the terminal and respond with JSON for your next action.`;
-
-        // Build messages
-        const messages: Message[] = [
-            { role: 'system', content: SYSTEM_PROMPT },
-            ...this.conversationHistory,
-            { role: 'user', content: userMessage }
-        ];
-
-        try {
-            // Call LLM
-            const response = await this.client.chat(messages, {
-                temperature: 0.7,
-                maxTokens: 2048
-            });
-
-            console.error(
-                `[LLMAgent] Step ${step}: ${response.totalTokens} tokens, ` +
-                `$${response.cost.toFixed(4)} (total: $${this.client.totalCost.toFixed(4)})`
-            );
-
-            // Update history (keep last 10 exchanges)
-            this.conversationHistory.push({ role: 'user', content: userMessage });
-            this.conversationHistory.push({ role: 'assistant', content: response.content });
-            if (this.conversationHistory.length > 20) {
-                this.conversationHistory = this.conversationHistory.slice(-20);
-            }
-
-            // Parse response
-            return this.parseResponse(response.content);
-
-        } catch (error) {
-            console.error(`[LLMAgent] Error: ${error}`);
-            return AgentResponse.error(String(error));
-        }
+    try {
+      const result = await this.llm.ask(prompt, SYSTEM_PROMPT);
+      return Response.fromLLM(result.text);
+    } catch (e) {
+      console.error(`LLM error: ${e}`);
+      return Response.done();
     }
+  }
 
-    async cleanup(): Promise<void> {
-        if (this.client) {
-            console.error(
-                `[LLMAgent] Session complete: ${this.client.requestCount} requests, ` +
-                `$${this.client.totalCost.toFixed(4)} total`
-            );
-        }
-    }
-
-    private parseResponse(content: string): AgentResponse {
-        try {
-            const data = parseJsonResponse(content);
-
-            // Parse commands
-            const commands: Command[] = (data.commands ?? []).map((cmd: any) => {
-                if (typeof cmd === 'object') {
-                    return new Command(cmd.keystrokes ?? '', cmd.duration ?? 1.0);
-                }
-                return new Command(String(cmd));
-            });
-
-            return new AgentResponse({
-                analysis: data.analysis ?? '',
-                plan: data.plan ?? '',
-                commands,
-                taskComplete: Boolean(data.task_complete)
-            });
-
-        } catch (error) {
-            console.error(`[LLMAgent] Parse error: ${error}`);
-            return new AgentResponse({
-                analysis: `Failed to parse response: ${error}`,
-                plan: content.slice(0, 500),
-                commands: [],
-                taskComplete: false
-            });
-        }
-    }
+  cleanup(): void {
+    console.error(`Total cost: $${this.llm.totalCost.toFixed(4)}`);
+  }
 }
 
-// =============================================================================
-// Main
-// =============================================================================
-
-const agent = new LLMAgent();
-new Harness(agent).run().catch(error => {
-    console.error(`Fatal error: ${error}`);
-    process.exit(1);
-});
+run(new LLMAgent());
