@@ -86,4 +86,4 @@ mod llm;
 pub use types::{Request, Response, Tool, FunctionCall};
 pub use agent::Agent;
 pub use runner::run;
-pub use llm::{LLM, LLMResponse, Message};
+pub use llm::{LLM, LLMResponse, LLMError, Message};

@@ -209,6 +209,46 @@ async function readStdin(): Promise<string> {
 }
 
 // ============================================================================
+// LLM Errors
+// ============================================================================
+
+export interface LLMErrorDetails {
+  httpStatus?: number;
+  model?: string;
+  provider?: string;
+  rawError?: string;
+  validProviders?: string[];
+  hint?: string;
+  registeredFunctions?: string[];
+}
+
+export class LLMError extends Error {
+  code: string;
+  details: LLMErrorDetails;
+
+  constructor(code: string, message: string, details: LLMErrorDetails = {}) {
+    super(JSON.stringify({ error: { code, message, details } }));
+    this.name = 'LLMError';
+    this.code = code;
+    this.details = details;
+  }
+
+  toJSON(): { error: { code: string; message: string; details: LLMErrorDetails } } {
+    return {
+      error: {
+        code: this.code,
+        message: this.message,
+        details: this.details,
+      }
+    };
+  }
+
+  toString(): string {
+    return `LLMError(${this.code}): ${this.message}`;
+  }
+}
+
+// ============================================================================
 // LLM Client with Streaming
 // ============================================================================
 
@@ -316,6 +356,11 @@ export class LLM {
     this.timeout = options.timeout ?? 120000;
 
     const config = PROVIDERS[this.provider];
+    if (!config) {
+      throw new LLMError('invalid_provider', `Unknown provider: ${this.provider}`, {
+        validProviders: Object.keys(PROVIDERS),
+      });
+    }
     this.apiUrl = process.env.LLM_API_URL || config.url;
     this.apiKey = process.env.LLM_API_KEY || process.env[config.envKey] || '';
 
@@ -327,7 +372,9 @@ export class LLM {
   private getModel(model?: string): string {
     if (model) return model;
     if (this.defaultModel) return this.defaultModel;
-    throw new Error("No model specified");
+    throw new LLMError('no_model', 'No model specified', {
+      hint: 'Pass model option or set defaultModel in LLM constructor',
+    });
   }
 
   registerFunction(name: string, handler: FunctionHandler): void {
@@ -373,7 +420,9 @@ export class LLM {
       signal: AbortSignal.timeout(this.timeout),
     });
 
-    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    if (!response.ok) {
+      await this.handleApiError(response, model);
+    }
 
     const data = await response.json() as any;
     return this.parseResponse(data, model, start);
@@ -396,8 +445,12 @@ export class LLM {
       body: JSON.stringify(payload),
     });
 
-    if (!response.ok) throw new Error(`API error: ${response.status}`);
-    if (!response.body) throw new Error("No response body");
+    if (!response.ok) {
+      await this.handleApiError(response, model);
+    }
+    if (!response.body) {
+      throw new LLMError('no_response_body', 'No response body from API', { model, provider: this.provider });
+    }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -473,8 +526,66 @@ export class LLM {
 
   async executeFunction(call: FunctionCall): Promise<any> {
     const handler = this.functionHandlers.get(call.name);
-    if (!handler) throw new Error(`Unknown function: ${call.name}`);
+    if (!handler) {
+      throw new LLMError('unknown_function', `Function '${call.name}' not registered`, {
+        registeredFunctions: Array.from(this.functionHandlers.keys()),
+      });
+    }
     return handler(call.arguments);
+  }
+
+  private async handleApiError(response: Response, model: string): Promise<never> {
+    const status = response.status;
+    let errorMessage = '';
+    let errorType = 'api_error';
+
+    try {
+      const body = await response.json() as any;
+      errorMessage = body.error?.message || response.statusText;
+      errorType = body.error?.type || 'api_error';
+    } catch {
+      errorMessage = response.statusText || 'Unknown error';
+    }
+
+    let code: string;
+    let message: string;
+
+    switch (status) {
+      case 401:
+        code = 'authentication_error';
+        message = 'Invalid API key';
+        break;
+      case 403:
+        code = 'permission_denied';
+        message = 'Access denied for this model or endpoint';
+        break;
+      case 404:
+        code = 'not_found';
+        message = `Model '${model}' not found`;
+        break;
+      case 429:
+        code = 'rate_limit';
+        message = 'Rate limit exceeded';
+        break;
+      case 500:
+        code = 'server_error';
+        message = 'Provider server error';
+        break;
+      case 503:
+        code = 'service_unavailable';
+        message = 'Provider service temporarily unavailable';
+        break;
+      default:
+        code = errorType;
+        message = errorMessage;
+    }
+
+    throw new LLMError(code, message, {
+      httpStatus: status,
+      model,
+      provider: this.provider,
+      rawError: errorMessage,
+    });
   }
 
   private parseResponse(data: any, model: string, start: number): LLMResponse {

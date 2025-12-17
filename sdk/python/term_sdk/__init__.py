@@ -61,7 +61,7 @@ __version__ = "1.0.0"
 from .types import Request, Response, Tool, FunctionCall
 from .agent import Agent
 from .runner import run
-from .llm import LLM, LLMResponse
+from .llm import LLM, LLMResponse, LLMError
 
 __all__ = [
     "Request",
@@ -70,6 +70,7 @@ __all__ = [
     "run",
     "LLM",
     "LLMResponse",
+    "LLMError",
     "Tool",
     "FunctionCall",
 ]

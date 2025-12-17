@@ -5,7 +5,7 @@ Supports OpenRouter and Chutes providers with streaming.
 
 Example:
     ```python
-    from term_sdk import LLM
+    from term_sdk import LLM, LLMError
     
     llm = LLM()
     
@@ -16,13 +16,13 @@ Example:
     for chunk in llm.stream("Write a story", model="claude-3-haiku"):
         print(chunk, end="", flush=True)
     
-    # Stream with callback
-    def on_chunk(text):
-        if "error" in text.lower():
-            return False  # Stop streaming
-        return True
-    
-    result = llm.ask_stream("Solve this", model="gpt-4o", on_chunk=on_chunk)
+    # Error handling
+    try:
+        result = llm.ask("Question", model="claude-3-haiku")
+    except LLMError as e:
+        print(f"Code: {e.code}")
+        print(f"Message: {e.message}")
+        print(f"Details: {e.details}")
     ```
 """
 
@@ -35,6 +35,46 @@ from typing import Optional, List, Dict, Any, Callable, Iterator, Union
 import httpx
 
 from .types import Tool, FunctionCall
+
+
+class LLMError(Exception):
+    """
+    Structured LLM error with JSON details.
+    
+    Attributes:
+        code: Error code (e.g., "rate_limit", "invalid_model", "api_error")
+        message: Human-readable error message
+        details: Additional error details as dict
+    
+    Example:
+        ```python
+        try:
+            result = llm.ask("Question", model="invalid-model")
+        except LLMError as e:
+            print(f"Error {e.code}: {e.message}")
+            print(f"Details: {e.details}")
+        ```
+    """
+    def __init__(self, code: str, message: str, details: Optional[Dict[str, Any]] = None):
+        self.code = code
+        self.message = message
+        self.details = details or {}
+        super().__init__(self.to_json())
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "error": {
+                "code": self.code,
+                "message": self.message,
+                "details": self.details,
+            }
+        }
+    
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+    
+    def __str__(self) -> str:
+        return f"LLMError({self.code}): {self.message}"
 
 
 @dataclass
@@ -149,7 +189,11 @@ class LLM:
         
         # Get provider config
         if provider not in PROVIDERS:
-            raise ValueError(f"Unknown provider: {provider}. Use 'openrouter' or 'chutes'")
+            raise LLMError(
+                code="invalid_provider",
+                message=f"Unknown provider: {provider}",
+                details={"valid_providers": list(PROVIDERS.keys())}
+            )
         
         config = PROVIDERS[provider]
         self._api_url = os.environ.get("LLM_API_URL", config["url"])
@@ -175,7 +219,11 @@ class LLM:
             return model
         if self.default_model:
             return self.default_model
-        raise ValueError("No model specified. Pass model= parameter or set default_model.")
+        raise LLMError(
+            code="no_model",
+            message="No model specified",
+            details={"hint": "Pass model= parameter or set default_model in LLM()"}
+        )
     
     def register_function(self, name: str, handler: Callable):
         """Register a function handler for function calling."""
@@ -296,7 +344,10 @@ class LLM:
         }
         
         response = self._client.post(self._api_url, headers=headers, json=payload)
-        response.raise_for_status()
+        
+        if not response.is_success:
+            self._handle_api_error(response, model)
+        
         data = response.json()
         
         return self._parse_response(data, model, start)
@@ -327,7 +378,8 @@ class LLM:
         }
         
         with self._client.stream("POST", self._api_url, headers=headers, json=payload) as response:
-            response.raise_for_status()
+            if not response.is_success:
+                self._handle_api_error(response, model)
             for line in response.iter_lines():
                 if line.startswith("data: "):
                     data = line[6:]
@@ -432,8 +484,60 @@ class LLM:
     def execute_function(self, call: FunctionCall) -> Any:
         """Execute a registered function."""
         if call.name not in self._function_handlers:
-            raise ValueError(f"Unknown function: {call.name}")
+            raise LLMError(
+                code="unknown_function",
+                message=f"Function '{call.name}' not registered",
+                details={"registered_functions": list(self._function_handlers.keys())}
+            )
         return self._function_handlers[call.name](**call.arguments)
+    
+    def _handle_api_error(self, response: httpx.Response, model: str):
+        """Parse API error and raise LLMError with details."""
+        status = response.status_code
+        
+        # Try to parse error from response body
+        try:
+            body = response.json()
+            error_info = body.get("error", {})
+            error_message = error_info.get("message", response.text[:200])
+            error_type = error_info.get("type", "api_error")
+        except:
+            error_message = response.text[:200] if response.text else "Unknown error"
+            error_type = "api_error"
+        
+        # Map HTTP status to error code
+        if status == 401:
+            code = "authentication_error"
+            message = "Invalid API key"
+        elif status == 403:
+            code = "permission_denied"
+            message = "Access denied for this model or endpoint"
+        elif status == 404:
+            code = "not_found"
+            message = f"Model '{model}' not found"
+        elif status == 429:
+            code = "rate_limit"
+            message = "Rate limit exceeded"
+        elif status == 500:
+            code = "server_error"
+            message = "Provider server error"
+        elif status == 503:
+            code = "service_unavailable"
+            message = "Provider service temporarily unavailable"
+        else:
+            code = error_type
+            message = error_message
+        
+        raise LLMError(
+            code=code,
+            message=message,
+            details={
+                "http_status": status,
+                "model": model,
+                "provider": self.provider,
+                "raw_error": error_message,
+            }
+        )
     
     def _parse_response(self, data: Dict, model: str, start: float) -> LLMResponse:
         choice = data.get("choices", [{}])[0]

@@ -19,10 +19,80 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::fmt;
 use std::io::{BufRead, BufReader};
 use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use crate::types::{Tool, FunctionCall};
+
+/// Structured LLM error with JSON details.
+#[derive(Debug, Clone, Serialize)]
+pub struct LLMError {
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_error: Option<String>,
+}
+
+impl LLMError {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            http_status: None,
+            model: None,
+            provider: None,
+            raw_error: None,
+        }
+    }
+
+    pub fn with_details(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        http_status: Option<u16>,
+        model: Option<String>,
+        provider: Option<String>,
+        raw_error: Option<String>,
+    ) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            http_status,
+            model,
+            provider,
+            raw_error,
+        }
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "error": {
+                "code": self.code,
+                "message": self.message,
+                "details": {
+                    "http_status": self.http_status,
+                    "model": self.model,
+                    "provider": self.provider,
+                    "raw_error": self.raw_error,
+                }
+            }
+        }).to_string()
+    }
+}
+
+impl fmt::Display for LLMError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LLMError({}): {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for LLMError {}
 
 /// LLM response.
 #[derive(Debug, Clone, Default)]
@@ -169,7 +239,7 @@ impl LLM {
     fn get_model(&self, model: Option<&str>) -> Result<String, String> {
         if let Some(m) = model { return Ok(m.to_string()); }
         if let Some(ref m) = self.default_model { return Ok(m.clone()); }
-        Err("No model specified".to_string())
+        Err(LLMError::new("no_model", "No model specified. Pass model parameter or set default_model.").to_json())
     }
 
     /// Register a function handler.
@@ -246,7 +316,7 @@ impl LLM {
             .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
-            return Err(format!("API error: {}", response.status()));
+            return Err(self.make_api_error(response.status().as_u16(), model, response.text().ok()));
         }
 
         let data: serde_json::Value = response.json().map_err(|e| e.to_string())?;
@@ -291,7 +361,7 @@ impl LLM {
             .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
-            return Err(format!("API error: {}", response.status()));
+            return Err(self.make_api_error(response.status().as_u16(), model, None));
         }
 
         let reader = BufReader::new(response);
@@ -393,8 +463,34 @@ impl LLM {
     /// Execute a registered function.
     pub fn execute_function(&self, call: &FunctionCall) -> Result<String, String> {
         let handler = self.function_handlers.get(&call.name)
-            .ok_or_else(|| format!("Unknown function: {}", call.name))?;
+            .ok_or_else(|| LLMError::new("unknown_function", format!("Function '{}' not registered", call.name)).to_json())?;
         handler(&call.arguments)
+    }
+
+    fn make_api_error(&self, status: u16, model: &str, raw_error: Option<String>) -> String {
+        let (code, message) = match status {
+            401 => ("authentication_error", "Invalid API key"),
+            403 => ("permission_denied", "Access denied for this model or endpoint"),
+            404 => ("not_found", "Model not found"),
+            429 => ("rate_limit", "Rate limit exceeded"),
+            500 => ("server_error", "Provider server error"),
+            503 => ("service_unavailable", "Provider service temporarily unavailable"),
+            _ => ("api_error", "API request failed"),
+        };
+
+        let provider_name = match self.provider {
+            Provider::OpenRouter => "openrouter",
+            Provider::Chutes => "chutes",
+        };
+
+        LLMError::with_details(
+            code,
+            message,
+            Some(status),
+            Some(model.to_string()),
+            Some(provider_name.to_string()),
+            raw_error,
+        ).to_json()
     }
 
     fn parse_response(&mut self, data: serde_json::Value, model: &str, start: Instant) -> Result<LLMResponse, String> {
