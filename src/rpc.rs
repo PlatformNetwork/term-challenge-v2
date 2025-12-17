@@ -599,7 +599,7 @@ async fn trigger_evaluation(
     )
 }
 
-/// Run evaluation with real-time progress updates
+/// Run evaluation with real-time progress updates using Docker
 async fn run_evaluation_with_progress(
     evaluation_id: String,
     agent_hash: String,
@@ -609,6 +609,7 @@ async fn run_evaluation_with_progress(
     progress_store: Arc<ProgressStore>,
     config: crate::config::ChallengeConfig,
 ) {
+    use crate::task::{Task, TaskRegistry};
     use crate::task_execution::{EvaluationStatus, TaskExecutionState, TaskStatus};
 
     info!(
@@ -639,24 +640,59 @@ async fn run_evaluation_with_progress(
             &agent_hash[..12.min(agent_hash.len())]
         ),
         endpoint: None,
-        source_code: Some(source_code),
+        source_code: Some(source_code.clone()),
     };
 
-    // Get tasks from registry (simplified - in production would use TaskRegistry)
-    let task_ids: Vec<String> = (1..=config.evaluation.tasks_per_evaluation)
-        .map(|i| format!("task_{}", i))
-        .collect();
-    let total_tasks = task_ids.len() as u32;
+    // Load TaskRegistry from tasks directory
+    let tasks_dir = std::path::PathBuf::from(
+        std::env::var("TASKS_DIR").unwrap_or_else(|_| "/app/tasks".to_string()),
+    );
+
+    let task_registry = match TaskRegistry::new(tasks_dir.clone()) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to load TaskRegistry from {:?}: {}", tasks_dir, e);
+            update_progress_failed(
+                &progress_store,
+                &evaluation_id,
+                &format!("Failed to load tasks: {}", e),
+            );
+            return;
+        }
+    };
+
+    // Get random tasks for evaluation
+    let tasks: Vec<&Task> = task_registry.random_tasks(config.evaluation.tasks_per_evaluation);
+
+    if tasks.is_empty() {
+        error!("No tasks available in registry at {:?}", tasks_dir);
+        update_progress_failed(
+            &progress_store,
+            &evaluation_id,
+            "No tasks available for evaluation",
+        );
+        return;
+    }
+
+    let total_tasks = tasks.len() as u32;
+    info!("Loaded {} tasks for evaluation", total_tasks);
 
     let mut passed_tasks = 0u32;
     let mut failed_tasks = 0u32;
     let mut total_cost = 0.0f64;
     let mut total_score = 0.0f64;
 
-    // Evaluate each task
-    for (index, task_id) in task_ids.iter().enumerate() {
+    // Evaluate each task using Docker
+    for (index, task) in tasks.iter().enumerate() {
         let task_index = (index + 1) as u32;
+        let task_id = task.id().to_string();
+        let task_name = task.config.name.clone();
         let task_start = std::time::Instant::now();
+
+        info!(
+            "Evaluating task [{}/{}]: {}",
+            task_index, total_tasks, task_id
+        );
 
         // Update progress - task starting
         if let Some(mut prog) = progress_store.get(&evaluation_id) {
@@ -665,18 +701,31 @@ async fn run_evaluation_with_progress(
             progress_store.update(&evaluation_id, prog);
         }
 
-        // Simulate task execution (in production, would call evaluator.evaluate_task)
-        // For now, simulate with random results
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Run real Docker evaluation
+        let result = evaluator.evaluate_task(task, &agent_info).await;
 
-        let passed = rand::random::<f64>() > 0.3; // 70% pass rate for simulation
-        let score = if passed {
-            0.7 + rand::random::<f64>() * 0.3
-        } else {
-            rand::random::<f64>() * 0.3
+        let (passed, score, error_msg) = match result {
+            Ok(task_result) => {
+                let passed = task_result.passed;
+                let score = task_result.score;
+                let error = task_result.error.clone();
+                debug!(
+                    "Task {} result: passed={}, score={:.2}, time={}ms",
+                    task_id, passed, score, task_result.execution_time_ms
+                );
+                (passed, score, error)
+            }
+            Err(e) => {
+                error!("Task {} evaluation error: {}", task_id, e);
+                (false, 0.0, Some(format!("Evaluation error: {}", e)))
+            }
         };
+
         let execution_time_ms = task_start.elapsed().as_millis() as u64;
-        let cost_usd = 0.01 + rand::random::<f64>() * 0.05;
+
+        // Estimate cost based on execution time and difficulty
+        let difficulty_multiplier = task.difficulty_weight();
+        let cost_usd = 0.001 * (execution_time_ms as f64 / 1000.0) * difficulty_multiplier;
 
         if passed {
             passed_tasks += 1;
@@ -684,7 +733,7 @@ async fn run_evaluation_with_progress(
             failed_tasks += 1;
         }
         total_cost += cost_usd;
-        total_score += score;
+        total_score += score * difficulty_multiplier;
 
         // Update progress store
         if let Some(mut prog) = progress_store.get(&evaluation_id) {
@@ -696,7 +745,11 @@ async fn run_evaluation_with_progress(
 
             let task_state = TaskExecutionState {
                 task_id: task_id.clone(),
-                task_name: format!("Task {}", task_index),
+                task_name: if task_name.is_empty() {
+                    format!("Task {}", task_index)
+                } else {
+                    task_name.clone()
+                },
                 status: if passed {
                     TaskStatus::Completed
                 } else {
@@ -718,11 +771,7 @@ async fn run_evaluation_with_progress(
                 duration_ms: Some(execution_time_ms),
                 score: Some(score),
                 passed: Some(passed),
-                error: if passed {
-                    None
-                } else {
-                    Some("Task failed".to_string())
-                },
+                error: error_msg.clone(),
                 cost_usd,
                 llm_calls: vec![],
                 output: None,
@@ -741,13 +790,14 @@ async fn run_evaluation_with_progress(
                 "agent_hash": agent_hash,
                 "validator_hotkey": validator_hotkey,
                 "task_id": task_id,
+                "task_name": task_name,
                 "task_index": task_index,
                 "total_tasks": total_tasks,
                 "passed": passed,
                 "score": score,
                 "execution_time_ms": execution_time_ms,
                 "cost_usd": cost_usd,
-                "error": if passed { None } else { Some("Task failed") },
+                "error": error_msg,
             });
 
             // Fire and forget webhook call
