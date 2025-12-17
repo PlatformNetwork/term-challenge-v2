@@ -2,6 +2,7 @@
  * Term SDK for TypeScript
  * 
  * Build agents for Term Challenge.
+ * Agents can use multiple models dynamically.
  * 
  * @example Quick Start
  * ```typescript
@@ -17,40 +18,27 @@
  * run(new MyAgent());
  * ```
  * 
- * @example With LLM
+ * @example With Multiple Models
  * ```typescript
  * import { Agent, Request, Response, LLM, run } from 'term-sdk';
  * 
- * class LLMAgent implements Agent {
- *   private llm = new LLM({ model: "claude-3-haiku" });
+ * class MultiModelAgent implements Agent {
+ *   private llm = new LLM();
  * 
  *   async solve(req: Request): Promise<Response> {
- *     const result = await this.llm.ask(`Task: ${req.instruction}`);
- *     return Response.fromLLM(result.text);
- *   }
- * }
- * 
- * run(new LLMAgent());
- * ```
- * 
- * @example With Function Calling
- * ```typescript
- * import { Agent, Request, Response, LLM, Tool, run } from 'term-sdk';
- * 
- * class ToolAgent implements Agent {
- *   private llm = new LLM({ model: "claude-3-haiku" });
- * 
- *   setup() {
- *     this.llm.registerFunction("search", (args) => `Found: ${args.query}`);
- *   }
- * 
- *   async solve(req: Request): Promise<Response> {
- *     const tools = [new Tool("search", "Search for files", { ... })];
- *     const result = await this.llm.chatWithFunctions(
- *       [{ role: "user", content: req.instruction }],
- *       tools
+ *     // Use fast model for simple tasks
+ *     const analysis = await this.llm.ask(
+ *       "Analyze this output briefly",
+ *       { model: "claude-3-haiku" }
  *     );
- *     return Response.fromLLM(result.text);
+ *     
+ *     // Use powerful model for complex reasoning
+ *     const solution = await this.llm.ask(
+ *       "Solve this problem",
+ *       { model: "claude-3-opus" }
+ *     );
+ *     
+ *     return Response.fromLLM(solution.text);
  *   }
  * }
  * ```
@@ -276,10 +264,17 @@ async function readStdin(): Promise<string> {
 // ============================================================================
 
 export interface LLMOptions {
-  model?: string;
+  defaultModel?: string;
   temperature?: number;
   maxTokens?: number;
   timeout?: number;
+}
+
+export interface ChatOptions {
+  model?: string;
+  tools?: Tool[];
+  temperature?: number;
+  maxTokens?: number;
 }
 
 export interface LLMResponse {
@@ -299,23 +294,47 @@ export interface Message {
   tool_call_id?: string;
 }
 
+export interface ModelStats {
+  tokens: number;
+  cost: number;
+  requests: number;
+}
+
 type FunctionHandler = (args: Record<string, any>) => any | Promise<any>;
 
+/**
+ * LLM client with dynamic model selection.
+ * 
+ * @example
+ * ```typescript
+ * const llm = new LLM();
+ * 
+ * // Use different models for different tasks
+ * const quick = await llm.ask("Simple question", { model: "claude-3-haiku" });
+ * const complex = await llm.ask("Complex analysis", { model: "claude-3-opus" });
+ * const code = await llm.ask("Write code", { model: "gpt-4o" });
+ * 
+ * // Get stats per model
+ * console.log(llm.getStats("claude-3-haiku"));
+ * console.log(llm.getStats()); // All stats
+ * ```
+ */
 export class LLM {
-  private model: string;
+  private defaultModel?: string;
   private temperature: number;
   private maxTokens: number;
   private timeout: number;
   private apiUrl: string;
   private apiKey: string;
   private functionHandlers: Map<string, FunctionHandler> = new Map();
+  private stats: Map<string, ModelStats> = new Map();
 
   totalTokens = 0;
   totalCost = 0;
   requestCount = 0;
 
   constructor(options: LLMOptions = {}) {
-    this.model = options.model || 'claude-3-haiku';
+    this.defaultModel = options.defaultModel;
     this.temperature = options.temperature ?? 0.3;
     this.maxTokens = options.maxTokens ?? 4096;
     this.timeout = options.timeout ?? 120000;
@@ -327,29 +346,45 @@ export class LLM {
     }
   }
 
+  private getModel(model?: string): string {
+    if (model) return model;
+    if (this.defaultModel) return this.defaultModel;
+    throw new Error("No model specified. Pass model in options or set defaultModel.");
+  }
+
   registerFunction(name: string, handler: FunctionHandler): void {
     this.functionHandlers.set(name, handler);
   }
 
-  async ask(prompt: string, system?: string, tools?: Tool[]): Promise<LLMResponse> {
+  async ask(prompt: string, options: ChatOptions = {}): Promise<LLMResponse> {
     const messages: Message[] = [];
-    if (system) messages.push({ role: 'system', content: system });
     messages.push({ role: 'user', content: prompt });
-    return this.chat(messages, tools);
+    return this.chat(messages, options);
   }
 
-  async chat(messages: Message[], tools?: Tool[]): Promise<LLMResponse> {
+  async askWithSystem(prompt: string, system: string, options: ChatOptions = {}): Promise<LLMResponse> {
+    const messages: Message[] = [
+      { role: 'system', content: system },
+      { role: 'user', content: prompt }
+    ];
+    return this.chat(messages, options);
+  }
+
+  async chat(messages: Message[], options: ChatOptions = {}): Promise<LLMResponse> {
+    const model = this.getModel(options.model);
+    const temperature = options.temperature ?? this.temperature;
+    const maxTokens = options.maxTokens ?? this.maxTokens;
     const start = Date.now();
 
     const payload: any = {
-      model: this.model,
+      model,
       messages,
-      temperature: this.temperature,
-      max_tokens: this.maxTokens,
+      temperature,
+      max_tokens: maxTokens,
     };
 
-    if (tools && tools.length > 0) {
-      payload.tools = tools.map(t => t.toJSON());
+    if (options.tools && options.tools.length > 0) {
+      payload.tools = options.tools.map(t => t.toJSON());
       payload.tool_choice = "auto";
     }
 
@@ -389,16 +424,24 @@ export class LLM {
     const promptTokens = data.usage?.prompt_tokens || 0;
     const completionTokens = data.usage?.completion_tokens || 0;
     const tokens = promptTokens + completionTokens;
-    const cost = this.calculateCost(promptTokens, completionTokens);
+    const cost = this.calculateCost(model, promptTokens, completionTokens);
     const latencyMs = Date.now() - start;
 
+    // Update stats
     this.totalTokens += tokens;
     this.totalCost += cost;
     this.requestCount++;
 
-    console.error(`[llm] ${this.model}: ${tokens} tokens, $${cost.toFixed(4)}, ${latencyMs}ms`);
+    // Per-model stats
+    const modelStats = this.stats.get(model) || { tokens: 0, cost: 0, requests: 0 };
+    modelStats.tokens += tokens;
+    modelStats.cost += cost;
+    modelStats.requests++;
+    this.stats.set(model, modelStats);
 
-    return { text, model: this.model, tokens, cost, latencyMs, functionCalls, raw: data };
+    console.error(`[llm] ${model}: ${tokens} tokens, $${cost.toFixed(4)}, ${latencyMs}ms`);
+
+    return { text, model, tokens, cost, latencyMs, functionCalls, raw: data };
   }
 
   async executeFunction(call: FunctionCall): Promise<any> {
@@ -410,12 +453,13 @@ export class LLM {
   async chatWithFunctions(
     messages: Message[],
     tools: Tool[],
-    maxIterations = 10
+    options: ChatOptions & { maxIterations?: number } = {}
   ): Promise<LLMResponse> {
+    const maxIterations = options.maxIterations ?? 10;
     const msgs = [...messages];
 
     for (let i = 0; i < maxIterations; i++) {
-      const response = await this.chat(msgs, tools);
+      const response = await this.chat(msgs, { ...options, tools });
 
       if (response.functionCalls.length === 0) {
         return response;
@@ -448,21 +492,37 @@ export class LLM {
       }
     }
 
-    return this.chat(msgs, tools);
+    return this.chat(msgs, { ...options, tools });
   }
 
-  private calculateCost(promptTokens: number, completionTokens: number): number {
+  getStats(model?: string): ModelStats | { totalTokens: number; totalCost: number; requestCount: number; perModel: Record<string, ModelStats> } {
+    if (model) {
+      return this.stats.get(model) || { tokens: 0, cost: 0, requests: 0 };
+    }
+    const perModel: Record<string, ModelStats> = {};
+    this.stats.forEach((v, k) => { perModel[k] = v; });
+    return {
+      totalTokens: this.totalTokens,
+      totalCost: this.totalCost,
+      requestCount: this.requestCount,
+      perModel,
+    };
+  }
+
+  private calculateCost(model: string, promptTokens: number, completionTokens: number): number {
     const pricing: Record<string, [number, number]> = {
       'claude-3-haiku': [0.25, 1.25],
       'claude-3-sonnet': [3.0, 15.0],
       'claude-3-opus': [15.0, 75.0],
       'gpt-4o': [5.0, 15.0],
       'gpt-4o-mini': [0.15, 0.6],
+      'llama-3': [0.2, 0.2],
+      'mixtral': [0.5, 0.5],
     };
 
     let [inputPrice, outputPrice] = [0.5, 1.5];
     for (const [key, prices] of Object.entries(pricing)) {
-      if (this.model.toLowerCase().includes(key)) {
+      if (model.toLowerCase().includes(key)) {
         [inputPrice, outputPrice] = prices;
         break;
       }

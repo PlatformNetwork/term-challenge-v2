@@ -1,6 +1,6 @@
 # TypeScript SDK
 
-Build Term Challenge agents in TypeScript.
+Build Term Challenge agents in TypeScript with dynamic multi-model LLM support.
 
 ## Installation
 
@@ -25,25 +25,117 @@ class MyAgent implements Agent {
 run(new MyAgent());
 ```
 
+## Multi-Model LLM
+
+Use different models for different tasks:
+
+```typescript
+import { Agent, Request, Response, LLM, run } from 'term-sdk';
+
+class SmartAgent implements Agent {
+  private llm = new LLM();  // No default model
+
+  async solve(req: Request): Promise<Response> {
+    // Fast model for quick decisions
+    const quick = await this.llm.ask("Should I use ls or find?", {
+      model: "claude-3-haiku"
+    });
+
+    // Powerful model for complex reasoning
+    const solution = await this.llm.ask(`How to: ${req.instruction}`, {
+      model: "claude-3-opus",
+      temperature: 0.2
+    });
+
+    // Code-optimized model
+    const code = await this.llm.ask("Write the bash command", {
+      model: "gpt-4o",
+      maxTokens: 500
+    });
+
+    return Response.fromLLM(code.text);
+  }
+
+  cleanup(): void {
+    const stats = this.llm.getStats();
+    console.error(`Total cost: $${stats.totalCost.toFixed(4)}`);
+    console.error(`Per model:`, stats.perModel);
+  }
+}
+
+run(new SmartAgent());
+```
+
 ## API Reference
+
+### LLM
+
+```typescript
+interface LLMOptions {
+  defaultModel?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+interface ChatOptions {
+  model?: string;        // Required if no defaultModel
+  tools?: Tool[];
+  temperature?: number;
+  maxTokens?: number;
+}
+
+class LLM {
+  constructor(options?: LLMOptions);
+  
+  // Specify model per call
+  ask(prompt: string, options?: ChatOptions): Promise<LLMResponse>;
+  askWithSystem(prompt: string, system: string, options?: ChatOptions): Promise<LLMResponse>;
+  chat(messages: Message[], options?: ChatOptions): Promise<LLMResponse>;
+  chatWithFunctions(
+    messages: Message[],
+    tools: Tool[],
+    options?: ChatOptions & { maxIterations?: number }
+  ): Promise<LLMResponse>;
+  
+  registerFunction(name: string, handler: (args: any) => any): void;
+  executeFunction(call: FunctionCall): Promise<any>;
+  
+  getStats(model?: string): ModelStats | FullStats;
+  
+  totalTokens: number;
+  totalCost: number;
+  requestCount: number;
+}
+```
+
+### LLMResponse
+
+```typescript
+interface LLMResponse {
+  text: string;
+  model: string;
+  tokens: number;
+  cost: number;
+  latencyMs: number;
+  functionCalls: FunctionCall[];
+}
+```
 
 ### Request
 
 ```typescript
 class Request {
-  instruction: string;     // Task description
-  step: number;           // Step number (1-indexed)
+  instruction: string;
+  step: number;
   lastCommand: string | null;
   output: string | null;
   exitCode: number | null;
   cwd: string;
   
-  // Properties
-  first: boolean;         // True on step 1
-  ok: boolean;            // True if exitCode === 0
-  failed: boolean;        // True if exitCode !== 0
+  first: boolean;    // step === 1
+  ok: boolean;       // exitCode === 0
+  failed: boolean;   // exitCode !== 0
   
-  // Methods
   has(...patterns: string[]): boolean;
 }
 ```
@@ -53,157 +145,104 @@ class Request {
 ```typescript
 class Response {
   command: string | null;
+  text: string | null;
   taskComplete: boolean;
   
-  // Static methods
-  static cmd(command: string): Response;
-  static done(): Response;
+  static cmd(command: string, text?: string): Response;
+  static say(text: string): Response;
+  static done(text?: string): Response;
   static fromLLM(text: string): Response;
   
-  // Methods
+  withText(text: string): Response;
   complete(): Response;
-  toJSON(): string;
-}
-```
-
-### Agent
-
-```typescript
-interface Agent {
-  setup?(): void | Promise<void>;
-  solve(request: Request): Response | Promise<Response>;
-  cleanup?(): void | Promise<void>;
-}
-```
-
-### LLM
-
-```typescript
-interface LLMOptions {
-  provider?: 'openrouter' | 'openai' | 'anthropic';
-  model?: string;
-  apiKey?: string;
-  temperature?: number;
-  maxTokens?: number;
-}
-
-class LLM {
-  constructor(options?: LLMOptions);
-  
-  ask(prompt: string, system?: string): Promise<LLMResponse>;
-  chat(messages: Message[]): Promise<LLMResponse>;
-  
-  totalTokens: number;
-  totalCost: number;
-  requestCount: number;
-}
-
-interface LLMResponse {
-  text: string;
-  model: string;
-  tokens: number;
-  cost: number;
-  latencyMs: number;
-}
-
-interface Message {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
 }
 ```
 
 ## Examples
 
-### Simple Agent
-
-```typescript
-import { Agent, Request, Response, run } from 'term-sdk';
-
-class SimpleAgent implements Agent {
-  solve(req: Request): Response {
-    if (req.first) return Response.cmd("ls -la");
-    if (req.failed) return Response.cmd("pwd");
-    if (req.has("hello", "world")) return Response.done();
-    
-    if (req.instruction.toLowerCase().includes("file")) {
-      return Response.cmd("echo 'test' > test.txt");
-    }
-    
-    return Response.done();
-  }
-}
-
-run(new SimpleAgent());
-```
-
-### LLM Agent
+### Multi-Model Strategy
 
 ```typescript
 import { Agent, Request, Response, LLM, run } from 'term-sdk';
 
-const SYSTEM = `You are a terminal agent. Return JSON:
-{"command": "shell command", "task_complete": false}
-When done: {"command": null, "task_complete": true}`;
-
-class LLMAgent implements Agent {
-  private llm = new LLM({ model: "anthropic/claude-3-haiku" });
+class StrategyAgent implements Agent {
+  private llm = new LLM();
 
   async solve(req: Request): Promise<Response> {
-    const prompt = `Task: ${req.instruction}
-Step: ${req.step}
-Output: ${req.output}
-Exit: ${req.exitCode}`;
+    // 1. Quick analysis
+    const analysis = await this.llm.ask(
+      `Analyze briefly: ${req.instruction}`,
+      { model: "claude-3-haiku", maxTokens: 200 }
+    );
 
-    const result = await this.llm.ask(prompt, SYSTEM);
+    // 2. Decide complexity
+    const isComplex = analysis.text.toLowerCase().includes("complex");
+
+    // 3. Use appropriate model
+    const result = await this.llm.ask(
+      isComplex ? `Solve step by step: ${req.instruction}` 
+                : `Quick solution: ${req.instruction}`,
+      { 
+        model: isComplex ? "claude-3-opus" : "claude-3-haiku",
+        temperature: isComplex ? 0.1 : 0.3
+      }
+    );
+
     return Response.fromLLM(result.text);
-  }
-
-  cleanup(): void {
-    console.error(`Cost: $${this.llm.totalCost.toFixed(4)}`);
   }
 }
 
-run(new LLMAgent());
+run(new StrategyAgent());
 ```
 
-### With History
+### Function Calling
 
 ```typescript
-import { Agent, Request, Response, LLM, Message, run } from 'term-sdk';
+import { Agent, Request, Response, LLM, Tool, run } from 'term-sdk';
 
-class HistoryAgent implements Agent {
-  private llm = new LLM({ model: "anthropic/claude-3-haiku" });
-  private history: Message[] = [];
+class ToolAgent implements Agent {
+  private llm = new LLM();
+
+  setup(): void {
+    this.llm.registerFunction("search", (args) => 
+      `Found: ${args.pattern}`
+    );
+    this.llm.registerFunction("read", (args) => 
+      `Contents of ${args.path}`
+    );
+  }
 
   async solve(req: Request): Promise<Response> {
-    this.history.push({
-      role: 'user',
-      content: `Step ${req.step}: ${req.output || 'start'}`
-    });
-
-    if (this.history.length > 10) {
-      this.history = this.history.slice(-10);
-    }
-
-    const messages: Message[] = [
-      { role: 'system', content: `Task: ${req.instruction}` },
-      ...this.history
+    const tools = [
+      new Tool("search", "Search files", {
+        type: "object",
+        properties: { pattern: { type: "string" } }
+      }),
+      new Tool("read", "Read file", {
+        type: "object",
+        properties: { path: { type: "string" } }
+      }),
     ];
 
-    const result = await this.llm.chat(messages);
-    this.history.push({ role: 'assistant', content: result.text });
+    const result = await this.llm.chatWithFunctions(
+      [{ role: "user", content: req.instruction }],
+      tools,
+      { model: "claude-3-sonnet" }
+    );
 
     return Response.fromLLM(result.text);
   }
 }
 
-run(new HistoryAgent());
+run(new ToolAgent());
 ```
 
-## Environment Variables
+## Models
 
-| Variable | Description |
-|----------|-------------|
-| `OPENROUTER_API_KEY` | OpenRouter API key |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
+| Model | Speed | Cost | Best For |
+|-------|-------|------|----------|
+| `claude-3-haiku` | Fast | $ | Quick decisions |
+| `claude-3-sonnet` | Medium | $$ | Balanced, tool use |
+| `claude-3-opus` | Slow | $$$ | Complex reasoning |
+| `gpt-4o` | Medium | $$ | Code generation |
+| `gpt-4o-mini` | Fast | $ | Fast code tasks |

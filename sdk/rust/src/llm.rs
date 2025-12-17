@@ -1,22 +1,19 @@
-//! LLM client for Term Challenge agents.
+//! LLM client with dynamic model selection.
 //!
-//! The provider is configured at upload time. Just specify the model.
+//! Agents can use multiple models - specify the model on each call.
 //!
 //! ```rust,no_run
-//! use term_sdk::{LLM, Tool};
+//! use term_sdk::LLM;
 //!
-//! let mut llm = LLM::new("claude-3-haiku");
+//! let mut llm = LLM::new();
 //!
-//! // Simple question
-//! let response = llm.ask("What is 2+2?")?;
-//! println!("{}", response.text);
+//! // Use different models for different tasks
+//! let quick = llm.ask("Simple question", "claude-3-haiku")?;
+//! let complex = llm.ask("Complex analysis", "claude-3-opus")?;
+//! let code = llm.ask("Write code", "gpt-4o")?;
 //!
-//! // With function calling
-//! let tools = vec![Tool::new("search", "Search for files")];
-//! let response = llm.ask_with_tools("Find Python files", &tools)?;
-//! for call in &response.function_calls {
-//!     println!("Call {} with {:?}", call.name, call.arguments);
-//! }
+//! // Get stats per model
+//! println!("{:?}", llm.get_stats(Some("claude-3-haiku")));
 //! ```
 
 use std::collections::HashMap;
@@ -73,17 +70,45 @@ impl Message {
     }
 }
 
+/// Model usage statistics.
+#[derive(Debug, Clone, Default)]
+pub struct ModelStats {
+    pub tokens: u32,
+    pub cost: f64,
+    pub requests: u32,
+}
+
 pub type FunctionHandler = Box<dyn Fn(&HashMap<String, serde_json::Value>) -> Result<String, String> + Send + Sync>;
 
-/// LLM client.
+/// LLM client with dynamic model selection.
+///
+/// ```rust,no_run
+/// use term_sdk::LLM;
+///
+/// let mut llm = LLM::new();
+///
+/// // Different models for different tasks
+/// let quick = llm.ask("Quick question", "claude-3-haiku")?;
+/// let detailed = llm.ask("Detailed analysis", "claude-3-opus")?;
+///
+/// // With parameters
+/// let result = llm.chat_with_model(
+///     &[term_sdk::Message::user("Hello")],
+///     "gpt-4o",
+///     Some(0.7),  // temperature
+///     Some(2000), // max_tokens
+///     None,       // no tools
+/// )?;
+/// ```
 pub struct LLM {
-    model: String,
+    default_model: Option<String>,
     temperature: f32,
     max_tokens: u32,
     api_url: String,
     api_key: String,
     client: reqwest::blocking::Client,
     function_handlers: HashMap<String, FunctionHandler>,
+    stats: HashMap<String, ModelStats>,
 
     pub total_tokens: u32,
     pub total_cost: f64,
@@ -91,8 +116,13 @@ pub struct LLM {
 }
 
 impl LLM {
-    /// Create new LLM client.
-    pub fn new(model: impl Into<String>) -> Self {
+    /// Create new LLM client without default model.
+    pub fn new() -> Self {
+        Self::with_default_model(None)
+    }
+
+    /// Create new LLM client with default model.
+    pub fn with_default_model(default_model: Option<String>) -> Self {
         let api_url = env::var("LLM_API_URL")
             .unwrap_or_else(|_| "https://openrouter.ai/api/v1/chat/completions".to_string());
         let api_key = env::var("LLM_API_KEY")
@@ -104,13 +134,14 @@ impl LLM {
         }
 
         Self {
-            model: model.into(),
+            default_model,
             temperature: 0.3,
             max_tokens: 4096,
             api_url,
             api_key,
             client: reqwest::blocking::Client::new(),
             function_handlers: HashMap::new(),
+            stats: HashMap::new(),
             total_tokens: 0,
             total_cost: 0.0,
             request_count: 0,
@@ -127,6 +158,16 @@ impl LLM {
         self
     }
 
+    fn get_model(&self, model: Option<&str>) -> Result<String, String> {
+        if let Some(m) = model {
+            return Ok(m.to_string());
+        }
+        if let Some(ref m) = self.default_model {
+            return Ok(m.clone());
+        }
+        Err("No model specified. Pass model parameter or set default_model.".to_string())
+    }
+
     /// Register a function handler.
     pub fn register_function<F>(&mut self, name: impl Into<String>, handler: F)
     where
@@ -135,24 +176,34 @@ impl LLM {
         self.function_handlers.insert(name.into(), Box::new(handler));
     }
 
-    /// Ask a simple question.
-    pub fn ask(&mut self, prompt: &str) -> Result<LLMResponse, String> {
-        self.chat(&[Message::user(prompt)], None)
+    /// Ask a question with specified model.
+    pub fn ask(&mut self, prompt: &str, model: &str) -> Result<LLMResponse, String> {
+        self.chat_with_model(&[Message::user(prompt)], model, None, None, None)
     }
 
     /// Ask with system prompt.
-    pub fn ask_with_system(&mut self, system: &str, prompt: &str) -> Result<LLMResponse, String> {
-        self.chat(&[Message::system(system), Message::user(prompt)], None)
+    pub fn ask_with_system(&mut self, system: &str, prompt: &str, model: &str) -> Result<LLMResponse, String> {
+        self.chat_with_model(&[Message::system(system), Message::user(prompt)], model, None, None, None)
     }
 
-    /// Ask with tools.
-    pub fn ask_with_tools(&mut self, prompt: &str, tools: &[Tool]) -> Result<LLMResponse, String> {
-        self.chat(&[Message::user(prompt)], Some(tools))
-    }
-
-    /// Chat with messages.
+    /// Chat with default model.
     pub fn chat(&mut self, messages: &[Message], tools: Option<&[Tool]>) -> Result<LLMResponse, String> {
+        let model = self.get_model(None)?;
+        self.chat_with_model(messages, &model, None, None, tools)
+    }
+
+    /// Chat with specified model and options.
+    pub fn chat_with_model(
+        &mut self,
+        messages: &[Message],
+        model: &str,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+        tools: Option<&[Tool]>,
+    ) -> Result<LLMResponse, String> {
         let start = Instant::now();
+        let temp = temperature.unwrap_or(self.temperature);
+        let tokens = max_tokens.unwrap_or(self.max_tokens);
 
         #[derive(Serialize)]
         struct ChatRequest<'a> {
@@ -169,10 +220,10 @@ impl LLM {
         let tools_json = tools.map(|t| t.iter().map(|tool| tool.to_json()).collect());
 
         let request = ChatRequest {
-            model: &self.model,
+            model,
             messages,
-            temperature: self.temperature,
-            max_tokens: self.max_tokens,
+            temperature: temp,
+            max_tokens: tokens,
             tools: tools_json,
             tool_choice: if tools.is_some() { Some("auto") } else { None },
         };
@@ -219,20 +270,27 @@ impl LLM {
         let usage = data.get("usage").unwrap_or(&serde_json::Value::Null);
         let prompt_tokens = usage.get("prompt_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as u32;
         let completion_tokens = usage.get("completion_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as u32;
-        let tokens = prompt_tokens + completion_tokens;
-        let cost = self.calculate_cost(prompt_tokens, completion_tokens);
+        let total_tokens = prompt_tokens + completion_tokens;
+        let cost = self.calculate_cost(model, prompt_tokens, completion_tokens);
         let latency_ms = start.elapsed().as_millis() as u64;
 
-        self.total_tokens += tokens;
+        // Update stats
+        self.total_tokens += total_tokens;
         self.total_cost += cost;
         self.request_count += 1;
 
-        eprintln!("[llm] {}: {} tokens, ${:.4}, {}ms", self.model, tokens, cost, latency_ms);
+        // Per-model stats
+        let model_stats = self.stats.entry(model.to_string()).or_default();
+        model_stats.tokens += total_tokens;
+        model_stats.cost += cost;
+        model_stats.requests += 1;
+
+        eprintln!("[llm] {}: {} tokens, ${:.4}, {}ms", model, total_tokens, cost, latency_ms);
 
         Ok(LLMResponse {
             text,
-            model: self.model.clone(),
-            tokens,
+            model: model.to_string(),
+            tokens: total_tokens,
             cost,
             latency_ms,
             function_calls,
@@ -252,12 +310,13 @@ impl LLM {
         &mut self,
         messages: &[Message],
         tools: &[Tool],
+        model: &str,
         max_iterations: usize,
     ) -> Result<LLMResponse, String> {
         let mut msgs = messages.to_vec();
 
         for _ in 0..max_iterations {
-            let response = self.chat(&msgs, Some(tools))?;
+            let response = self.chat_with_model(&msgs, model, None, None, Some(tools))?;
 
             if response.function_calls.is_empty() {
                 return Ok(response);
@@ -269,7 +328,6 @@ impl LLM {
                     Err(e) => format!("Error: {}", e),
                 };
 
-                // Add assistant message with tool call
                 msgs.push(Message {
                     role: "assistant".to_string(),
                     content: None,
@@ -284,29 +342,48 @@ impl LLM {
                     tool_call_id: None,
                 });
 
-                // Add tool result
                 msgs.push(Message::tool(call.id.as_deref().unwrap_or(""), result));
             }
         }
 
-        self.chat(&msgs, Some(tools))
+        self.chat_with_model(&msgs, model, None, None, Some(tools))
     }
 
-    fn calculate_cost(&self, prompt_tokens: u32, completion_tokens: u32) -> f64 {
-        let (input_price, output_price) = if self.model.contains("claude-3-haiku") {
+    /// Get usage stats, optionally for a specific model.
+    pub fn get_stats(&self, model: Option<&str>) -> Option<ModelStats> {
+        model.and_then(|m| self.stats.get(m).cloned())
+    }
+
+    /// Get all stats.
+    pub fn get_all_stats(&self) -> &HashMap<String, ModelStats> {
+        &self.stats
+    }
+
+    fn calculate_cost(&self, model: &str, prompt_tokens: u32, completion_tokens: u32) -> f64 {
+        let (input_price, output_price) = if model.contains("claude-3-haiku") {
             (0.25, 1.25)
-        } else if self.model.contains("claude-3-sonnet") {
+        } else if model.contains("claude-3-sonnet") {
             (3.0, 15.0)
-        } else if self.model.contains("claude-3-opus") {
+        } else if model.contains("claude-3-opus") {
             (15.0, 75.0)
-        } else if self.model.contains("gpt-4o-mini") {
+        } else if model.contains("gpt-4o-mini") {
             (0.15, 0.6)
-        } else if self.model.contains("gpt-4o") {
+        } else if model.contains("gpt-4o") {
             (5.0, 15.0)
+        } else if model.contains("llama") {
+            (0.2, 0.2)
+        } else if model.contains("mixtral") {
+            (0.5, 0.5)
         } else {
             (0.5, 1.5)
         };
 
         (prompt_tokens as f64 * input_price + completion_tokens as f64 * output_price) / 1_000_000.0
+    }
+}
+
+impl Default for LLM {
+    fn default() -> Self {
+        Self::new()
     }
 }

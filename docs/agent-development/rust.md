@@ -1,6 +1,6 @@
 # Rust SDK
 
-Build Term Challenge agents in Rust.
+Build Term Challenge agents in Rust with dynamic multi-model LLM support.
 
 ## Installation
 
@@ -28,7 +28,129 @@ impl Agent for MyAgent {
 fn main() { run(&mut MyAgent); }
 ```
 
+## Multi-Model LLM
+
+Use different models for different tasks:
+
+```rust
+use term_sdk::{Agent, Request, Response, LLM, run};
+
+struct SmartAgent {
+    llm: LLM,
+}
+
+impl SmartAgent {
+    fn new() -> Self {
+        Self { llm: LLM::new() }  // No default model
+    }
+}
+
+impl Agent for SmartAgent {
+    fn solve(&mut self, req: &Request) -> Response {
+        // Fast model for quick decisions
+        let quick = self.llm.ask(
+            "Should I use ls or find?",
+            "claude-3-haiku"
+        );
+
+        // Powerful model for complex reasoning
+        let solution = self.llm.ask(
+            &format!("How to: {}", req.instruction),
+            "claude-3-opus"
+        );
+
+        // Code-optimized model
+        let code = self.llm.ask(
+            "Write the bash command",
+            "gpt-4o"
+        );
+
+        match code {
+            Ok(r) => Response::from_llm(&r.text),
+            Err(_) => Response::done(),
+        }
+    }
+
+    fn cleanup(&mut self) {
+        eprintln!("Total cost: ${:.4}", self.llm.total_cost);
+        for (model, stats) in self.llm.get_all_stats() {
+            eprintln!("{}: {} tokens, ${:.4}", model, stats.tokens, stats.cost);
+        }
+    }
+}
+
+fn main() {
+    run(&mut SmartAgent::new());
+}
+```
+
 ## API Reference
+
+### LLM
+
+```rust
+impl LLM {
+    /// Create without default model
+    fn new() -> Self;
+    
+    /// Create with default model
+    fn with_default_model(model: Option<String>) -> Self;
+    
+    /// Ask with specified model
+    fn ask(&mut self, prompt: &str, model: &str) -> Result<LLMResponse, String>;
+    
+    /// Ask with system prompt
+    fn ask_with_system(&mut self, system: &str, prompt: &str, model: &str) 
+        -> Result<LLMResponse, String>;
+    
+    /// Chat with model and options
+    fn chat_with_model(
+        &mut self,
+        messages: &[Message],
+        model: &str,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+        tools: Option<&[Tool]>,
+    ) -> Result<LLMResponse, String>;
+    
+    /// Chat with auto function execution
+    fn chat_with_functions(
+        &mut self,
+        messages: &[Message],
+        tools: &[Tool],
+        model: &str,
+        max_iterations: usize,
+    ) -> Result<LLMResponse, String>;
+    
+    fn register_function<F>(&mut self, name: &str, handler: F);
+    fn execute_function(&self, call: &FunctionCall) -> Result<String, String>;
+    
+    fn get_stats(&self, model: Option<&str>) -> Option<ModelStats>;
+    fn get_all_stats(&self) -> &HashMap<String, ModelStats>;
+    
+    // Fields
+    total_tokens: u32;
+    total_cost: f64;
+    request_count: u32;
+}
+```
+
+### LLMResponse
+
+```rust
+pub struct LLMResponse {
+    pub text: String,
+    pub model: String,
+    pub tokens: u32,
+    pub cost: f64,
+    pub latency_ms: u64,
+    pub function_calls: Vec<FunctionCall>,
+}
+
+impl LLMResponse {
+    fn has_function_calls(&self) -> bool;
+}
+```
 
 ### Request
 
@@ -43,9 +165,9 @@ pub struct Request {
 }
 
 impl Request {
-    fn is_first(&self) -> bool;        // True on step 1
-    fn is_ok(&self) -> bool;           // True if exit_code == 0
-    fn failed(&self) -> bool;          // True if exit_code != 0
+    fn is_first(&self) -> bool;
+    fn is_ok(&self) -> bool;
+    fn failed(&self) -> bool;
     fn has(&self, pattern: &str) -> bool;
     fn has_any(&self, patterns: &[&str]) -> bool;
 }
@@ -54,189 +176,103 @@ impl Request {
 ### Response
 
 ```rust
-pub struct Response {
-    pub command: Option<String>,
-    pub task_complete: bool,
-}
-
 impl Response {
     fn cmd(command: impl Into<String>) -> Self;
+    fn say(text: impl Into<String>) -> Self;
     fn done() -> Self;
-    fn complete(self) -> Self;
     fn from_llm(text: &str) -> Self;
-    fn to_json(&self) -> String;
-}
-```
-
-### Agent
-
-```rust
-pub trait Agent {
-    fn setup(&mut self) {}
-    fn solve(&mut self, request: &Request) -> Response;
-    fn cleanup(&mut self) {}
-}
-```
-
-### LLM
-
-```rust
-pub enum Provider { OpenRouter, OpenAI, Anthropic }
-
-pub struct LLM {
-    pub total_tokens: u32,
-    pub total_cost: f64,
-    pub request_count: u32,
-}
-
-impl LLM {
-    fn new(model: impl Into<String>) -> Self;
-    fn with_provider(provider: Provider, model: impl Into<String>) -> Self;
-    fn temperature(self, t: f32) -> Self;
-    fn max_tokens(self, t: u32) -> Self;
-    fn api_key(self, key: impl Into<String>) -> Self;
     
-    fn ask(&mut self, prompt: &str) -> Result<LLMResponse, String>;
-    fn ask_with_system(&mut self, system: &str, prompt: &str) -> Result<LLMResponse, String>;
-    fn chat(&mut self, messages: &[Message]) -> Result<LLMResponse, String>;
-}
-
-pub struct LLMResponse {
-    pub text: String,
-    pub model: String,
-    pub tokens: u32,
-    pub cost: f64,
-    pub latency_ms: u64,
-}
-
-pub struct Message {
-    pub role: String,
-    pub content: String,
-}
-
-impl Message {
-    fn system(content: impl Into<String>) -> Self;
-    fn user(content: impl Into<String>) -> Self;
-    fn assistant(content: impl Into<String>) -> Self;
+    fn with_text(self, text: impl Into<String>) -> Self;
+    fn complete(self) -> Self;
 }
 ```
 
 ## Examples
 
-### Simple Agent
-
-```rust
-use term_sdk::{Agent, Request, Response, run};
-
-struct SimpleAgent;
-
-impl Agent for SimpleAgent {
-    fn solve(&mut self, req: &Request) -> Response {
-        if req.is_first() { return Response::cmd("ls -la"); }
-        if req.failed() { return Response::cmd("pwd"); }
-        if req.has_any(&["hello", "world"]) { return Response::done(); }
-        
-        if req.instruction.to_lowercase().contains("file") {
-            return Response::cmd("echo 'test' > test.txt");
-        }
-        
-        Response::done()
-    }
-}
-
-fn main() { run(&mut SimpleAgent); }
-```
-
-### LLM Agent
+### Multi-Model Strategy
 
 ```rust
 use term_sdk::{Agent, Request, Response, LLM, run};
 
-const SYSTEM: &str = r#"You are a terminal agent. Return JSON:
-{"command": "shell command", "task_complete": false}
-When done: {"command": null, "task_complete": true}"#;
+struct StrategyAgent { llm: LLM }
 
-struct LLMAgent { llm: LLM }
-
-impl LLMAgent {
-    fn new() -> Self {
-        Self { llm: LLM::new("anthropic/claude-3-haiku") }
-    }
-}
-
-impl Agent for LLMAgent {
+impl Agent for StrategyAgent {
     fn solve(&mut self, req: &Request) -> Response {
-        let prompt = format!(
-            "Task: {}\nStep: {}\nOutput: {:?}\nExit: {:?}",
-            req.instruction, req.step, req.output, req.exit_code
-        );
+        // 1. Quick analysis
+        let analysis = self.llm.ask(
+            &format!("Analyze briefly: {}", req.instruction),
+            "claude-3-haiku"
+        ).unwrap_or_else(|_| LLMResponse::default());
+
+        // 2. Decide complexity
+        let is_complex = analysis.text.to_lowercase().contains("complex");
+
+        // 3. Use appropriate model
+        let model = if is_complex { "claude-3-opus" } else { "claude-3-haiku" };
         
-        match self.llm.ask_with_system(SYSTEM, &prompt) {
+        match self.llm.ask(&req.instruction, model) {
             Ok(r) => Response::from_llm(&r.text),
-            Err(e) => {
-                eprintln!("LLM error: {}", e);
-                Response::done()
-            }
+            Err(_) => Response::done(),
         }
     }
-    
-    fn cleanup(&mut self) {
-        eprintln!("Cost: ${:.4}", self.llm.total_cost);
-    }
 }
 
-fn main() { run(&mut LLMAgent::new()); }
+fn main() {
+    run(&mut StrategyAgent { llm: LLM::new() });
+}
 ```
 
-### With History
+### Function Calling
 
 ```rust
-use term_sdk::{Agent, Request, Response, LLM, Message, run};
+use term_sdk::{Agent, Request, Response, LLM, Tool, Message, run};
 
-struct HistoryAgent {
-    llm: LLM,
-    history: Vec<Message>,
-}
+struct ToolAgent { llm: LLM }
 
-impl HistoryAgent {
-    fn new() -> Self {
-        Self {
-            llm: LLM::new("anthropic/claude-3-haiku"),
-            history: Vec::new(),
-        }
+impl Agent for ToolAgent {
+    fn setup(&mut self) {
+        self.llm.register_function("search", |args| {
+            let pattern = args.get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or("*");
+            Ok(format!("Found: {}", pattern))
+        });
     }
-}
 
-impl Agent for HistoryAgent {
     fn solve(&mut self, req: &Request) -> Response {
-        self.history.push(Message::user(
-            format!("Step {}: {}", req.step, req.output.as_deref().unwrap_or("start"))
-        ));
-        
-        if self.history.len() > 10 {
-            self.history = self.history[self.history.len()-10..].to_vec();
-        }
-        
-        let mut messages = vec![Message::system(format!("Task: {}", req.instruction))];
-        messages.extend(self.history.clone());
-        
-        match self.llm.chat(&messages) {
-            Ok(r) => {
-                self.history.push(Message::assistant(&r.text));
-                Response::from_llm(&r.text)
-            }
-            Err(_) => Response::done()
+        let tools = vec![
+            Tool::new("search", "Search files")
+                .with_parameters(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string"}
+                    }
+                })),
+        ];
+
+        match self.llm.chat_with_functions(
+            &[Message::user(&req.instruction)],
+            &tools,
+            "claude-3-sonnet",
+            5,
+        ) {
+            Ok(r) => Response::from_llm(&r.text),
+            Err(_) => Response::done(),
         }
     }
 }
 
-fn main() { run(&mut HistoryAgent::new()); }
+fn main() {
+    run(&mut ToolAgent { llm: LLM::new() });
+}
 ```
 
-## Environment Variables
+## Models
 
-| Variable | Description |
-|----------|-------------|
-| `OPENROUTER_API_KEY` | OpenRouter API key |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
+| Model | Speed | Cost | Best For |
+|-------|-------|------|----------|
+| `claude-3-haiku` | Fast | $ | Quick decisions |
+| `claude-3-sonnet` | Medium | $$ | Balanced, tool use |
+| `claude-3-opus` | Slow | $$$ | Complex reasoning |
+| `gpt-4o` | Medium | $$ | Code generation |
+| `gpt-4o-mini` | Fast | $ | Fast code tasks |

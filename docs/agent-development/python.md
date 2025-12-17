@@ -1,6 +1,6 @@
 # Python SDK
 
-Build Term Challenge agents in Python.
+Build Term Challenge agents in Python with dynamic multi-model LLM support.
 
 ## Installation
 
@@ -23,62 +23,49 @@ if __name__ == "__main__":
     run(MyAgent())
 ```
 
-## API Reference
+## Multi-Model LLM
 
-### Request
-
-```python
-class Request:
-    instruction: str      # Task description
-    step: int            # Step number (1-indexed)
-    last_command: str?   # Previous command
-    output: str?         # Command output
-    exit_code: int?      # Exit code
-    cwd: str             # Working directory
-    
-    # Properties
-    first: bool          # True on step 1
-    ok: bool             # True if exit_code == 0
-    failed: bool         # True if exit_code != 0
-    
-    # Methods
-    has(*patterns) -> bool   # Check output contains pattern
-    match(regex) -> Match?   # Regex match on output
-```
-
-### Response
+Use different models for different tasks:
 
 ```python
-class Response:
-    command: str?        # Command to execute
-    task_complete: bool  # True when done
-    
-    # Class methods
-    cmd(command: str) -> Response      # Execute command
-    done() -> Response                 # Mark complete
-    from_llm(text: str) -> Response    # Parse LLM output
-    
-    # Instance methods
-    complete() -> Response             # Mark complete
-```
+from term_sdk import Agent, Request, Response, LLM, run
 
-### Agent
-
-```python
-class Agent(ABC):
-    def setup(self) -> None:
-        """Initialize resources (optional)"""
-        pass
+class SmartAgent(Agent):
+    def setup(self):
+        self.llm = LLM()  # No default model
     
-    @abstractmethod
     def solve(self, req: Request) -> Response:
-        """Process request and return response"""
-        pass
+        # Fast model for quick decisions
+        quick = self.llm.ask(
+            "Should I use ls or find?",
+            model="claude-3-haiku"
+        )
+        
+        # Powerful model for complex reasoning
+        solution = self.llm.ask(
+            f"How to: {req.instruction}",
+            model="claude-3-opus",
+            temperature=0.2
+        )
+        
+        # Code-optimized model
+        code = self.llm.ask(
+            "Write the bash command",
+            model="gpt-4o",
+            max_tokens=500
+        )
+        
+        return Response.from_llm(code.text)
     
-    def cleanup(self) -> None:
-        """Clean up resources (optional)"""
-        pass
+    def cleanup(self):
+        # Per-model stats
+        stats = self.llm.get_stats()
+        print(f"Haiku: {stats['per_model'].get('claude-3-haiku', {})}")
+        print(f"Opus: {stats['per_model'].get('claude-3-opus', {})}")
+        print(f"Total cost: ${stats['total_cost']:.4f}")
 ```
+
+## API Reference
 
 ### LLM
 
@@ -86,137 +73,190 @@ class Agent(ABC):
 class LLM:
     def __init__(
         self,
-        provider: str = "openrouter",    # openrouter, openai, anthropic
-        model: str = "anthropic/claude-3-haiku",
-        api_key: str? = None,            # Or use env var
+        default_model: str = None,  # Optional default
         temperature: float = 0.3,
-        max_tokens: int = 1024,
+        max_tokens: int = 4096,
     ): ...
     
-    def ask(self, prompt: str, system: str? = None) -> LLMResponse:
-        """Ask a question"""
+    # Specify model per call
+    def ask(
+        self,
+        prompt: str,
+        model: str = None,        # Required if no default
+        system: str = None,
+        tools: List[Tool] = None,
+        temperature: float = None,
+        max_tokens: int = None,
+    ) -> LLMResponse: ...
     
-    def chat(self, messages: list[dict]) -> LLMResponse:
-        """Chat with message history"""
+    def chat(
+        self,
+        messages: List[dict],
+        model: str = None,
+        tools: List[Tool] = None,
+        temperature: float = None,
+        max_tokens: int = None,
+    ) -> LLMResponse: ...
+    
+    def chat_with_functions(
+        self,
+        messages: List[dict],
+        tools: List[Tool],
+        model: str = None,
+        max_iterations: int = 10,
+    ) -> LLMResponse: ...
+    
+    def register_function(self, name: str, handler: Callable): ...
+    def execute_function(self, call: FunctionCall) -> Any: ...
     
     # Stats
+    def get_stats(self, model: str = None) -> dict: ...
     total_tokens: int
     total_cost: float
     request_count: int
+```
 
+### LLMResponse
+
+```python
+@dataclass
 class LLMResponse:
-    text: str          # Response text
-    model: str         # Model used
-    tokens: int        # Total tokens
-    cost: float        # Cost in USD
-    latency_ms: int    # Response time
+    text: str
+    model: str
+    tokens: int
+    cost: float
+    latency_ms: int
+    function_calls: List[FunctionCall]
     
-    def json(self) -> dict?   # Parse as JSON
+    def json(self) -> dict | None: ...
+    def has_function_calls(self) -> bool: ...
+```
+
+### Request
+
+```python
+@dataclass
+class Request:
+    instruction: str
+    step: int
+    last_command: str | None
+    output: str | None
+    exit_code: int | None
+    cwd: str
+    
+    first: bool      # step == 1
+    ok: bool         # exit_code == 0
+    failed: bool     # exit_code != 0
+    
+    def has(*patterns) -> bool: ...
+```
+
+### Response
+
+```python
+@dataclass
+class Response:
+    command: str | None
+    text: str | None
+    task_complete: bool
+    
+    @classmethod
+    def cmd(cls, command: str, text: str = None) -> Response: ...
+    @classmethod
+    def say(cls, text: str) -> Response: ...
+    @classmethod
+    def done(cls, text: str = None) -> Response: ...
+    @classmethod
+    def from_llm(cls, text: str) -> Response: ...
+    
+    def with_text(self, text: str) -> Response: ...
+    def complete(self) -> Response: ...
 ```
 
 ## Examples
 
-### Simple Agent
-
-```python
-from term_sdk import Agent, Request, Response, run
-
-class SimpleAgent(Agent):
-    def solve(self, req: Request) -> Response:
-        # First step: explore
-        if req.first:
-            return Response.cmd("ls -la")
-        
-        # Check errors
-        if req.failed:
-            return Response.cmd("pwd")
-        
-        # Check output
-        if req.has("hello", "world"):
-            return Response.done()
-        
-        # Create file
-        if "file" in req.instruction.lower():
-            return Response.cmd("echo 'test' > test.txt")
-        
-        return Response.done()
-
-if __name__ == "__main__":
-    run(SimpleAgent())
-```
-
-### LLM Agent
+### Multi-Model Strategy
 
 ```python
 from term_sdk import Agent, Request, Response, LLM, run
 
-SYSTEM = """You are a terminal agent. Return JSON:
-{"command": "shell command", "task_complete": false}
-When done: {"command": null, "task_complete": true}"""
-
-class LLMAgent(Agent):
+class StrategyAgent(Agent):
     def setup(self):
-        self.llm = LLM(model="anthropic/claude-3-haiku")
+        self.llm = LLM()
     
     def solve(self, req: Request) -> Response:
-        prompt = f"""Task: {req.instruction}
-Step: {req.step}
-Output: {req.output}
-Exit: {req.exit_code}"""
+        # 1. Quick analysis with fast model
+        analysis = self.llm.ask(
+            f"Analyze task briefly: {req.instruction}",
+            model="claude-3-haiku",
+            max_tokens=200
+        )
         
-        result = self.llm.ask(prompt, system=SYSTEM)
+        # 2. Decide complexity
+        is_complex = "complex" in analysis.text.lower()
+        
+        # 3. Use appropriate model
+        if is_complex:
+            result = self.llm.ask(
+                f"Solve step by step: {req.instruction}",
+                model="claude-3-opus",
+                temperature=0.1
+            )
+        else:
+            result = self.llm.ask(
+                f"Quick solution: {req.instruction}",
+                model="claude-3-haiku"
+            )
+        
         return Response.from_llm(result.text)
-    
-    def cleanup(self):
-        print(f"Cost: ${self.llm.total_cost:.4f}", file=__import__('sys').stderr)
-
-if __name__ == "__main__":
-    run(LLMAgent())
 ```
 
-### With History
+### Function Calling with Model Selection
 
 ```python
-from term_sdk import Agent, Request, Response, LLM, run
+from term_sdk import Agent, Request, Response, LLM, Tool, run
 
-class HistoryAgent(Agent):
+class ToolAgent(Agent):
     def setup(self):
-        self.llm = LLM(model="anthropic/claude-3-haiku")
-        self.history = []
+        self.llm = LLM()
+        self.llm.register_function("search", self.search)
+        self.llm.register_function("read", self.read)
+    
+    def search(self, pattern: str) -> str:
+        return f"Found files matching {pattern}"
+    
+    def read(self, path: str) -> str:
+        return f"Contents of {path}"
     
     def solve(self, req: Request) -> Response:
-        # Add to history
-        self.history.append({
-            "role": "user",
-            "content": f"Step {req.step}: {req.output or 'start'}"
-        })
-        
-        # Keep last 10 messages
-        if len(self.history) > 10:
-            self.history = self.history[-10:]
-        
-        # Chat with context
-        messages = [
-            {"role": "system", "content": f"Task: {req.instruction}"},
-            *self.history
+        tools = [
+            Tool("search", "Search files", {
+                "type": "object",
+                "properties": {"pattern": {"type": "string"}}
+            }),
+            Tool("read", "Read file", {
+                "type": "object", 
+                "properties": {"path": {"type": "string"}}
+            }),
         ]
         
-        result = self.llm.chat(messages)
-        self.history.append({
-            "role": "assistant",
-            "content": result.text
-        })
+        # Use sonnet for tool use (good balance)
+        result = self.llm.chat_with_functions(
+            [{"role": "user", "content": req.instruction}],
+            tools,
+            model="claude-3-sonnet"
+        )
         
         return Response.from_llm(result.text)
-
-if __name__ == "__main__":
-    run(HistoryAgent())
 ```
 
-## Environment Variables
+## Models
 
-| Variable | Description |
-|----------|-------------|
-| `OPENROUTER_API_KEY` | OpenRouter API key |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
+| Model | Speed | Cost | Best For |
+|-------|-------|------|----------|
+| `claude-3-haiku` | Fast | $ | Quick decisions, simple tasks |
+| `claude-3-sonnet` | Medium | $$ | Balanced, tool use |
+| `claude-3-opus` | Slow | $$$ | Complex reasoning |
+| `gpt-4o` | Medium | $$ | Code generation |
+| `gpt-4o-mini` | Fast | $ | Fast code tasks |
+| `llama-3-70b` | Medium | $ | Open source |

@@ -1,32 +1,21 @@
 """
 LLM Client for Term Challenge agents.
 
-The provider is configured at upload time. In your agent code,
-just specify the model you want to use.
+Agents can use multiple models dynamically - specify the model on each call.
 
 Example:
     ```python
     from term_sdk import LLM
     
-    # Just specify the model - provider is configured at upload
-    llm = LLM(model="claude-3-haiku")
+    llm = LLM()  # No default model needed
     
-    # Simple question
-    response = llm.ask("What is 2+2?")
-    print(response.text)
+    # Use different models for different tasks
+    result = llm.ask("Quick question", model="claude-3-haiku")
+    result = llm.ask("Complex analysis", model="claude-3-opus")
+    result = llm.ask("Code generation", model="gpt-4o")
     
     # With function calling
-    tools = [
-        Tool(
-            name="search",
-            description="Search for files",
-            parameters={"type": "object", "properties": {"query": {"type": "string"}}}
-        )
-    ]
-    response = llm.ask("Find Python files", tools=tools)
-    if response.function_calls:
-        for call in response.function_calls:
-            print(f"Call {call.name} with {call.arguments}")
+    result = llm.chat(messages, tools=tools, model="claude-3-sonnet")
     ```
 """
 
@@ -80,50 +69,50 @@ def _log(msg: str):
 
 class LLM:
     """
-    LLM client for inference.
+    LLM client for inference with dynamic model selection.
     
+    Agents can use multiple models - specify the model on each call.
     The provider is determined at runtime based on environment configuration.
-    Just specify the model you want to use.
     
     Args:
-        model: Model name (e.g., "claude-3-haiku", "gpt-4o")
-        temperature: Sampling temperature (0.0 - 2.0)
-        max_tokens: Maximum response tokens
+        default_model: Default model if not specified per-call (optional)
+        temperature: Default sampling temperature (0.0 - 2.0)
+        max_tokens: Default maximum response tokens
         timeout: Request timeout in seconds
     
     Example:
         ```python
-        llm = LLM(model="claude-3-haiku")
+        llm = LLM()
         
-        # Simple question
-        response = llm.ask("What is Python?")
-        print(response.text)
+        # Different models for different tasks
+        quick = llm.ask("What is 2+2?", model="claude-3-haiku")
+        detailed = llm.ask("Explain quantum physics", model="claude-3-opus")
+        code = llm.ask("Write a Python function", model="gpt-4o")
         
-        # With system prompt
-        response = llm.ask("Write hello world", system="You are a Python expert.")
-        
-        # With function calling
-        response = llm.ask(
-            "What's the weather?",
-            tools=[Tool(name="get_weather", description="Get weather", parameters={})]
+        # Override parameters per call
+        result = llm.ask(
+            "Creative story",
+            model="claude-3-sonnet",
+            temperature=0.9,
+            max_tokens=2000
         )
         
-        # Chat with history
-        response = llm.chat([
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "Hello!"},
-        ])
+        # Chat with specific model
+        result = llm.chat(
+            messages=[{"role": "user", "content": "Hello"}],
+            model="gpt-4o-mini"
+        )
         ```
     """
     
     def __init__(
         self,
-        model: str = "claude-3-haiku",
+        default_model: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 4096,
         timeout: int = 120,
     ):
-        self.model = model
+        self.default_model = default_model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
@@ -135,7 +124,8 @@ class LLM:
         if not self._api_key:
             _log("Warning: LLM_API_KEY or OPENROUTER_API_KEY not set")
         
-        # Stats
+        # Stats per model
+        self.stats: Dict[str, Dict[str, Any]] = {}
         self.total_tokens = 0
         self.total_cost = 0.0
         self.request_count = 0
@@ -146,6 +136,14 @@ class LLM:
         # Function handlers
         self._function_handlers: Dict[str, Callable] = {}
     
+    def _get_model(self, model: Optional[str]) -> str:
+        """Get model to use, with fallback to default."""
+        if model:
+            return model
+        if self.default_model:
+            return self.default_model
+        raise ValueError("No model specified. Pass model= parameter or set default_model.")
+    
     def register_function(self, name: str, handler: Callable):
         """Register a function handler for function calling."""
         self._function_handlers[name] = handler
@@ -153,18 +151,22 @@ class LLM:
     def ask(
         self,
         prompt: str,
+        model: Optional[str] = None,
         system: Optional[str] = None,
         tools: Optional[List[Tool]] = None,
-        **kwargs
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> LLMResponse:
         """
-        Ask a question.
+        Ask a question with specified model.
         
         Args:
             prompt: User prompt
+            model: Model to use (required if no default_model)
             system: Optional system prompt
             tools: Optional list of tools/functions
-            **kwargs: Override model, temperature, max_tokens
+            temperature: Override default temperature
+            max_tokens: Override default max_tokens
         
         Returns:
             LLMResponse with text, function_calls, tokens, cost
@@ -173,28 +175,38 @@ class LLM:
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        return self.chat(messages, tools=tools, **kwargs)
+        return self.chat(
+            messages,
+            model=model,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
     
     def chat(
         self,
         messages: List[Dict[str, str]],
+        model: Optional[str] = None,
         tools: Optional[List[Tool]] = None,
-        **kwargs
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> LLMResponse:
         """
-        Chat with message history.
+        Chat with message history using specified model.
         
         Args:
             messages: List of {"role": "user/assistant/system", "content": "..."}
+            model: Model to use (required if no default_model)
             tools: Optional list of tools/functions for function calling
-            **kwargs: Override model, temperature, max_tokens
+            temperature: Override default temperature
+            max_tokens: Override default max_tokens
         
         Returns:
             LLMResponse with text, function_calls, tokens, cost
         """
-        model = kwargs.get("model", self.model)
-        temperature = kwargs.get("temperature", self.temperature)
-        max_tokens = kwargs.get("max_tokens", self.max_tokens)
+        model = self._get_model(model)
+        temp = temperature if temperature is not None else self.temperature
+        tokens = max_tokens if max_tokens is not None else self.max_tokens
         
         start = time.time()
         
@@ -203,8 +215,8 @@ class LLM:
             payload: Dict[str, Any] = {
                 "model": model,
                 "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
+                "temperature": temp,
+                "max_tokens": tokens,
             }
             
             # Add tools if provided
@@ -262,6 +274,13 @@ class LLM:
             self.total_cost += cost
             self.request_count += 1
             
+            # Per-model stats
+            if model not in self.stats:
+                self.stats[model] = {"tokens": 0, "cost": 0.0, "requests": 0}
+            self.stats[model]["tokens"] += total_tokens
+            self.stats[model]["cost"] += cost
+            self.stats[model]["requests"] += 1
+            
             _log(f"{model}: {total_tokens} tokens, ${cost:.4f}, {latency_ms}ms")
             
             return LLMResponse(
@@ -288,8 +307,10 @@ class LLM:
         self,
         messages: List[Dict[str, str]],
         tools: List[Tool],
+        model: Optional[str] = None,
         max_iterations: int = 10,
-        **kwargs
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> LLMResponse:
         """
         Chat with automatic function execution.
@@ -300,8 +321,10 @@ class LLM:
         Args:
             messages: Initial messages
             tools: Available tools
+            model: Model to use
             max_iterations: Max function call iterations
-            **kwargs: Model parameters
+            temperature: Override default temperature
+            max_tokens: Override default max_tokens
         
         Returns:
             Final LLMResponse
@@ -309,7 +332,13 @@ class LLM:
         messages = list(messages)  # Copy
         
         for _ in range(max_iterations):
-            response = self.chat(messages, tools=tools, **kwargs)
+            response = self.chat(
+                messages,
+                model=model,
+                tools=tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
             
             if not response.function_calls:
                 return response
@@ -344,6 +373,17 @@ class LLM:
         
         return response
     
+    def get_stats(self, model: Optional[str] = None) -> Dict[str, Any]:
+        """Get usage stats, optionally for a specific model."""
+        if model:
+            return self.stats.get(model, {"tokens": 0, "cost": 0.0, "requests": 0})
+        return {
+            "total_tokens": self.total_tokens,
+            "total_cost": self.total_cost,
+            "request_count": self.request_count,
+            "per_model": self.stats,
+        }
+    
     def _calculate_cost(self, model: str, prompt_tokens: int, completion_tokens: int) -> float:
         """Calculate cost based on model pricing."""
         # Pricing per 1M tokens (input, output)
@@ -356,6 +396,8 @@ class LLM:
             "gpt-4o-mini": (0.15, 0.6),
             "gpt-4-turbo": (10.0, 30.0),
             "gpt-3.5-turbo": (0.5, 1.5),
+            "llama-3": (0.2, 0.2),
+            "mixtral": (0.5, 0.5),
         }
         
         # Find matching pricing

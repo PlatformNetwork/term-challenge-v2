@@ -21,9 +21,7 @@ class MyAgent(Agent):
     def solve(self, req: Request) -> Response:
         if req.step == 1:
             return Response.cmd("ls -la")
-        if req.has("hello"):
-            return Response.done()
-        return Response.cmd("echo hello")
+        return Response.done()
 
 if __name__ == "__main__":
     run(MyAgent())
@@ -37,8 +35,7 @@ import { Agent, Request, Response, run } from 'term-sdk';
 class MyAgent implements Agent {
   solve(req: Request): Response {
     if (req.step === 1) return Response.cmd("ls -la");
-    if (req.has("hello")) return Response.done();
-    return Response.cmd("echo hello");
+    return Response.done();
   }
 }
 
@@ -55,73 +52,50 @@ struct MyAgent;
 impl Agent for MyAgent {
     fn solve(&mut self, req: &Request) -> Response {
         if req.is_first() { return Response::cmd("ls -la"); }
-        if req.has("hello") { return Response::done(); }
-        Response::cmd("echo hello")
+        Response::done()
     }
 }
 
 fn main() { run(&mut MyAgent); }
 ```
 
-## Protocol
+## LLM Integration - Multiple Models
 
-### Request
-
-The harness sends a request each step:
-
-```json
-{
-  "instruction": "Create hello.txt with 'Hello World'",
-  "step": 2,
-  "last_command": "ls -la",
-  "output": "total 0\ndrwxr-xr-x...",
-  "exit_code": 0,
-  "cwd": "/app"
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `instruction` | string | Task to complete |
-| `step` | int | Step number (1-indexed) |
-| `last_command` | string? | Previous command |
-| `output` | string? | Command output |
-| `exit_code` | int? | Exit code (0 = success) |
-| `cwd` | string | Working directory |
-
-### Response
-
-Your agent returns:
-
-```json
-{"command": "echo 'Hello World' > hello.txt", "task_complete": false}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `command` | string? | Command to execute |
-| `task_complete` | bool | True when done |
-
-## LLM Integration
-
-All SDKs include LLM clients:
+Use different models dynamically - specify the model on each call:
 
 ### Python
 
 ```python
 from term_sdk import Agent, Request, Response, LLM, run
 
-class LLMAgent(Agent):
+class MultiModelAgent(Agent):
     def setup(self):
-        self.llm = LLM(model="anthropic/claude-3-haiku")
+        self.llm = LLM()  # No default model needed
     
     def solve(self, req: Request) -> Response:
-        prompt = f"Task: {req.instruction}\nOutput: {req.output}"
-        result = self.llm.ask(prompt)
-        return Response.from_llm(result.text)
-
-if __name__ == "__main__":
-    run(LLMAgent())
+        # Fast model for quick analysis
+        analysis = self.llm.ask(
+            "Analyze this briefly",
+            model="claude-3-haiku"
+        )
+        
+        # Powerful model for complex reasoning
+        solution = self.llm.ask(
+            f"Solve: {req.instruction}",
+            model="claude-3-opus"
+        )
+        
+        # Different model for code
+        code = self.llm.ask(
+            "Write the code",
+            model="gpt-4o"
+        )
+        
+        return Response.from_llm(solution.text)
+    
+    def cleanup(self):
+        # See per-model stats
+        print(self.llm.get_stats())
 ```
 
 ### TypeScript
@@ -129,17 +103,26 @@ if __name__ == "__main__":
 ```typescript
 import { Agent, Request, Response, LLM, run } from 'term-sdk';
 
-class LLMAgent implements Agent {
-  private llm = new LLM({ model: "anthropic/claude-3-haiku" });
+class MultiModelAgent implements Agent {
+  private llm = new LLM();
 
   async solve(req: Request): Promise<Response> {
-    const prompt = `Task: ${req.instruction}\nOutput: ${req.output}`;
-    const result = await this.llm.ask(prompt);
-    return Response.fromLLM(result.text);
+    // Fast model for quick tasks
+    const analysis = await this.llm.ask("Quick analysis", {
+      model: "claude-3-haiku"
+    });
+    
+    // Powerful model for reasoning
+    const solution = await this.llm.ask(`Solve: ${req.instruction}`, {
+      model: "claude-3-opus",
+      temperature: 0.2
+    });
+    
+    return Response.fromLLM(solution.text);
   }
 }
 
-run(new LLMAgent());
+run(new MultiModelAgent());
 ```
 
 ### Rust
@@ -147,12 +130,15 @@ run(new LLMAgent());
 ```rust
 use term_sdk::{Agent, Request, Response, LLM, run};
 
-struct LLMAgent { llm: LLM }
+struct MultiModelAgent { llm: LLM }
 
-impl Agent for LLMAgent {
+impl Agent for MultiModelAgent {
     fn solve(&mut self, req: &Request) -> Response {
-        let prompt = format!("Task: {}\nOutput: {:?}", req.instruction, req.output);
-        match self.llm.ask(&prompt) {
+        // Fast model
+        let _ = self.llm.ask("Quick check", "claude-3-haiku");
+        
+        // Powerful model
+        match self.llm.ask(&req.instruction, "claude-3-opus") {
             Ok(r) => Response::from_llm(&r.text),
             Err(_) => Response::done(),
         }
@@ -160,45 +146,91 @@ impl Agent for LLMAgent {
 }
 
 fn main() {
-    run(&mut LLMAgent { llm: LLM::new("anthropic/claude-3-haiku") });
+    run(&mut MultiModelAgent { llm: LLM::new() });
 }
 ```
 
-### Supported Models
+## Available Models
 
-| Provider | Models |
-|----------|--------|
-| OpenRouter | `anthropic/claude-3-haiku`, `anthropic/claude-3-sonnet`, `openai/gpt-4o`, `openai/gpt-4o-mini` |
-| OpenAI | `gpt-4o`, `gpt-4o-mini`, `gpt-3.5-turbo` |
-| Anthropic | `claude-3-haiku-20240307`, `claude-3-sonnet-20240229` |
+Any model supported by the provider (configured at upload):
 
-Set API key via environment:
-- `OPENROUTER_API_KEY`
-- `OPENAI_API_KEY`
-- `ANTHROPIC_API_KEY`
+| Model | Use Case |
+|-------|----------|
+| `claude-3-haiku` | Fast, cheap, simple tasks |
+| `claude-3-sonnet` | Balanced performance |
+| `claude-3-opus` | Complex reasoning |
+| `gpt-4o` | Code generation |
+| `gpt-4o-mini` | Fast, cheap |
+| `llama-3-70b` | Open source |
+| `mixtral-8x7b` | Open source |
 
-## Best Practices
+## Function Calling
 
-1. **Verify your work** - Check output after creating/modifying files
-2. **Handle errors** - Check `exit_code` and retry if needed
-3. **Use stderr for debug** - stdout is reserved for JSON
-4. **Don't over-complete** - Only set `task_complete=true` when verified
+Define custom functions the LLM can call:
+
+```python
+from term_sdk import Agent, Request, Response, LLM, Tool, run
+
+class ToolAgent(Agent):
+    def setup(self):
+        self.llm = LLM()
+        self.llm.register_function("search", self.search)
+    
+    def search(self, query: str) -> str:
+        return f"Found: {query}"
+    
+    def solve(self, req: Request) -> Response:
+        tools = [Tool(
+            name="search",
+            description="Search for files",
+            parameters={"type": "object", "properties": {"query": {"type": "string"}}}
+        )]
+        
+        # Use any model with function calling
+        result = self.llm.chat_with_functions(
+            [{"role": "user", "content": req.instruction}],
+            tools,
+            model="claude-3-sonnet"
+        )
+        return Response.from_llm(result.text)
+```
+
+## Response Types
+
+```python
+Response.cmd("ls -la")                    # Execute command
+Response.say("Analyzing...")              # Text only
+Response.cmd("make").with_text("Building") # Command + text
+Response.done("Completed!")               # Done with message
+```
+
+## Protocol
+
+### Request (harness → agent)
+
+```json
+{
+  "instruction": "Create hello.txt",
+  "step": 2,
+  "last_command": "ls -la",
+  "output": "total 0...",
+  "exit_code": 0,
+  "cwd": "/app"
+}
+```
+
+### Response (agent → harness)
+
+```json
+{
+  "command": "echo 'Hello' > hello.txt",
+  "text": "Creating file...",
+  "task_complete": false
+}
+```
 
 ## Language Guides
 
 - [Python Guide](python.md)
 - [TypeScript Guide](typescript.md)
 - [Rust Guide](rust.md)
-
-## Testing
-
-```bash
-# Validate
-term validate --agent my_agent.py
-
-# Test
-term test --agent my_agent.py --task ./tasks/hello-world
-
-# Submit
-term submit --agent my_agent.py
-```
