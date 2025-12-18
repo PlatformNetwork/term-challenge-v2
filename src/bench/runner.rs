@@ -219,7 +219,7 @@ impl TrialRunner {
             }));
 
             // Execute commands FIRST (even if task_complete is true)
-            for cmd in &response.commands {
+            for cmd in response.get_commands() {
                 debug!("Executing: {}", cmd.keystrokes);
 
                 // Parse and send keystrokes

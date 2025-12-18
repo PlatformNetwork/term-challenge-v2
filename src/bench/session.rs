@@ -263,14 +263,61 @@ impl TerminalCommand {
     }
 }
 
-/// Agent response format (compatible with Terminal-Bench protocol)
+/// Agent response format (new simplified protocol)
+/// 
+/// New format (preferred):
+/// ```json
+/// {"command": "ls -la", "task_complete": false}
+/// {"command": null, "task_complete": true}
+/// ```
+/// 
+/// Legacy format (still supported):
+/// ```json
+/// {"analysis": "...", "plan": "...", "commands": [...], "task_complete": false}
+/// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentResponse {
-    pub analysis: String,
-    pub plan: String,
-    pub commands: Vec<CommandSpec>,
+    /// Single command to execute (new format)
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Text/analysis message (optional)
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Task complete flag
     #[serde(default)]
     pub task_complete: bool,
+    
+    // Legacy fields (for backward compatibility)
+    #[serde(default)]
+    pub analysis: Option<String>,
+    #[serde(default)]
+    pub plan: Option<String>,
+    #[serde(default)]
+    pub commands: Vec<CommandSpec>,
+}
+
+impl AgentResponse {
+    /// Get commands to execute (handles both new and legacy format)
+    pub fn get_commands(&self) -> Vec<CommandSpec> {
+        // New format: single command field
+        if let Some(cmd) = &self.command {
+            if !cmd.is_empty() {
+                return vec![CommandSpec::run(cmd.clone())];
+            }
+        }
+        
+        // Legacy format: commands array
+        if !self.commands.is_empty() {
+            return self.commands.clone();
+        }
+        
+        vec![]
+    }
+    
+    /// Get analysis/text message
+    pub fn get_text(&self) -> Option<&str> {
+        self.text.as_deref().or(self.analysis.as_deref())
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -278,6 +325,20 @@ pub struct CommandSpec {
     pub keystrokes: String,
     #[serde(default = "default_duration")]
     pub duration: f64,
+}
+
+impl CommandSpec {
+    /// Create from a shell command (adds newline if needed)
+    pub fn run(command: impl Into<String>) -> Self {
+        let mut cmd = command.into();
+        if !cmd.ends_with('\n') {
+            cmd.push('\n');
+        }
+        Self {
+            keystrokes: cmd,
+            duration: 0.5,
+        }
+    }
 }
 
 fn default_duration() -> f64 {
@@ -299,12 +360,14 @@ impl AgentResponse {
     }
 
     /// Create a completion response
-    pub fn complete(analysis: &str) -> Self {
+    pub fn complete(text: &str) -> Self {
         Self {
-            analysis: analysis.to_string(),
-            plan: "Task complete".to_string(),
-            commands: vec![],
+            command: None,
+            text: Some(text.to_string()),
             task_complete: true,
+            analysis: None,
+            plan: None,
+            commands: vec![],
         }
     }
 }

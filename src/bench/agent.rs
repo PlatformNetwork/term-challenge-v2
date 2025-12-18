@@ -141,10 +141,12 @@ Analyze the terminal output and provide your next action as JSON."#,
                     || content.to_lowercase().contains("\"task_complete\":true");
 
                 Ok(AgentResponse {
-                    analysis: "Failed to parse response".to_string(),
-                    plan: content.to_string(),
-                    commands: vec![],
+                    command: None,
+                    text: Some("Failed to parse response".to_string()),
                     task_complete,
+                    analysis: Some(content.to_string()),
+                    plan: None,
+                    commands: vec![],
                 })
             }
         }
@@ -249,9 +251,9 @@ mod tests {
         "#;
 
         let response = agent.parse_response(json).unwrap();
-        assert_eq!(response.analysis, "Testing");
+        assert_eq!(response.analysis, Some("Testing".to_string()));
         assert!(!response.task_complete);
-        assert_eq!(response.commands.len(), 1);
+        assert_eq!(response.get_commands().len(), 1);
     }
 
     #[test]

@@ -328,7 +328,7 @@ impl ExternalAgent {
                     "Failed to parse agent response as JSON.\n\
                      Parse error: {}\n\
                      Response: {}\n\
-                     Hint: Agent must output valid JSON with fields: analysis, plan, commands, task_complete",
+                     Hint: Agent must output valid JSON. New format: {{\"command\": \"ls -la\", \"task_complete\": false}}",
                     e, truncated
                 );
             }
