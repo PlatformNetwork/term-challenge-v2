@@ -1,10 +1,10 @@
 # Term Challenge Protocol Specification
 
-This document defines the protocol for building agents compatible with Term Challenge and Terminal-Bench.
+This document defines the communication protocol between the harness and agents.
 
 ## Overview
 
-Agents interact with a sandboxed Linux terminal environment via a simple request-response protocol. The agent receives the current terminal state and responds with commands to execute.
+Agents communicate with the harness via **JSON over stdin/stdout**, one message per line. The agent process stays alive between steps, preserving memory and state.
 
 ## Communication Flow
 
@@ -13,13 +13,13 @@ Agents interact with a sandboxed Linux terminal environment via a simple request
 │  Agent  │                    │ Harness │                    │ Terminal │
 └────┬────┘                    └────┬────┘                    └────┬─────┘
      │                              │                              │
-     │  ◄── Task + Terminal State ──│                              │
+     │  ◄── Request (JSON line) ────│                              │
      │                              │                              │
-     │── Response (commands) ──►    │                              │
-     │                              │── Execute keystrokes ──►     │
+     │── Response (JSON line) ──►   │                              │
+     │                              │── Execute command ──►        │
      │                              │                              │
-     │                              │  ◄── Terminal output ────    │
-     │  ◄── New Terminal State ──── │                              │
+     │                              │  ◄── Command output ────     │
+     │  ◄── Request (JSON line) ────│                              │
      │                              │                              │
      │      (repeat until task_complete = true)                    │
      ▼                              ▼                              ▼
@@ -27,188 +27,246 @@ Agents interact with a sandboxed Linux terminal environment via a simple request
 
 ## Request Format (Harness → Agent)
 
-The harness sends task instructions and terminal state:
+One JSON object per line:
 
+```json
+{"instruction": "Create hello.txt with 'Hello, world!'", "step": 1, "last_command": null, "output": null, "exit_code": null, "cwd": "/app"}
 ```
-Task Description:
-{instruction}
 
-Current terminal state:
-{terminal_output}
+### Request Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `instruction` | string | Task to complete (same for all steps) |
+| `step` | integer | Current step number (starts at 1) |
+| `last_command` | string \| null | Previous command executed (null on step 1) |
+| `output` | string \| null | Output from last command (null on step 1) |
+| `exit_code` | integer \| null | Exit code from last command (null on step 1) |
+| `cwd` | string | Current working directory |
+
+### Example Request Sequence
+
+**Step 1 (initial):**
+```json
+{"instruction": "Create a file hello.txt containing 'Hello, world!'", "step": 1, "last_command": null, "output": null, "exit_code": null, "cwd": "/app"}
+```
+
+**Step 2 (after command):**
+```json
+{"instruction": "Create a file hello.txt containing 'Hello, world!'", "step": 2, "last_command": "echo 'Hello, world!' > hello.txt", "output": "", "exit_code": 0, "cwd": "/app"}
+```
+
+**Step 3 (verification):**
+```json
+{"instruction": "Create a file hello.txt containing 'Hello, world!'", "step": 3, "last_command": "cat hello.txt", "output": "Hello, world!", "exit_code": 0, "cwd": "/app"}
 ```
 
 ## Response Format (Agent → Harness)
 
-### JSON Format (Recommended)
+One JSON object per line:
 
 ```json
-{
-  "analysis": "string - Analysis of current terminal state",
-  "plan": "string - Plan for next steps",
-  "commands": [
-    {
-      "keystrokes": "string - Exact keystrokes to send",
-      "duration": 0.1
-    }
-  ],
-  "task_complete": false
-}
+{"command": "echo 'Hello, world!' > hello.txt", "task_complete": false}
 ```
 
-### XML Format (Alternative)
-
-```xml
-<response>
-<analysis>
-Analysis of current terminal state
-</analysis>
-<plan>
-Plan for next steps
-</plan>
-<commands>
-<command>
-<keystrokes>ls -la
-</keystrokes>
-<duration>0.1</duration>
-</command>
-</commands>
-<task_complete>false</task_complete>
-</response>
-```
-
-## Field Specifications
-
-### Required Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `analysis` | string | Your analysis of the current terminal state. What do you see? What has been accomplished? |
-| `plan` | string | Your plan for the next steps. What commands will you run and why? |
-| `commands` | array | List of command objects to execute |
-
-### Command Object
+### Response Fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `keystrokes` | string | (required) | Exact text to send to terminal. Include `\n` to execute commands. |
-| `duration` | float | 1.0 | Seconds to wait after sending keystrokes (0.1 - 60.0) |
+| `command` | string \| null | null | Shell command to execute |
+| `task_complete` | boolean | false | Set to `true` when task is finished |
+| `text` | string \| null | null | Optional message/analysis (for logging) |
 
-### Optional Fields
+### Response Examples
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `task_complete` | boolean | false | Set to `true` when task is finished (requires double confirmation) |
-
-## Keystrokes Syntax
-
-### Basic Commands
+**Execute a command:**
 ```json
-{"keystrokes": "ls -la\n", "duration": 0.1}
-{"keystrokes": "cd /home/user\n", "duration": 0.1}
-{"keystrokes": "python script.py\n", "duration": 5.0}
+{"command": "ls -la", "task_complete": false}
 ```
 
-### Special Keys (tmux-style)
-| Key | Syntax | Example |
-|-----|--------|---------|
-| Enter | `\n` or send "Enter" | `"ls -la\n"` |
-| Ctrl+C | `C-c` | `{"keystrokes": "C-c", "duration": 0.1}` |
-| Ctrl+D | `C-d` | `{"keystrokes": "C-d", "duration": 0.1}` |
-| Ctrl+Z | `C-z` | `{"keystrokes": "C-z", "duration": 0.1}` |
-| Ctrl+L | `C-l` | `{"keystrokes": "C-l", "duration": 0.1}` |
-| Escape | `Escape` | `{"keystrokes": "Escape", "duration": 0.1}` |
-| Tab | `Tab` | `{"keystrokes": "Tab", "duration": 0.1}` |
-| Backspace | `BSpace` | `{"keystrokes": "BSpace", "duration": 0.1}` |
-| Arrow Up | `Up` | `{"keystrokes": "Up", "duration": 0.1}` |
-| Arrow Down | `Down` | `{"keystrokes": "Down", "duration": 0.1}` |
-
-### Interactive Programs (vim, less, etc.)
-
-For interactive programs, send keystrokes without waiting:
-
+**Execute with message:**
 ```json
-{
-  "commands": [
-    {"keystrokes": "vim test.py\n", "duration": 0.5},
-    {"keystrokes": "i", "duration": 0.1},
-    {"keystrokes": "print('hello')", "duration": 0.1},
-    {"keystrokes": "Escape", "duration": 0.1},
-    {"keystrokes": ":wq\n", "duration": 0.3}
-  ]
+{"command": "cat hello.txt", "task_complete": false, "text": "Verifying file contents"}
+```
+
+**Signal completion:**
+```json
+{"command": null, "task_complete": true}
+```
+
+**Complete with message:**
+```json
+{"command": null, "task_complete": true, "text": "Task completed successfully"}
+```
+
+## Agent Lifecycle
+
+```python
+# 1. Setup (called once at start)
+agent.setup()
+
+# 2. Process steps (called for each request)
+while True:
+    request = read_line_from_stdin()
+    response = agent.solve(request)
+    write_line_to_stdout(response)
+    
+    if response.task_complete:
+        break
+
+# 3. Cleanup (called at end)
+agent.cleanup()
+```
+
+**Important:** The agent process stays alive between steps. Use `setup()` to initialize state that persists across steps (LLM client, plans, history, etc.).
+
+## Reading Input Correctly
+
+**IMPORTANT:** Read stdin line-by-line, not until EOF.
+
+### Python
+```python
+# CORRECT - line by line
+for line in sys.stdin:
+    request = json.loads(line)
+    # process...
+
+# WRONG - waits for EOF
+data = sys.stdin.read()  # Will timeout!
+```
+
+### TypeScript
+```typescript
+// CORRECT - readline interface
+import * as readline from 'readline';
+const rl = readline.createInterface({ input: process.stdin });
+for await (const line of rl) {
+    const request = JSON.parse(line);
+    // process...
 }
 ```
 
-## Duration Guidelines
-
-| Command Type | Recommended Duration |
-|--------------|---------------------|
-| Instant (cd, echo, ls) | 0.1s |
-| Fast (cat, grep, find) | 0.5s |
-| Medium (gcc, rustc, npm install) | 1.0 - 5.0s |
-| Slow (make, docker build, wget) | 5.0 - 30.0s |
-| Very slow (large compilation) | 30.0 - 60.0s |
-
-**Important**: Never wait longer than 60 seconds. Use polling instead:
-```json
-{"keystrokes": "", "duration": 10.0}
+### Rust
+```rust
+// CORRECT - lines iterator
+use std::io::BufRead;
+for line in std::io::stdin().lock().lines() {
+    let request: Request = serde_json::from_str(&line?)?;
+    // process...
+}
 ```
 
-## Task Completion
+## Writing Output Correctly
 
-When you believe the task is complete:
+Always flush stdout after writing:
 
-1. First response: Set `"task_complete": true`
-2. Harness will ask for confirmation
-3. Second response: Set `"task_complete": true` again to confirm
+### Python
+```python
+print(json.dumps(response), flush=True)
+```
 
-This double-confirmation prevents premature completion.
+### TypeScript
+```typescript
+console.log(JSON.stringify(response));  // Auto-flushes
+```
+
+### Rust
+```rust
+println!("{}", serde_json::to_string(&response)?);
+std::io::stdout().flush()?;
+```
+
+## Logging (stderr)
+
+Use stderr for debug output - only stdout is used for protocol:
+
+```python
+import sys
+print("[agent] Processing step 1...", file=sys.stderr)
+```
+
+Logs from stderr are captured and displayed by the harness.
+
+## Complete Example
+
+### Request 1
+```json
+{"instruction": "Create hello.txt with 'Hello, world!'", "step": 1, "output": null, "exit_code": null, "cwd": "/app"}
+```
+
+### Response 1
+```json
+{"command": "echo 'Hello, world!' > hello.txt", "task_complete": false}
+```
+
+### Request 2
+```json
+{"instruction": "Create hello.txt with 'Hello, world!'", "step": 2, "last_command": "echo 'Hello, world!' > hello.txt", "output": "", "exit_code": 0, "cwd": "/app"}
+```
+
+### Response 2
+```json
+{"command": "cat hello.txt", "task_complete": false, "text": "Verifying file was created"}
+```
+
+### Request 3
+```json
+{"instruction": "Create hello.txt with 'Hello, world!'", "step": 3, "last_command": "cat hello.txt", "output": "Hello, world!", "exit_code": 0, "cwd": "/app"}
+```
+
+### Response 3
+```json
+{"command": null, "task_complete": true, "text": "File created successfully"}
+```
 
 ## Error Handling
 
-If your response has errors:
-- Invalid JSON → Error message sent back
-- Missing required fields → Warning + retry
-- Invalid keystrokes → Command skipped
+If the agent outputs invalid JSON:
+- Harness logs the error
+- Agent is given another chance
+- After multiple failures, task fails
 
-## Example: Complete Agent Response
+If the agent times out (300s default):
+- Agent process is terminated
+- Task fails with timeout error
+
+## SDK Support
+
+Use the official SDKs for easier implementation:
+
+| Language | Installation |
+|----------|-------------|
+| Python | `pip install term-sdk` or copy `sdk/python/term_sdk/` |
+| TypeScript | `npm install term-sdk` or copy `sdk/typescript/` |
+| Rust | Add `term-sdk` to `Cargo.toml` |
+
+### Minimal Python Agent
+
+```python
+#!/usr/bin/env python3
+from term_sdk import Agent, Request, Response, run
+
+class MyAgent(Agent):
+    def solve(self, req: Request) -> Response:
+        if req.first:
+            return Response.cmd("echo 'Hello, world!' > hello.txt")
+        return Response.done()
+
+if __name__ == "__main__":
+    run(MyAgent())
+```
+
+## Legacy Format Support
+
+The harness also accepts the legacy Terminal-Bench format for backward compatibility:
 
 ```json
 {
-  "analysis": "I can see an empty directory. The task asks me to create a Python script that prints 'Hello World'.",
-  "plan": "I will: 1) Create a file called hello.py using echo, 2) Verify the file was created, 3) Run the script to test it.",
-  "commands": [
-    {
-      "keystrokes": "echo \"print('Hello World')\" > hello.py\n",
-      "duration": 0.1
-    },
-    {
-      "keystrokes": "cat hello.py\n",
-      "duration": 0.1
-    },
-    {
-      "keystrokes": "python3 hello.py\n",
-      "duration": 0.5
-    }
-  ],
+  "analysis": "Terminal shows empty directory",
+  "plan": "Create file using echo",
+  "commands": [{"keystrokes": "echo 'hello' > file.txt\n", "duration": 0.5}],
   "task_complete": false
 }
 ```
 
-## Compatibility
-
-This protocol is compatible with:
-- **Terminal-Bench** harness (terminus-2 JSON/XML parsers)
-- **Term Challenge** evaluation system
-- Any framework that can produce JSON/XML responses
-
-## Building Compatible Agents
-
-Your agent must:
-1. Parse the task instruction and terminal state
-2. Generate a valid JSON or XML response
-3. Handle the conversation loop until task completion
-
-See language-specific SDKs for implementation helpers:
-- [Python SDK](./python/README.md)
-- [JavaScript SDK](./javascript/README.md)
-- [Rust SDK](./rust/README.md)
+However, the new format (`command` + `task_complete`) is recommended.

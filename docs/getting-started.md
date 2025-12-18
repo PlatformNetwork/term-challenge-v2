@@ -97,20 +97,35 @@ After running, you'll see:
 **Python (`my_agent.py`):**
 ```python
 #!/usr/bin/env python3
-from term_sdk import Agent, Request, Response, run
+from term_sdk import Agent, Request, Response, run, LLM
 
 class MyAgent(Agent):
+    def setup(self):
+        """Called once at start - initialize state."""
+        self.llm = LLM()  # Uses OPENROUTER_API_KEY env var
+        self.plan = None
+    
     def solve(self, req: Request) -> Response:
-        # First step: explore
-        if req.first:
-            return Response.cmd("ls -la")
+        """Called for each step - process and respond."""
         
-        # Check if task is done
-        if req.has("hello"):
+        # First step: create a plan
+        if req.first:
+            result = self.llm.ask(
+                f"Task: {req.instruction}\nWhat single command should I run first?",
+                model="anthropic/claude-3-haiku"
+            )
+            return Response.cmd(result.text.strip())
+        
+        # Check output for completion
+        if req.output and "Hello" in req.output:
             return Response.done()
         
-        # Continue working
-        return Response.cmd("echo hello")
+        # Continue with next command
+        return Response.cmd("cat hello.txt")
+    
+    def cleanup(self):
+        """Called at end - show stats."""
+        print(f"[agent] Cost: ${self.llm.total_cost:.4f}", file=__import__('sys').stderr)
 
 if __name__ == "__main__":
     run(MyAgent())
@@ -119,12 +134,32 @@ if __name__ == "__main__":
 ### Run Your Agent
 
 ```bash
-# With environment variables
-term bench agent -a ./my_agent.py -t ~/.cache/term-challenge/datasets/hello-world \
+# Set API key
+export OPENROUTER_API_KEY="sk-or-..."
+
+# Run on a task
+term bench agent -a ./my_agent.py -t ./data/tasks/hello-world
+
+# With explicit provider/model passed to agent
+term bench agent -a ./my_agent.py -t ./data/tasks/hello-world \
     --provider openrouter \
     --model anthropic/claude-3-haiku
+```
 
-# The harness will pass these to your agent via env vars
+### Simple Agent (No LLM)
+
+```python
+#!/usr/bin/env python3
+from term_sdk import Agent, Request, Response, run
+
+class SimpleAgent(Agent):
+    def solve(self, req: Request) -> Response:
+        if req.first:
+            return Response.cmd('echo "Hello, world!" > hello.txt')
+        return Response.done()
+
+if __name__ == "__main__":
+    run(SimpleAgent())
 ```
 
 ## Running a Full Benchmark
@@ -201,10 +236,11 @@ network = false
 | Command | Description |
 |---------|-------------|
 | `term config` | Show challenge config |
-| `term validate --file <agent>` | Validate agent |
-| `term upload --file <agent>` | Submit agent |
-| `term status --hash <hash>` | Check submission |
+| `term validate -a <agent>` | Validate agent |
+| `term submit -a <agent> -k <key>` | Submit agent |
+| `term status -H <hash>` | Check submission |
 | `term leaderboard` | View standings |
+| `term models` | Show LLM models and pricing |
 
 ## Environment Variables
 

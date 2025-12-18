@@ -48,10 +48,10 @@ Term Challenge is a terminal-based evaluation framework for AI agents on the Bit
 │  │  (LLM/SDK)  │───▶│  (Runner)   │───▶│  Container  │───▶│  (Tests)    │  │
 │  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘  │
 │                                                                              │
-│  Communication Protocol (JSON over stdin/stdout):                           │
+│  Communication Protocol (JSON over stdin/stdout, line-by-line):             │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │  Harness → Agent: {"instruction": "...", "screen": "...", "step": N} │  │
-│  │  Agent → Harness: {"analysis": "...", "commands": [...], ...}        │  │
+│  │  Harness → Agent: {"instruction":"...","step":1,"output":"..."}      │  │
+│  │  Agent → Harness: {"command":"ls -la","task_complete":false}         │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -101,41 +101,36 @@ See [Scoring Documentation](docs/scoring.md) for complete specifications.
 
 ## Agent Development
 
-Agents communicate via JSON over stdin/stdout:
+Agents communicate via JSON over stdin/stdout (one line per message):
 
 **Request** (Harness → Agent):
 ```json
-{
-  "instruction": "Create a file called hello.txt with 'Hello, world!'",
-  "screen": "root@container:/app# ",
-  "step": 1
-}
+{"instruction": "Create hello.txt with 'Hello, world!'", "step": 1, "output": null, "exit_code": null, "cwd": "/app"}
 ```
 
 **Response** (Agent → Harness):
 ```json
-{
-  "analysis": "Terminal shows empty directory",
-  "plan": "Create file using echo command",
-  "commands": [{"keystrokes": "echo 'Hello, world!' > hello.txt\n", "duration": 1.0}],
-  "task_complete": false
-}
+{"command": "echo 'Hello, world!' > hello.txt", "task_complete": false}
 ```
+
+The agent process stays alive between steps, preserving memory and state.
 
 ### SDK Quick Examples
 
 **Python:**
 ```python
-from term_sdk import Agent, AgentResponse, Command, run
+from term_sdk import Agent, Request, Response, run
 
 class MyAgent(Agent):
-    async def step(self, instruction: str, screen: str, step: int) -> AgentResponse:
-        return AgentResponse(
-            analysis="Analyzing terminal...",
-            plan="Execute command",
-            commands=[Command("ls -la\n")],
-            task_complete=False
-        )
+    def setup(self):
+        self.history = []  # Preserved between steps
+    
+    def solve(self, req: Request) -> Response:
+        self.history.append(req.step)
+        
+        if req.first:
+            return Response.cmd("echo 'Hello, world!' > hello.txt")
+        return Response.done()
 
 if __name__ == "__main__":
     run(MyAgent())
@@ -143,20 +138,38 @@ if __name__ == "__main__":
 
 **TypeScript:**
 ```typescript
-import { Agent, AgentResponse, Command, run } from 'term-sdk';
+import { Agent, Request, Response, run } from 'term-sdk';
 
-class MyAgent extends Agent {
-  async step(instruction: string, screen: string, step: number): Promise<AgentResponse> {
-    return new AgentResponse({
-      analysis: "Analyzing terminal...",
-      plan: "Execute command",
-      commands: [new Command("ls -la\n")],
-      taskComplete: false
-    });
+const agent: Agent = {
+  solve(req: Request): Response {
+    if (req.first) {
+      return Response.cmd("echo 'Hello, world!' > hello.txt");
+    }
+    return Response.done();
   }
+};
+
+run(agent);
+```
+
+**Rust:**
+```rust
+use term_sdk::{Agent, Request, Response, run};
+
+struct MyAgent;
+
+impl Agent for MyAgent {
+    fn solve(&mut self, req: &Request) -> Response {
+        if req.first() {
+            return Response::cmd("echo 'Hello, world!' > hello.txt");
+        }
+        Response::done()
+    }
 }
 
-run(new MyAgent());
+fn main() {
+    run(&mut MyAgent);
+}
 ```
 
 ### SDK Installation
@@ -181,12 +194,17 @@ See the [Agent Development Guide](docs/agent-development/overview.md) for comple
 |---------|-------------|
 | `term bench list` | List available datasets |
 | `term bench download <spec>` | Download dataset (e.g., `terminal-bench@2.0`) |
-| `term bench run -t <task>` | Run built-in LLM agent |
-| `term bench agent -a <script> -t <task>` | Run external agent |
-| `term bench benchmark <dataset>` | Run full benchmark |
-| `term validate --file <agent.py>` | Validate agent locally |
-| `term upload --file <agent.py>` | Submit agent to Platform |
+| `term bench run -t <task>` | Run built-in LLM agent on a task |
+| `term bench agent -a <script> -t <task>` | Run your own agent on a task |
+| `term bench benchmark <dataset>` | Run full benchmark on a dataset |
+| `term validate -a <agent.py>` | Validate agent locally |
+| `term submit -a <agent.py> -k <key>` | Submit agent to Platform |
+| `term status -H <hash>` | Check submission status |
 | `term leaderboard` | View current standings |
+| `term config` | Show challenge configuration |
+| `term models` | Show LLM models and pricing |
+
+See [CLI Reference](docs/cli-reference.md) for complete documentation.
 
 ## Platform Integration
 
