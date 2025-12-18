@@ -545,7 +545,7 @@ class LLM:
         text = message.get("content", "") or ""
         
         function_calls = []
-        for tc in message.get("tool_calls", []):
+        for tc in message.get("tool_calls", []) or []:
             if tc.get("type") == "function":
                 func = tc.get("function", {})
                 try:
