@@ -186,9 +186,16 @@ impl SourceCodeAgent {
 
         let output = child.wait_with_output().await?;
         
+        // Always log stderr (agent debug output)
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.is_empty() {
+            for line in stderr.lines() {
+                info!("[agent] {}", line);
+            }
+        }
+        
         if !output.status.success() {
-            let err = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Agent script failed: {}", err);
+            anyhow::bail!("Agent script failed: {}", stderr);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
