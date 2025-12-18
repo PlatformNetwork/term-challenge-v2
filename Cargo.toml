@@ -19,9 +19,9 @@ path = "bin/server/main.rs"
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
 
-# Platform SDK from GitHub
-platform-challenge-sdk = { git = "https://github.com/PlatformNetwork/platform.git", branch = "main" }
-platform-core = { git = "https://github.com/PlatformNetwork/platform.git", branch = "main" }
+# Platform SDK from GitHub (pinned to latest with P2P bridge support)
+platform-challenge-sdk = { git = "https://github.com/PlatformNetwork/platform.git", rev = "8abeda7" }
+platform-core = { git = "https://github.com/PlatformNetwork/platform.git", rev = "8abeda7" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full", "process"] }
