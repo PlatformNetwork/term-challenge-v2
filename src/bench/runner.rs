@@ -218,23 +218,43 @@ impl TrialRunner {
                 "response": response,
             }));
 
-            // Execute commands FIRST (even if task_complete is true)
+            // Execute commands non-interactively (handles heredocs, multi-line)
             let commands = response.get_commands();
             if !commands.is_empty() {
                 info!(">>> Executing {} command(s):", commands.len());
             }
             for (i, cmd) in commands.iter().enumerate() {
-                let cmd_preview = cmd.keystrokes.trim().chars().take(100).collect::<String>();
-                info!("  [{}] $ {}", i + 1, cmd_preview);
+                let cmd_str = cmd.keystrokes.trim().trim_end_matches('\n');
+                let cmd_preview = cmd_str.chars().take(100).collect::<String>();
+                let suffix = if cmd_str.len() > 100 { "..." } else { "" };
+                info!("  [{}] $ {}{}", i + 1, cmd_preview, suffix);
 
-                // Parse and send keystrokes
-                let keystrokes = parse_keystrokes(&cmd.keystrokes);
-                for key in keystrokes {
-                    session.send_keys(&[&key]).await?;
+                // Execute command non-interactively via script
+                let timeout_sec = cmd.duration.max(120.0); // Min 120s for complex commands
+                match session.run_command_non_interactive(cmd_str, timeout_sec).await {
+                    Ok(output) => {
+                        // Log output
+                        if !output.stdout.is_empty() {
+                            let preview = output.stdout.chars().take(500).collect::<String>();
+                            info!("  stdout: {}{}", preview, if output.stdout.len() > 500 { "..." } else { "" });
+                        }
+                        if !output.stderr.is_empty() {
+                            let preview = output.stderr.chars().take(200).collect::<String>();
+                            info!("  stderr: {}{}", preview, if output.stderr.len() > 200 { "..." } else { "" });
+                        }
+                        if let Some(code) = output.exit_code {
+                            if code != 0 {
+                                warn!("  exit code: {}", code);
+                            }
+                        }
+                        if output.timed_out {
+                            warn!("  Command timed out after {}s", timeout_sec);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("  Command error: {}", e);
+                    }
                 }
-
-                // Wait for specified duration
-                session.wait(cmd.duration.max(0.1)).await;
             }
 
             // Check if agent completed (AFTER executing commands)

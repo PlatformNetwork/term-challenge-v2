@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, info};
 
-use super::environment::DockerEnvironment;
+use super::environment::{DockerEnvironment, ExecOutput};
 
 /// Special tmux keys
 pub mod keys {
@@ -100,6 +100,35 @@ impl TmuxSession {
     pub async fn send_command(&self, command: &str) -> Result<()> {
         self.send_keys(&[&format!("'{}'", command), keys::ENTER])
             .await
+    }
+    
+    /// Execute a command non-interactively (handles heredocs, multi-line commands)
+    /// Writes command to a temp script and executes it with stdin redirected from /dev/null
+    pub async fn run_command_non_interactive(&self, command: &str, timeout_sec: f64) -> Result<ExecOutput> {
+        // Create unique script filename
+        let script_name = format!("/tmp/cmd_{}.sh", uuid::Uuid::new_v4());
+        
+        // Write the command to a script file
+        let script_content = format!(
+            "#!/bin/bash\nset -e\ncd /app\nexport DEBIAN_FRONTEND=noninteractive\n{}\n",
+            command
+        );
+        
+        // Escape for shell
+        let escaped_content = script_content.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$").replace('`', "\\`");
+        
+        // Create the script
+        let create_cmd = format!("printf \"%s\" \"{}\" > {} && chmod +x {}", escaped_content, script_name, script_name);
+        self.env.exec_command(&create_cmd, Some(5.0)).await?;
+        
+        // Execute with stdin from /dev/null (non-interactive)
+        let exec_cmd = format!("bash {} < /dev/null 2>&1", script_name);
+        let result = self.env.exec_command(&exec_cmd, Some(timeout_sec)).await;
+        
+        // Cleanup
+        let _ = self.env.exec_command(&format!("rm -f {}", script_name), Some(2.0)).await;
+        
+        result
     }
 
     /// Send a command and wait for completion using tmux wait
