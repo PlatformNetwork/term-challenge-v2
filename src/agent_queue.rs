@@ -231,10 +231,11 @@ impl ResourceManager {
             Ok(containers) => {
                 for container in containers {
                     if let Some(id) = container.id {
+                        let id_short: String = id.chars().take(12).collect();
                         let name = container.names.as_ref()
                             .and_then(|n| n.first())
-                            .map(|s| s.trim_start_matches('/'))
-                            .unwrap_or(&id[..12]);
+                            .map(|s| s.trim_start_matches('/').to_string())
+                            .unwrap_or(id_short);
                         
                         // Stop with timeout
                         let _ = self.docker.stop_container(&id, Some(StopContainerOptions { t: 3 })).await;
@@ -523,10 +524,9 @@ impl AgentQueue {
                 let task_start = Instant::now();
                 
                 // Create unique container name
-                let container_name = format!("{}{}-{}", CONTAINER_PREFIX, 
-                    &request_id[..8], 
-                    task_name.chars().take(20).collect::<String>()
-                );
+                let request_id_short: String = request_id.chars().take(8).collect();
+                let task_name_short: String = task_name.chars().take(20).collect();
+                let container_name = format!("{}{}-{}", CONTAINER_PREFIX, request_id_short, task_name_short);
                 
                 // Run task evaluation
                 let result = Self::evaluate_task(&task, &agent, &container_name).await;
@@ -727,7 +727,7 @@ mod tests {
     #[tokio::test]
     async fn test_queue_creation() {
         // Skip if Docker not available
-        if Docker::connect_with_local_defaults().await.is_err() {
+        if Docker::connect_with_local_defaults().is_err() {
             return;
         }
         

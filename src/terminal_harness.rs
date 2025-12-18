@@ -255,7 +255,8 @@ fn extract_json(input: &str) -> Result<String> {
     let mut in_string = false;
     let mut escape = false;
 
-    for (i, c) in input.chars().enumerate() {
+    // Use char_indices() to get byte positions for safe string slicing
+    for (byte_pos, c) in input.char_indices() {
         if escape {
             escape = false;
             continue;
@@ -264,14 +265,16 @@ fn extract_json(input: &str) -> Result<String> {
             '\\' => escape = true,
             '"' if !escape => in_string = !in_string,
             '{' if !in_string => {
-                if depth == 0 { start = Some(i); }
+                if depth == 0 { start = Some(byte_pos); }
                 depth += 1;
             }
             '}' if !in_string => {
                 depth -= 1;
                 if depth == 0 {
                     if let Some(s) = start {
-                        return Ok(input[s..=i].to_string());
+                        // byte_pos is the start of '}', we need to include it
+                        let end = byte_pos + c.len_utf8();
+                        return Ok(input[s..end].to_string());
                     }
                 }
             }
