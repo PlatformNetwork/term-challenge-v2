@@ -36,7 +36,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use platform_challenge_sdk::ChallengeP2PMessage;
+use platform_challenge_sdk::{ChallengeP2PMessage, DecryptionKeyReveal, EncryptedSubmission};
 use platform_core::Hotkey;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -115,9 +115,13 @@ impl TermChallengeRpc {
             .route("/.well-known/routes", get(get_routes_manifest))
             // Health check (validator polls this)
             .route("/health", get(health_check))
-            // Agent submission
+            // Agent submission (basic - no P2P)
             .route("/submit", post(submit_agent))
             .route("/can_submit", get(can_submit))
+            // Secure submission (with P2P commit-reveal protocol)
+            .route("/secure/submit", post(secure_submit_agent))
+            .route("/secure/reveal", post(secure_reveal_key))
+            .route("/secure/status/:submission_hash", get(secure_get_status))
             // Status
             .route("/status/:agent_hash", get(get_status))
             .route("/agent/:agent_hash", get(get_agent))
@@ -372,6 +376,369 @@ async fn can_submit(
                 next_allowed_epoch: None,
                 remaining_slots: 0.0,
             }),
+        ),
+    }
+}
+
+// ==================== Secure Submission (P2P Commit-Reveal) ====================
+
+/// Request for secure (encrypted) submission
+#[derive(Debug, Deserialize)]
+pub struct SecureSubmitRequest {
+    /// Encrypted agent code (hex)
+    pub encrypted_data: String,
+    /// Hash of the encryption key (hex, 32 bytes)
+    pub key_hash: String,
+    /// Nonce for AES-GCM (hex, 24 bytes)
+    pub nonce: String,
+    /// Hash of original content (hex, 32 bytes)
+    pub content_hash: String,
+    /// Miner's hotkey (hex)
+    pub miner_hotkey: String,
+    /// Miner's coldkey (hex)  
+    pub miner_coldkey: String,
+    /// Signature over (content_hash + miner_hotkey + epoch) (hex)
+    pub miner_signature: String,
+    /// Current epoch
+    pub epoch: u64,
+}
+
+/// Response for secure submission
+#[derive(Debug, Serialize)]
+pub struct SecureSubmitResponse {
+    pub success: bool,
+    /// Hash of the submission (for tracking)
+    pub submission_hash: Option<String>,
+    /// Current quorum percentage
+    pub quorum_percentage: Option<f64>,
+    pub error: Option<String>,
+}
+
+/// Handle secure (encrypted) agent submission with P2P broadcast
+async fn secure_submit_agent(
+    State(state): State<Arc<RpcState>>,
+    Json(req): Json<SecureSubmitRequest>,
+) -> impl IntoResponse {
+    info!(
+        "Secure submission from miner {} (epoch: {})",
+        &req.miner_hotkey[..16.min(req.miner_hotkey.len())],
+        req.epoch
+    );
+
+    // Check if secure handler is enabled
+    let secure_handler = match &state.secure_handler {
+        Some(h) => h,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(SecureSubmitResponse {
+                    success: false,
+                    submission_hash: None,
+                    quorum_percentage: None,
+                    error: Some("Secure submission not enabled on this validator".to_string()),
+                }),
+            );
+        }
+    };
+
+    // Parse encrypted data
+    let encrypted_data = match hex::decode(&req.encrypted_data) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SecureSubmitResponse {
+                    success: false,
+                    submission_hash: None,
+                    quorum_percentage: None,
+                    error: Some(format!("Invalid encrypted_data hex: {}", e)),
+                }),
+            );
+        }
+    };
+
+    // Parse key hash (32 bytes)
+    let key_hash: [u8; 32] = match hex::decode(&req.key_hash) {
+        Ok(h) if h.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&h);
+            arr
+        }
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SecureSubmitResponse {
+                    success: false,
+                    submission_hash: None,
+                    quorum_percentage: None,
+                    error: Some("Invalid key_hash: must be 32 bytes hex".to_string()),
+                }),
+            );
+        }
+    };
+
+    // Parse nonce (24 bytes for AES-GCM)
+    let nonce: [u8; 24] = match hex::decode(&req.nonce) {
+        Ok(n) if n.len() == 24 => {
+            let mut arr = [0u8; 24];
+            arr.copy_from_slice(&n);
+            arr
+        }
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SecureSubmitResponse {
+                    success: false,
+                    submission_hash: None,
+                    quorum_percentage: None,
+                    error: Some("Invalid nonce: must be 24 bytes hex".to_string()),
+                }),
+            );
+        }
+    };
+
+    // Parse content hash (32 bytes)
+    let content_hash: [u8; 32] = match hex::decode(&req.content_hash) {
+        Ok(h) if h.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&h);
+            arr
+        }
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SecureSubmitResponse {
+                    success: false,
+                    submission_hash: None,
+                    quorum_percentage: None,
+                    error: Some("Invalid content_hash: must be 32 bytes hex".to_string()),
+                }),
+            );
+        }
+    };
+
+    // Parse signature
+    let miner_signature = match hex::decode(&req.miner_signature) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SecureSubmitResponse {
+                    success: false,
+                    submission_hash: None,
+                    quorum_percentage: None,
+                    error: Some(format!("Invalid miner_signature hex: {}", e)),
+                }),
+            );
+        }
+    };
+
+    // Create EncryptedSubmission
+    let submission = EncryptedSubmission::new(
+        state.challenge_id.clone(),
+        req.miner_hotkey.clone(),
+        req.miner_coldkey.clone(),
+        encrypted_data,
+        key_hash,
+        nonce,
+        content_hash,
+        miner_signature,
+        req.epoch,
+    );
+
+    // Handle via SecureSubmissionHandler (broadcasts to P2P network)
+    match secure_handler
+        .handle_encrypted_submission(submission, state.p2p_broadcaster.as_ref())
+        .await
+    {
+        Ok(hash) => {
+            info!("Secure submission accepted: {}", &hash[..16]);
+            (
+                StatusCode::OK,
+                Json(SecureSubmitResponse {
+                    success: true,
+                    submission_hash: Some(hash),
+                    quorum_percentage: Some(0.0), // Will increase as ACKs arrive
+                    error: None,
+                }),
+            )
+        }
+        Err(e) => {
+            warn!("Secure submission failed: {}", e);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(SecureSubmitResponse {
+                    success: false,
+                    submission_hash: None,
+                    quorum_percentage: None,
+                    error: Some(e.to_string()),
+                }),
+            )
+        }
+    }
+}
+
+/// Request to reveal decryption key
+#[derive(Debug, Deserialize)]
+pub struct SecureRevealRequest {
+    /// Submission hash (hex, 32 bytes)
+    pub submission_hash: String,
+    /// Decryption key (hex)
+    pub decryption_key: String,
+    /// Signature proving ownership of the key (hex)
+    pub miner_signature: String,
+}
+
+/// Response for key reveal
+#[derive(Debug, Serialize)]
+pub struct SecureRevealResponse {
+    pub success: bool,
+    /// Agent hash after decryption
+    pub agent_hash: Option<String>,
+    /// Content hash (for verification)
+    pub content_hash: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Reveal decryption key for a submission (after quorum reached)
+async fn secure_reveal_key(
+    State(state): State<Arc<RpcState>>,
+    Json(req): Json<SecureRevealRequest>,
+) -> impl IntoResponse {
+    info!(
+        "Key reveal for submission {}",
+        &req.submission_hash[..16.min(req.submission_hash.len())]
+    );
+
+    let secure_handler = match &state.secure_handler {
+        Some(h) => h,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(SecureRevealResponse {
+                    success: false,
+                    agent_hash: None,
+                    content_hash: None,
+                    error: Some("Secure submission not enabled".to_string()),
+                }),
+            );
+        }
+    };
+
+    // Parse submission hash (32 bytes)
+    let submission_hash: [u8; 32] = match hex::decode(&req.submission_hash) {
+        Ok(h) if h.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&h);
+            arr
+        }
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SecureRevealResponse {
+                    success: false,
+                    agent_hash: None,
+                    content_hash: None,
+                    error: Some("Invalid submission_hash: must be 32 bytes hex".to_string()),
+                }),
+            );
+        }
+    };
+
+    // Parse decryption key (Vec<u8>)
+    let decryption_key = match hex::decode(&req.decryption_key) {
+        Ok(k) => k,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SecureRevealResponse {
+                    success: false,
+                    agent_hash: None,
+                    content_hash: None,
+                    error: Some(format!("Invalid decryption_key hex: {}", e)),
+                }),
+            );
+        }
+    };
+
+    // Parse signature
+    let miner_signature = match hex::decode(&req.miner_signature) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SecureRevealResponse {
+                    success: false,
+                    agent_hash: None,
+                    content_hash: None,
+                    error: Some(format!("Invalid miner_signature hex: {}", e)),
+                }),
+            );
+        }
+    };
+
+    // Create key reveal using the new() constructor
+    let reveal = DecryptionKeyReveal::new(submission_hash, decryption_key, miner_signature);
+
+    // Handle key reveal (decrypts and broadcasts)
+    match secure_handler
+        .handle_key_reveal(reveal, state.p2p_broadcaster.as_ref())
+        .await
+    {
+        Ok(agent) => {
+            info!(
+                "Key revealed, agent decrypted: {}",
+                hex::encode(&agent.submission_hash[..8])
+            );
+            (
+                StatusCode::OK,
+                Json(SecureRevealResponse {
+                    success: true,
+                    agent_hash: Some(hex::encode(agent.submission_hash)),
+                    content_hash: Some(hex::encode(agent.content_hash)),
+                    error: None,
+                }),
+            )
+        }
+        Err(e) => {
+            warn!("Key reveal failed: {}", e);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(SecureRevealResponse {
+                    success: false,
+                    agent_hash: None,
+                    content_hash: None,
+                    error: Some(e.to_string()),
+                }),
+            )
+        }
+    }
+}
+
+/// Get secure submission status
+async fn secure_get_status(
+    State(state): State<Arc<RpcState>>,
+    Path(submission_hash): Path<String>,
+) -> impl IntoResponse {
+    let secure_handler = match &state.secure_handler {
+        Some(h) => h,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "Secure submission not enabled"
+                })),
+            );
+        }
+    };
+
+    match secure_handler.get_status(&submission_hash) {
+        Some(status) => (StatusCode::OK, Json(serde_json::to_value(status).unwrap())),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "Submission not found"
+            })),
         ),
     }
 }

@@ -2,15 +2,25 @@
 //!
 //! Runs the term-challenge as a standalone HTTP server for the platform validator.
 //! Supports P2P message bridge for distributed agent submission and evaluation.
+//!
+//! ## P2P Flow
+//!
+//! When an agent is submitted:
+//! 1. SecureSubmissionHandler encrypts and creates EncryptedSubmission
+//! 2. Broadcasts via P2P to other validators
+//! 3. Validators ACK with stake-weighted signatures
+//! 4. Once 50%+ stake ACKs, miner can reveal decryption key
+//! 5. All validators decrypt and evaluate
 
 use anyhow::Result;
 use clap::Parser;
+use platform_challenge_sdk::WeightConfig;
 use platform_core::Hotkey;
 use std::sync::Arc;
 use term_challenge::{
     AgentSubmissionHandler, ChainStorage, ChallengeConfig, DistributionConfig,
-    HttpP2PBroadcaster, ProgressStore, RegistryConfig, TermChallengeRpc, TermRpcConfig,
-    WhitelistConfig,
+    HttpP2PBroadcaster, ProgressStore, RegistryConfig, SecureSubmissionHandler,
+    TermChallengeRpc, TermRpcConfig, WhitelistConfig,
 };
 use tracing::info;
 
@@ -88,12 +98,19 @@ async fn main() -> Result<()> {
     let chain_storage = Arc::new(ChainStorage::new());
 
     // Create P2P broadcaster for platform validator communication
-    let p2p_broadcaster = Arc::new(HttpP2PBroadcaster::new(validator_hotkey));
+    let p2p_broadcaster = Arc::new(HttpP2PBroadcaster::new(validator_hotkey.clone()));
     info!("P2P broadcaster initialized");
 
-    // SecureSubmissionHandler is optional - enable when commit-reveal protocol is needed
-    // For now, we use basic P2P message handling without the full commit-reveal flow
-    let secure_handler = None;
+    // Create SecureSubmissionHandler for commit-reveal P2P protocol
+    // This handles encrypted submissions, ACKs, key reveals, and evaluations
+    let weight_config = WeightConfig::default();
+    let secure_handler = Some(Arc::new(SecureSubmissionHandler::new(
+        validator_hotkey,
+        0, // Initial stake (will be updated via P2P validators sync)
+        whitelist_config.clone(),
+        weight_config,
+    )));
+    info!("SecureSubmissionHandler initialized - P2P commit-reveal protocol ENABLED");
 
     // Create RPC server
     let rpc_config = TermRpcConfig {
@@ -113,8 +130,18 @@ async fn main() -> Result<()> {
     );
 
     info!("Term Challenge Server ready");
-    info!("Security: Platform must authenticate via POST /auth before P2P endpoints");
-    info!("P2P endpoints (require X-Auth-Token header):");
+    info!("");
+    info!("=== AGENT SUBMISSION FLOW ===");
+    info!("  1. Miner submits encrypted agent via POST /submit");
+    info!("  2. Challenge broadcasts EncryptedSubmission to P2P network");
+    info!("  3. Other validators ACK (stake-weighted quorum: 50%+)");
+    info!("  4. Miner reveals key via POST /reveal");
+    info!("  5. All validators decrypt, verify whitelist, evaluate");
+    info!("");
+    info!("=== SECURITY ===");
+    info!("  Platform must authenticate via POST /auth before P2P endpoints");
+    info!("");
+    info!("=== P2P ENDPOINTS (require X-Auth-Token) ===");
     info!("  POST /auth            - Platform authenticates with signed identity");
     info!("  POST /p2p/message     - Receive P2P messages from platform");
     info!("  GET  /p2p/outbox      - Poll for outgoing P2P messages");
