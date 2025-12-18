@@ -83,7 +83,7 @@ JSON response:"""
         try:
             response = self.llm.ask(
                 self.PLANNER_PROMPT.format(task=task),
-                model="claude-3-haiku",
+                model="anthropic/claude-3-haiku",
                 temperature=0.3
             )
             
@@ -116,7 +116,7 @@ JSON response:"""
         try:
             # Stream response for real-time feedback
             full_text = ""
-            for chunk in self.llm.stream(prompt, model="claude-3-haiku"):
+            for chunk in self.llm.stream(prompt, model="anthropic/claude-3-haiku"):
                 full_text += chunk
                 # Show progress in logs
                 if len(full_text) % 50 == 0:
