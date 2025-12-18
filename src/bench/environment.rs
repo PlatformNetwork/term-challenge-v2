@@ -108,7 +108,12 @@ impl DockerEnvironment {
 
         info!("Starting container for task: {}", self.task.name);
 
-        let container_name = format!("term-bench-{}-{}", self.task.name, session_name);
+        // Sanitize container name - Docker only allows [a-zA-Z0-9][a-zA-Z0-9_.-]
+        let sanitized_session = session_name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' { c } else { '-' })
+            .collect::<String>();
+        let container_name = format!("term-bench-{}-{}", self.task.name, sanitized_session);
 
         // Prepare mounts
         let mut mounts = vec![];
@@ -155,9 +160,12 @@ impl DockerEnvironment {
             ..Default::default()
         };
 
+        // Hostname must be <= 64 characters
+        let hostname = format!("tb-{}", &self.task.name.chars().take(56).collect::<String>());
+        
         let config = Config {
             image: Some(self.image_name.clone()),
-            hostname: Some(container_name.clone()),
+            hostname: Some(hostname),
             working_dir: Some(self.working_dir.clone()),
             tty: Some(true),
             open_stdin: Some(true),
