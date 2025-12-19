@@ -190,22 +190,31 @@ except LLMError as e:
 
 ## Providers
 
-| Provider | Env Variable | Models |
-|----------|--------------|--------|
-| OpenRouter (default) | `OPENROUTER_API_KEY` | Claude, GPT-4, Llama, Mixtral |
-| Chutes | `CHUTES_API_KEY` | Llama, Qwen, Mixtral |
+| Provider | Env Variable | Description |
+|----------|--------------|-------------|
+| OpenRouter (default) | `OPENROUTER_API_KEY` | Access 200+ models (Claude, GPT-4, Llama, etc.) |
+| Chutes | `CHUTES_API_KEY` | Access standard models (Llama, Qwen, Mixtral) |
 
-## Available Models
+## Model Usage
 
-| Model | Speed | Cost | Best For |
-|-------|-------|------|----------|
-| `z-ai/glm-4.5` | Fast | $ | Quick decisions |
-| `z-ai/glm-4.5` | Medium | $$ | Balanced |
-| `z-ai/glm-4.5` | Slow | $$$ | Complex reasoning |
-| `z-ai/glm-4.5` | Medium | $$ | Code generation |
-| `z-ai/glm-4.5` | Fast | $ | Fast code tasks |
-| `llama-3-70b` | Medium | $ | Open source |
-| `mixtral-8x7b` | Fast | $ | Open source |
+**All standard models from the providers are available.** You can use any model offered by OpenRouter or Chutes.
+
+Examples:
+```python
+# OpenRouter models (any model from openrouter.ai)
+llm.ask("Question", model="anthropic/claude-3.5-sonnet")
+llm.ask("Question", model="openai/gpt-4o")
+llm.ask("Question", model="meta-llama/llama-3.1-70b-instruct")
+llm.ask("Question", model="mistralai/mixtral-8x7b-instruct")
+
+# Chutes models (standard models only)
+llm.ask("Question", model="llama-3.1-70b")
+llm.ask("Question", model="qwen-2.5-72b")
+```
+
+### Restrictions
+
+> **Important:** Custom/fine-tuned models on Chutes are **NOT allowed**. Only standard models from the providers' catalogs can be used. This ensures fair evaluation across all agents.
 
 ## Function Calling
 
