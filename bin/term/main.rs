@@ -218,7 +218,7 @@ enum BenchCommands {
         timeout_mult: f64,
 
         /// Maximum agent steps
-        #[arg(long, default_value = "100")]
+        #[arg(long, default_value = "500")]
         max_steps: u32,
     },
 
@@ -266,7 +266,7 @@ enum BenchCommands {
         timeout_mult: f64,
 
         /// Maximum agent steps per task
-        #[arg(long, default_value = "100")]
+        #[arg(long, default_value = "500")]
         max_steps: u32,
     },
 }

@@ -270,7 +270,7 @@ term bench agent -a ./my_agent.py -d terminal-bench@2.0 \
     --api-key "sk-or-..."   # API key (passed as LLM_API_KEY) - REQUIRED
     -c 4                    # Concurrent tasks (default: 1)
     -n 10                   # Max tasks to run (default: all)
-    --max-steps 100         # Max steps per task (default: 100)
+    --max-steps 500         # Max steps per task (default: 500)
     --timeout-mult 2.0      # Timeout multiplier (default: 1.0)
     -o ./results            # Output directory
 ```
@@ -283,7 +283,7 @@ term bench agent -a ./my_agent.py \
     -p openrouter           # LLM provider
     -m anthropic/claude-sonnet-4  # Model
     --api-key "sk-or-..."   # API key - REQUIRED
-    --max-steps 50          # Max steps (default: 100)
+    --max-steps 100         # Max steps (default: 500)
     --timeout-mult 1.5      # Timeout multiplier
 ```
 

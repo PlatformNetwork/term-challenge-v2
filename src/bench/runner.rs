@@ -40,7 +40,7 @@ impl Default for TrialConfig {
         Self {
             trial_name: format!("trial-{}", Uuid::new_v4().as_simple()),
             output_dir: PathBuf::from("./benchmark_results"),
-            max_steps: 100,
+            max_steps: 500,
             timeout_multiplier: 1.0,
             force_build: false,
             delete_container: true,

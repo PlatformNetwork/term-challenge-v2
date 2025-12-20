@@ -295,28 +295,19 @@ pub fn print_results(results: &BenchmarkResults) {
     }
 
     let s = &results.summary;
-    println!("\n--- Summary ---");
-    println!("Total Tasks:      {}", s.total_tasks);
-    println!(
-        "Passed:           {} ({:.1}%)",
-        s.passed,
-        s.pass_rate * 100.0
-    );
-    println!("Failed:           {}", s.failed);
-    println!("Errors:           {}", s.errors);
-    println!("Average Reward:   {:.4}", s.average_reward);
-    println!("Total Duration:   {:.1}s", s.total_duration_sec);
-    println!("Average Duration: {:.1}s", s.average_duration_sec);
-
     println!("\n--- Task Results ---");
     println!(
         "{:<30} {:>8} {:>8} {:>10}",
-        "Task", "Success", "Reward", "Duration"
+        "Task", "Result", "Reward", "Duration"
     );
     println!("{}", "-".repeat(60));
 
     for task in &results.tasks {
-        let status = if task.success { "✓" } else { "✗" };
+        let status = if task.success { 
+            "\x1b[32mPASS\x1b[0m" 
+        } else { 
+            "\x1b[31mFAIL\x1b[0m" 
+        };
         println!(
             "{:<30} {:>8} {:>8.4} {:>9.1}s",
             truncate(&task.task_name, 30),
@@ -326,7 +317,27 @@ pub fn print_results(results: &BenchmarkResults) {
         );
     }
 
-    println!("{}", "=".repeat(60));
+    println!("{}", "-".repeat(60));
+    
+    // Summary with pass/fail counts
+    println!();
+    println!(
+        "\x1b[1m  PASSED: \x1b[32m{}/{}\x1b[0m ({:.1}%)",
+        s.passed, s.total_tasks, s.pass_rate * 100.0
+    );
+    println!(
+        "\x1b[1m  FAILED: \x1b[31m{}/{}\x1b[0m",
+        s.failed, s.total_tasks
+    );
+    if s.errors > 0 {
+        println!("\x1b[1m  ERRORS: \x1b[33m{}\x1b[0m", s.errors);
+    }
+    println!();
+    println!("  Average Reward:   {:.4}", s.average_reward);
+    println!("  Total Duration:   {:.1}s", s.total_duration_sec);
+    println!("  Average Duration: {:.1}s", s.average_duration_sec);
+
+    println!("\n{}", "=".repeat(60));
 }
 
 fn truncate(s: &str, max_len: usize) -> String {

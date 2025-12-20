@@ -596,12 +596,12 @@ pub async fn run_external_agent(
 
             // Print results
             println!();
-            let icon = if r.success() {
-                "\x1b[32m✓\x1b[0m"
+            let (icon, pass_text) = if r.success() {
+                ("\x1b[32m✓\x1b[0m", "\x1b[1m\x1b[32mPASS\x1b[0m")
             } else {
-                "\x1b[31m✗\x1b[0m"
+                ("\x1b[31m✗\x1b[0m", "\x1b[1m\x1b[31mFAIL\x1b[0m")
             };
-            println!("  {} \x1b[1m{}\x1b[0m", icon, r.task_name);
+            println!("  {} \x1b[1m{}\x1b[0m  {}", icon, r.task_name, pass_text);
             println!(
                 "    Reward: \x1b[{}m{:.4}\x1b[0m  Steps: {}  Time: {:.1}s",
                 if r.reward() > 0.0 { "32" } else { "90" },
