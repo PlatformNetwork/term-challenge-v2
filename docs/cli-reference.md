@@ -162,7 +162,7 @@ term bench agent -a ./my_agent.py -t ./data/tasks/hello-world -v
 ### Run Full Benchmark
 
 ```bash
-term bench benchmark <DATASET> [OPTIONS]
+term bench agent -d <DATASET> [OPTIONS]
 term bench bm terminal-bench@2.0  # alias
 ```
 
@@ -179,7 +179,7 @@ Runs all tasks in a dataset.
 
 **Example:**
 ```bash
-term bench benchmark terminal-bench@2.0 \
+term bench agent -d terminal-bench@2.0 \
     --provider openrouter \
     --model z-ai/glm-4.5 \
     --budget 10.0 \

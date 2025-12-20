@@ -78,12 +78,12 @@ term bench agent -a <agent-path> -t <task-path> [options]
 | `--max-steps <n>` | `50` | Max steps |
 | `--timeout <secs>` | Task config | Override timeout |
 
-#### term bench benchmark
+#### term bench agent -d
 
 Run full benchmark on a dataset.
 
 ```bash
-term bench benchmark <dataset-spec> [options]
+term bench agent -d <dataset-spec> [options]
 ```
 
 **Options:**

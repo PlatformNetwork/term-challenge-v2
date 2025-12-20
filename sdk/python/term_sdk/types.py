@@ -10,6 +10,15 @@ from typing import Optional, List, Dict, Any
 
 
 @dataclass
+class HistoryEntry:
+    """A single step in the conversation history."""
+    step: int
+    command: Optional[str] = None
+    output: Optional[str] = None
+    exit_code: Optional[int] = None
+
+
+@dataclass
 class Request:
     """
     Request from the harness.
@@ -21,6 +30,7 @@ class Request:
         output: Output from last command (None on step 1)
         exit_code: Exit code from last command (None on step 1)
         cwd: Current working directory
+        history: Full conversation history (all previous steps)
     """
     instruction: str
     step: int
@@ -28,12 +38,24 @@ class Request:
     output: Optional[str] = None
     exit_code: Optional[int] = None
     cwd: str = "/app"
+    history: List[HistoryEntry] = field(default_factory=list)
     
     @classmethod
     def parse(cls, data: str | dict) -> Request:
         """Parse request from JSON string or dict."""
         if isinstance(data, str):
             data = json.loads(data)
+        
+        # Parse history entries
+        history = []
+        for entry in data.get("history", []):
+            history.append(HistoryEntry(
+                step=entry.get("step", 0),
+                command=entry.get("command"),
+                output=entry.get("output"),
+                exit_code=entry.get("exit_code"),
+            ))
+        
         return cls(
             instruction=data.get("instruction", ""),
             step=data.get("step", 1),
@@ -41,6 +63,7 @@ class Request:
             output=data.get("output"),
             exit_code=data.get("exit_code"),
             cwd=data.get("cwd", "/app"),
+            history=history,
         )
     
     @property

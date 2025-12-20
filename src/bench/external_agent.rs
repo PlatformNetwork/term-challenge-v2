@@ -31,6 +31,15 @@ use super::session::{AgentResponse, TmuxSession};
 /// Base image for agents (must have SDKs installed)
 const AGENT_BASE_IMAGE: &str = "ghcr.io/platformnetwork/term-challenge:latest";
 
+/// A single step in the conversation history
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryEntry {
+    pub step: u32,
+    pub command: Option<String>,
+    pub output: Option<String>,
+    pub exit_code: Option<i32>,
+}
+
 /// Request sent to external agent (matches SDK Request format)
 #[derive(Debug, Serialize)]
 pub struct AgentRequest {
@@ -44,6 +53,9 @@ pub struct AgentRequest {
     pub exit_code: Option<i32>,
     #[serde(default = "default_cwd")]
     pub cwd: String,
+    /// Full conversation history (all previous steps)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<HistoryEntry>,
 }
 
 fn default_cwd() -> String {
@@ -59,6 +71,7 @@ impl AgentRequest {
             output: None,
             exit_code: None,
             cwd: "/app".to_string(),
+            history: Vec::new(),
         }
     }
 
@@ -71,6 +84,11 @@ impl AgentRequest {
         self.last_command = last_command;
         self.output = output;
         self.exit_code = exit_code;
+        self
+    }
+    
+    pub fn with_history(mut self, history: Vec<HistoryEntry>) -> Self {
+        self.history = history;
         self
     }
 }
@@ -118,9 +136,14 @@ impl AgentLanguage {
 /// State for Docker-based agent
 struct DockerAgentState {
     container_id: Option<String>,
+    /// Conversation history for this task
+    history: Vec<HistoryEntry>,
 }
 
 /// External agent that runs inside a Docker container
+/// 
+/// The agent receives the full conversation history in each request,
+/// allowing it to maintain context without needing a persistent process.
 /// 
 /// SECURITY: Agent code runs in a non-privileged container with:
 /// - Dropped capabilities
@@ -174,7 +197,10 @@ impl ExternalAgent {
             language,
             name,
             code,
-            state: Mutex::new(DockerAgentState { container_id: None }),
+            state: Mutex::new(DockerAgentState { 
+                container_id: None,
+                history: Vec::new(),
+            }),
             env_vars: vec![],
             show_logs: Arc::new(AtomicBool::new(true)),
         })
@@ -586,17 +612,46 @@ impl Agent for ExternalAgent {
     }
 
     async fn step(&self, instruction: &str, screen: &str, step: u32) -> Result<AgentResponse> {
-        let request = AgentRequest::new(instruction.to_string(), step).with_output(
-            None,
-            if screen.is_empty() {
-                None
-            } else {
-                Some(screen.to_string())
-            },
-            Some(0),
-        );
+        // Get current history
+        let history = {
+            let state = self.state.lock().await;
+            state.history.clone()
+        };
+        
+        let request = AgentRequest::new(instruction.to_string(), step)
+            .with_output(
+                None,
+                if screen.is_empty() {
+                    None
+                } else {
+                    Some(screen.to_string())
+                },
+                Some(0),
+            )
+            .with_history(history);
 
-        self.execute_step(&request).await
+        let response = self.execute_step(&request).await?;
+        
+        // Add this step to history for next request
+        {
+            let mut state = self.state.lock().await;
+            state.history.push(HistoryEntry {
+                step,
+                command: response.command.clone(),
+                output: if screen.is_empty() { None } else { Some(screen.to_string()) },
+                exit_code: Some(0),
+            });
+        }
+        
+        Ok(response)
+    }
+}
+
+impl ExternalAgent {
+    /// Clear history (called when starting a new task)
+    pub async fn clear_history(&self) {
+        let mut state = self.state.lock().await;
+        state.history.clear();
     }
 }
 

@@ -45,7 +45,7 @@ class LLMAgent(Agent):
         """Initialize LLM client."""
         # Get model from environment or use default
         self.model = os.environ.get("LLM_MODEL", "anthropic/claude-sonnet-4")
-        self.llm = LLM(model=self.model)
+        self.llm = LLM(default_model=self.model)
         log(f"Using model: {self.model}")
     
     def solve(self, req: Request) -> Response:

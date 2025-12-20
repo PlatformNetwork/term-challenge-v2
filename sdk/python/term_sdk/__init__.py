@@ -58,7 +58,7 @@ With Function Calling:
 
 __version__ = "1.0.0"
 
-from .types import Request, Response, Tool, FunctionCall
+from .types import Request, Response, Tool, FunctionCall, HistoryEntry
 from .agent import Agent
 from .runner import run, run_loop, log, log_step, log_llm, log_error, set_logging
 from .llm import LLM, LLMResponse, LLMError
@@ -71,6 +71,7 @@ __all__ = [
     # Core types
     "Request",
     "Response",
+    "HistoryEntry",
     "Agent",
     "run",
     "run_loop",

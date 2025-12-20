@@ -105,20 +105,20 @@ term bench agent -a ./my_agent.py \
 
 ```bash
 # Run on all 91 tasks
-term bench benchmark terminal-bench@2.0 -a ./my_agent.py \
+term bench agent -a ./my_agent.py -d terminal-bench@2.0 \
     -p openrouter \
     -m anthropic/claude-sonnet-4 \
     --api-key "sk-or-..."
 
 # Run with 4 concurrent tasks (faster, uses more API quota)
-term bench benchmark terminal-bench@2.0 -a ./my_agent.py \
+term bench agent -a ./my_agent.py -d terminal-bench@2.0 \
     -p openrouter \
     -m anthropic/claude-sonnet-4 \
     --api-key "sk-or-..." \
     -c 4
 
 # Limit to first 10 tasks (for testing)
-term bench benchmark terminal-bench@2.0 -a ./my_agent.py -n 10 \
+term bench agent -a ./my_agent.py -d terminal-bench@2.0 -n 10 \
     -p openrouter --api-key "sk-or-..."
 ```
 
@@ -257,17 +257,17 @@ See the [Agent Development Guide](docs/agent-development/overview.md) for comple
 | `term bench list` | List available datasets |
 | `term bench download terminal-bench@2.0` | Download the benchmark dataset |
 | `term bench agent -a <agent> -t <task>` | Run your agent on a single task |
-| `term bench benchmark <dataset> -a <agent>` | Run your agent on full benchmark |
+| `term bench agent -a <agent> -d <dataset>` | Run your agent on full benchmark |
 | `term bench cache` | Show downloaded datasets |
 | `term bench clear-cache` | Clear downloaded datasets |
 
-### Benchmark Options
+### Full Benchmark Options
 
 ```bash
-term bench benchmark terminal-bench@2.0 -a ./my_agent.py \
+term bench agent -a ./my_agent.py -d terminal-bench@2.0 \
     -p openrouter           # LLM provider (passed to agent as LLM_PROVIDER)
     -m anthropic/claude-sonnet-4  # Model (passed as LLM_MODEL)
-    --api-key "sk-or-..."   # API key (passed as LLM_API_KEY)
+    --api-key "sk-or-..."   # API key (passed as LLM_API_KEY) - REQUIRED
     -c 4                    # Concurrent tasks (default: 1)
     -n 10                   # Max tasks to run (default: all)
     --max-steps 100         # Max steps per task (default: 100)
@@ -282,7 +282,7 @@ term bench agent -a ./my_agent.py \
     -t ~/.cache/term-challenge/datasets/terminal-bench@2.0/hello-world \
     -p openrouter           # LLM provider
     -m anthropic/claude-sonnet-4  # Model
-    --api-key "sk-or-..."   # API key
+    --api-key "sk-or-..."   # API key - REQUIRED
     --max-steps 50          # Max steps (default: 100)
     --timeout-mult 1.5      # Timeout multiplier
 ```
