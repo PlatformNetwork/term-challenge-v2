@@ -1,12 +1,16 @@
-//! External agent runner - executes agents inside Docker containers
+//! External agent runner - executes Python agents inside Docker containers
+//!
+//! ARCHITECTURE: The agent runs as a persistent HTTP server inside Docker.
+//! The harness sends HTTP POST requests for each step.
+//! The agent maintains state across all steps in a task.
+//!
+//! Communication protocol:
+//! - Harness starts agent HTTP server on container startup
+//! - POST /step sends JSON request, receives JSON response
+//! - GET /health checks if agent is ready
 //!
 //! SECURITY: All agent code runs INSIDE non-privileged Docker containers.
 //! Agent code NEVER executes on the host machine.
-//!
-//! Communication protocol:
-//! - Harness sends JSON request on agent stdin
-//! - Agent responds with JSON on stdout
-//! - Agent logs go to stderr (streamed to console)
 
 use anyhow::{bail, Context, Result};
 use base64::Engine;
@@ -23,13 +27,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use super::runner::Agent;
 use super::session::{AgentResponse, TmuxSession};
 
 /// Base image for agents (must have SDKs installed)
-const AGENT_BASE_IMAGE: &str = "ghcr.io/platformnetwork/term-challenge:latest";
+const AGENT_BASE_IMAGE: &str = "term-challenge:latest";
+
+/// HTTP port for agent communication
+const AGENT_HTTP_PORT: u16 = 8765;
 
 /// A single step in the conversation history
 #[derive(Debug, Clone, Serialize)]
@@ -53,7 +60,6 @@ pub struct AgentRequest {
     pub exit_code: Option<i32>,
     #[serde(default = "default_cwd")]
     pub cwd: String,
-    /// Full conversation history (all previous steps)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<HistoryEntry>,
 }
@@ -93,57 +99,18 @@ impl AgentRequest {
     }
 }
 
-/// Language/runtime for external agent
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentLanguage {
-    Python,
-    JavaScript,
-    TypeScript,
-    Rust,
-}
-
-impl AgentLanguage {
-    pub fn from_path(path: &Path) -> Result<Self> {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        match ext {
-            "py" => Ok(Self::Python),
-            "js" | "mjs" => Ok(Self::JavaScript),
-            "ts" => Ok(Self::TypeScript),
-            "rs" => Ok(Self::Rust),
-            _ => bail!("Unsupported agent extension: {}", ext),
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Python => "python",
-            Self::JavaScript => "javascript",
-            Self::TypeScript => "typescript",
-            Self::Rust => "rust",
-        }
-    }
-
-    pub fn file_ext(&self) -> &'static str {
-        match self {
-            Self::Python => "py",
-            Self::JavaScript => "js",
-            Self::TypeScript => "ts",
-            Self::Rust => "rs",
-        }
-    }
-}
-
 /// State for Docker-based agent
 struct DockerAgentState {
     container_id: Option<String>,
-    /// Conversation history for this task
+    container_ip: Option<String>,
     history: Vec<HistoryEntry>,
+    agent_started: bool,
 }
 
 /// External agent that runs inside a Docker container
 ///
-/// The agent receives the full conversation history in each request,
-/// allowing it to maintain context without needing a persistent process.
+/// The agent starts as an HTTP server and handles multiple step requests.
+/// State is maintained across all steps within a task.
 ///
 /// SECURITY: Agent code runs in a non-privileged container with:
 /// - Dropped capabilities
@@ -153,16 +120,16 @@ struct DockerAgentState {
 pub struct ExternalAgent {
     docker: Docker,
     path: PathBuf,
-    language: AgentLanguage,
     name: String,
     code: String,
     state: Mutex<DockerAgentState>,
     env_vars: Vec<(String, String)>,
     show_logs: Arc<AtomicBool>,
+    http_client: reqwest::Client,
 }
 
 impl ExternalAgent {
-    /// Create a new external agent from a script path
+    /// Create a new external agent from a Python script
     pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
 
@@ -170,14 +137,18 @@ impl ExternalAgent {
             bail!("Agent file not found: {:?}", path);
         }
 
-        let language = AgentLanguage::from_path(&path)?;
+        // Only Python is supported
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "py" {
+            bail!("Only Python agents (.py) are supported. Got: .{}", ext);
+        }
+
         let name = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("external")
             .to_string();
 
-        // Read agent code
         let code = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("Failed to read agent file: {:?}", path))?;
@@ -185,24 +156,29 @@ impl ExternalAgent {
         let docker = Docker::connect_with_local_defaults()
             .context("Failed to connect to Docker. Is Docker running?")?;
 
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()?;
+
         info!(
-            "External agent: {} ({}) - will run in Docker container",
-            name,
-            language.as_str()
+            "External agent: {} (Python) - will run in Docker container",
+            name
         );
 
         Ok(Self {
             docker,
             path,
-            language,
             name,
             code,
             state: Mutex::new(DockerAgentState {
                 container_id: None,
+                container_ip: None,
                 history: Vec::new(),
+                agent_started: false,
             }),
             env_vars: vec![],
             show_logs: Arc::new(AtomicBool::new(true)),
+            http_client,
         })
     }
 
@@ -232,8 +208,8 @@ impl ExternalAgent {
             return Ok(id.clone());
         }
 
-        // Always try to pull latest image (ensures miners have latest SDK)
-        info!("Checking for latest agent base image: {}", AGENT_BASE_IMAGE);
+        // Pull image if needed
+        info!("Checking for agent base image: {}", AGENT_BASE_IMAGE);
         use bollard::image::CreateImageOptions;
 
         let mut stream = self.docker.create_image(
@@ -245,36 +221,20 @@ impl ExternalAgent {
             None,
         );
 
-        let mut pull_success = false;
         while let Some(result) = stream.next().await {
             match result {
                 Ok(info) => {
                     if let Some(status) = info.status {
                         debug!("Pull: {}", status);
-                        if status.contains("up to date")
-                            || status.contains("Downloaded")
-                            || status.contains("Pull complete")
-                        {
-                            pull_success = true;
-                        }
                     }
                 }
                 Err(e) => {
-                    // If pull fails, check if image exists locally
                     if self.docker.inspect_image(AGENT_BASE_IMAGE).await.is_ok() {
                         warn!("Failed to pull latest image, using cached: {}", e);
-                        pull_success = true;
                         break;
                     }
                     bail!("Failed to pull base image: {}", e);
                 }
-            }
-        }
-
-        if !pull_success {
-            // Verify image exists (either pulled or cached)
-            if self.docker.inspect_image(AGENT_BASE_IMAGE).await.is_err() {
-                bail!("Agent base image not available: {}", AGENT_BASE_IMAGE);
             }
         }
 
@@ -285,7 +245,10 @@ impl ExternalAgent {
             .map(|(k, v)| format!("{}={}", k, v))
             .chain(vec![
                 "PYTHONUNBUFFERED=1".to_string(),
+                "PYTHONDONTWRITEBYTECODE=1".to_string(),
+                "PYTHONPYCACHEPREFIX=/tmp/pycache".to_string(), // Use temp cache, ignores container cache
                 "TERM=xterm-256color".to_string(),
+                format!("AGENT_PORT={}", AGENT_HTTP_PORT),
             ])
             .collect();
 
@@ -297,10 +260,9 @@ impl ExternalAgent {
 
         // SECURITY: Non-privileged container configuration
         let host_config = HostConfig {
-            memory: Some(2 * 1024 * 1024 * 1024),     // 2GB
-            nano_cpus: Some(2_000_000_000),           // 2 CPUs
-            network_mode: Some("bridge".to_string()), // Network for API calls
-            // SECURITY settings
+            memory: Some(2 * 1024 * 1024 * 1024), // 2GB
+            nano_cpus: Some(2_000_000_000),       // 2 CPUs
+            network_mode: Some("bridge".to_string()),
             privileged: Some(false),
             cap_drop: Some(vec!["ALL".to_string()]),
             cap_add: Some(vec![
@@ -361,25 +323,36 @@ impl ExternalAgent {
             .await
             .context("Failed to start agent container")?;
 
+        // Get container IP
+        let inspect = self.docker.inspect_container(&container_id, None).await?;
+        let ip = inspect
+            .network_settings
+            .and_then(|ns| ns.networks)
+            .and_then(|nets| nets.get("bridge").cloned())
+            .and_then(|net| net.ip_address)
+            .ok_or_else(|| anyhow::anyhow!("Failed to get container IP"))?;
+
         // Inject agent code
         self.inject_code(&container_id).await?;
 
-        info!("Agent container started: {}", &container_id[..12]);
+        info!(
+            "Agent container started: {} (IP: {})",
+            &container_id[..12],
+            ip
+        );
         state.container_id = Some(container_id.clone());
+        state.container_ip = Some(ip);
 
         Ok(container_id)
     }
 
     /// Inject agent code into container
     async fn inject_code(&self, container_id: &str) -> Result<()> {
-        // Create agent directory
         self.exec_in_container(container_id, &["mkdir", "-p", "/agent"])
             .await?;
 
-        // Write code using base64 for safe transfer
         let encoded = base64::engine::general_purpose::STANDARD.encode(&self.code);
-        let filename = format!("/agent/agent.{}", self.language.file_ext());
-        let cmd = format!("echo '{}' | base64 -d > '{}'", encoded, filename);
+        let cmd = format!("echo '{}' | base64 -d > '/agent/agent.py'", encoded);
 
         let result = self
             .exec_in_container(container_id, &["sh", "-c", &cmd])
@@ -389,82 +362,93 @@ impl ExternalAgent {
             bail!("Failed to inject agent code: {}", result.1);
         }
 
-        // For Rust, create Cargo.toml and compile
-        if self.language == AgentLanguage::Rust {
-            self.compile_rust_agent(container_id).await?;
-        }
-
         info!("Agent code injected ({} bytes)", self.code.len());
         Ok(())
     }
 
-    /// Compile Rust agent inside container
-    async fn compile_rust_agent(&self, container_id: &str) -> Result<()> {
-        let cargo_toml = r#"[package]
-name = "agent"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-term-sdk = { path = "/opt/term-sdk/rust" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-"#;
-
-        let encoded = base64::engine::general_purpose::STANDARD.encode(cargo_toml);
-
-        // Setup Cargo project
-        self.exec_in_container(
-            container_id,
-            &[
-                "sh",
-                "-c",
-                &format!(
-                    "mkdir -p /agent/src && mv /agent/agent.rs /agent/src/main.rs && echo '{}' | base64 -d > /agent/Cargo.toml",
-                    encoded
-                ),
-            ],
-        )
-        .await?;
-
-        // Compile
-        info!("Compiling Rust agent...");
-        let (success, output) = self
+    /// Start the agent HTTP server (called once per task)
+    async fn start_agent_server(&self, container_id: &str) -> Result<()> {
+        // Clear any cached bytecode to ensure fresh SDK is used
+        let _ = self
             .exec_in_container(
                 container_id,
-                &["sh", "-c", "cd /agent && cargo build --release 2>&1"],
+                &[
+                    "sh",
+                    "-c",
+                    "rm -rf /opt/term-sdk/python/term_sdk/__pycache__ 2>/dev/null",
+                ],
             )
+            .await;
+
+        // Build env exports
+        let env_exports = self
+            .env_vars
+            .iter()
+            .map(|(k, v)| format!("export {}='{}'", k, v.replace('\'', "'\\''")))
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        let cmd = if env_exports.is_empty() {
+            "nohup python3 -B /agent/agent.py > /agent/stdout.log 2>/agent/stderr.log &".to_string()
+        } else {
+            format!(
+                "nohup sh -c '{}; python3 -B /agent/agent.py' > /agent/stdout.log 2>/agent/stderr.log &"
+                , env_exports
+            )
+        };
+
+        self.exec_in_container(container_id, &["sh", "-c", &cmd])
             .await?;
 
-        if !success {
-            bail!("Rust compilation failed:\n{}", output);
+        // Wait for agent to be ready (health check)
+        let ip = {
+            let state = self.state.lock().await;
+            state.container_ip.clone().unwrap()
+        };
+        let health_url = format!("http://{}:{}/health", ip, AGENT_HTTP_PORT);
+
+        for i in 0..100 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            match self.http_client.get(&health_url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    info!("Agent HTTP server ready");
+                    return Ok(());
+                }
+                _ => {
+                    if i > 0 && i % 20 == 0 {
+                        debug!("Waiting for agent HTTP server... {}s", i / 10);
+                        // Check stderr for errors
+                        let (_, log) = self
+                            .exec_in_container(container_id, &["cat", "/agent/stderr.log"])
+                            .await?;
+                        if !log.is_empty() && self.show_logs.load(Ordering::SeqCst) {
+                            for line in log.lines() {
+                                eprintln!("\x1b[90m[{}]\x1b[0m {}", self.name, line);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        info!("Rust agent compiled successfully");
-        Ok(())
+        // Timeout - get logs
+        let (_, stderr) = self
+            .exec_in_container(container_id, &["cat", "/agent/stderr.log"])
+            .await?;
+        let (_, stdout) = self
+            .exec_in_container(container_id, &["cat", "/agent/stdout.log"])
+            .await?;
+
+        bail!(
+            "Agent HTTP server failed to start.\nStderr: {}\nStdout: {}",
+            stderr,
+            stdout
+        );
     }
 
-    /// Execute command in container (captures both stdout and stderr)
+    /// Execute command in container
     async fn exec_in_container(&self, container_id: &str, cmd: &[&str]) -> Result<(bool, String)> {
-        self.exec_in_container_inner(container_id, cmd, false).await
-    }
-
-    /// Execute agent command in container (only captures stdout, streams stderr)
-    async fn exec_agent_in_container(
-        &self,
-        container_id: &str,
-        cmd: &[&str],
-    ) -> Result<(bool, String)> {
-        self.exec_in_container_inner(container_id, cmd, true).await
-    }
-
-    /// Internal method for container execution
-    async fn exec_in_container_inner(
-        &self,
-        container_id: &str,
-        cmd: &[&str],
-        agent_mode: bool, // If true, only capture stdout, stream stderr
-    ) -> Result<(bool, String)> {
         let exec = self
             .docker
             .create_exec(
@@ -490,18 +474,7 @@ serde_json = "1.0"
                         output.push_str(&String::from_utf8_lossy(&message));
                     }
                     Ok(LogOutput::StdErr { message }) => {
-                        let text = String::from_utf8_lossy(&message);
-                        // In agent mode, only stream stderr to console (don't add to output)
-                        // In normal mode, add to output
-                        if !agent_mode {
-                            output.push_str(&text);
-                        }
-                        // Stream stderr to console if enabled
-                        if self.show_logs.load(Ordering::SeqCst) {
-                            for line in text.lines() {
-                                eprintln!("\x1b[90m[{}]\x1b[0m {}", self.name, line);
-                            }
-                        }
+                        output.push_str(&String::from_utf8_lossy(&message));
                     }
                     _ => {}
                 }
@@ -512,6 +485,73 @@ serde_json = "1.0"
         let success = inspect.exit_code.unwrap_or(-1) == 0;
 
         Ok((success, output))
+    }
+
+    /// Execute one step via HTTP
+    async fn execute_step(&self, request: &AgentRequest) -> Result<AgentResponse> {
+        let container_id = self.start_container().await?;
+
+        // Start agent server on first step
+        {
+            let mut state = self.state.lock().await;
+            if !state.agent_started {
+                drop(state);
+                self.start_agent_server(&container_id).await?;
+                let mut state = self.state.lock().await;
+                state.agent_started = true;
+            }
+        }
+
+        let ip = {
+            let state = self.state.lock().await;
+            state.container_ip.clone().unwrap()
+        };
+
+        let url = format!("http://{}:{}/step", ip, AGENT_HTTP_PORT);
+        let request_json = serde_json::to_string(request)?;
+
+        debug!("POST {} (step {})", url, request.step);
+
+        // Send HTTP request
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(request_json)
+            .send()
+            .await
+            .context("Failed to send request to agent")?;
+
+        // Get stderr logs (agent logging)
+        let (_, stderr) = self
+            .exec_in_container(&container_id, &["cat", "/agent/stderr.log"])
+            .await?;
+        if !stderr.is_empty() && self.show_logs.load(Ordering::SeqCst) {
+            for line in stderr.lines() {
+                eprintln!("\x1b[90m[{}]\x1b[0m {}", self.name, line);
+            }
+            // Clear log for next step
+            let _ = self
+                .exec_in_container(&container_id, &["sh", "-c", "echo -n > /agent/stderr.log"])
+                .await;
+        }
+
+        if !response.status().is_success() {
+            bail!("Agent returned error: {}", response.status());
+        }
+
+        let body = response.text().await?;
+        let harness_response = crate::terminal_harness::parse_agent_response(&body)
+            .context("Failed to parse agent response")?;
+
+        Ok(AgentResponse {
+            command: harness_response.command,
+            text: None,
+            task_complete: harness_response.task_complete,
+            analysis: None,
+            plan: None,
+            commands: vec![],
+        })
     }
 
     /// Stop and remove the agent container
@@ -534,82 +574,14 @@ serde_json = "1.0"
                 .await;
         }
 
+        state.agent_started = false;
         Ok(())
     }
 
-    /// Execute one step of the agent
-    async fn execute_step(&self, request: &AgentRequest) -> Result<AgentResponse> {
-        let container_id = self.start_container().await?;
-
-        let request_json = serde_json::to_string(request)?;
-        debug!(
-            "Sending to agent: {}",
-            &request_json[..request_json.len().min(200)]
-        );
-
-        // Encode request as base64 to avoid shell escaping issues
-        let encoded_request = base64::engine::general_purpose::STANDARD.encode(&request_json);
-
-        // Build the command to run the agent (using base64 for safe transfer)
-        let agent_cmd = match self.language {
-            AgentLanguage::Python => format!(
-                "echo '{}' | base64 -d | python3 /agent/agent.py",
-                encoded_request
-            ),
-            AgentLanguage::JavaScript => format!(
-                "echo '{}' | base64 -d | node /agent/agent.js",
-                encoded_request
-            ),
-            AgentLanguage::TypeScript => format!(
-                "echo '{}' | base64 -d | tsx /agent/agent.ts",
-                encoded_request
-            ),
-            AgentLanguage::Rust => format!(
-                "echo '{}' | base64 -d | /agent/target/release/agent",
-                encoded_request
-            ),
-        };
-
-        // Add environment variables using export (works with pipes)
-        let env_exports = self
-            .env_vars
-            .iter()
-            .map(|(k, v)| format!("export {}='{}'", k, v.replace('\'', "'\\''")))
-            .collect::<Vec<_>>()
-            .join(" && ");
-
-        let full_cmd = if env_exports.is_empty() {
-            agent_cmd
-        } else {
-            format!("{} && {}", env_exports, agent_cmd)
-        };
-
-        // Execute with timeout (use agent mode to separate stdout from stderr)
-        let timeout = Duration::from_secs(120);
-        let (success, output) = tokio::time::timeout(
-            timeout,
-            self.exec_agent_in_container(&container_id, &["sh", "-c", &full_cmd]),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("Agent step timeout ({}s)", timeout.as_secs()))??;
-
-        if !success && output.is_empty() {
-            bail!("Agent execution failed with no output");
-        }
-
-        // Parse response from output (find JSON) and convert to session::AgentResponse
-        let harness_response = crate::terminal_harness::parse_agent_response(&output)
-            .context("Failed to parse agent response")?;
-
-        // Convert to session::AgentResponse
-        Ok(AgentResponse {
-            command: harness_response.command,
-            text: None,
-            task_complete: harness_response.task_complete,
-            analysis: None,
-            plan: None,
-            commands: vec![],
-        })
+    /// Clear history (called when starting a new task)
+    pub async fn clear_history(&self) {
+        let mut state = self.state.lock().await;
+        state.history.clear();
     }
 }
 
@@ -620,17 +592,12 @@ impl Agent for ExternalAgent {
     }
 
     async fn setup(&self, _session: &TmuxSession) -> Result<()> {
-        // Pre-start the container
         self.start_container().await?;
-        info!(
-            "External agent ready: {} (Docker, non-privileged)",
-            self.name
-        );
+        info!("External agent ready: {} (Docker, HTTP)", self.name);
         Ok(())
     }
 
     async fn step(&self, instruction: &str, screen: &str, step: u32) -> Result<AgentResponse> {
-        // Get current history
         let history = {
             let state = self.state.lock().await;
             state.history.clone()
@@ -650,7 +617,7 @@ impl Agent for ExternalAgent {
 
         let response = self.execute_step(&request).await?;
 
-        // Add this step to history for next request
+        // Add to history
         {
             let mut state = self.state.lock().await;
             state.history.push(HistoryEntry {
@@ -666,14 +633,6 @@ impl Agent for ExternalAgent {
         }
 
         Ok(response)
-    }
-}
-
-impl ExternalAgent {
-    /// Clear history (called when starting a new task)
-    pub async fn clear_history(&self) {
-        let mut state = self.state.lock().await;
-        state.history.clear();
     }
 }
 
@@ -699,7 +658,6 @@ pub async fn create_external_agent(
 ) -> Result<ExternalAgent> {
     let mut agent = ExternalAgent::new(path).await?;
 
-    // Set provider-specific env vars
     if let Some(key) = api_key {
         if let Some(provider) = provider {
             match provider.to_lowercase().as_str() {

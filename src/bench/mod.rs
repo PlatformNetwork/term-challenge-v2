@@ -17,7 +17,7 @@ pub mod verifier;
 
 pub use agent::{create_agent, LlmAgent};
 pub use environment::DockerEnvironment;
-pub use external_agent::{create_external_agent, AgentLanguage, ExternalAgent};
+pub use external_agent::{create_external_agent, ExternalAgent};
 pub use llm::{CostTracker, LlmClient, Message, Provider};
 pub use registry::{Dataset, RegistryClient, TaskSource};
 pub use results::{BenchmarkResults, ResultExporter, TaskResult};

@@ -60,7 +60,7 @@ __version__ = "1.0.0"
 
 from .types import Request, Response, Tool, FunctionCall, HistoryEntry
 from .agent import Agent
-from .runner import run, run_loop, log, log_step, log_llm, log_error, set_logging
+from .runner import run, run_stdio, log, log_error, set_logging
 from .llm import LLM, LLMResponse, LLMError
 
 # Aliases for compatibility
@@ -74,11 +74,9 @@ __all__ = [
     "HistoryEntry",
     "Agent",
     "run",
-    "run_loop",
+    "run_stdio",
     # Logging
     "log",
-    "log_step",
-    "log_llm",
     "log_error",
     "set_logging",
     # LLM
