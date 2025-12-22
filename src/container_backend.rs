@@ -402,11 +402,8 @@ impl ContainerHandle for DockerContainerHandle {
         let mut stream = self.docker.logs(&self.container_id, Some(options));
 
         while let Some(result) = stream.next().await {
-            match result {
-                Ok(LogOutput::StdOut { message } | LogOutput::StdErr { message }) => {
-                    logs.push_str(&String::from_utf8_lossy(&message));
-                }
-                _ => {}
+            if let Ok(LogOutput::StdOut { message } | LogOutput::StdErr { message }) = result {
+                logs.push_str(&String::from_utf8_lossy(&message));
             }
         }
 

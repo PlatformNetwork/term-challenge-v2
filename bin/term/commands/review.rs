@@ -20,6 +20,7 @@ struct LlmRules {
 
 /// LLM review result
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ReviewResponse {
     success: bool,
     approved: Option<bool>,
@@ -30,6 +31,7 @@ struct ReviewResponse {
 
 /// LLM review request
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 struct ReviewRequest {
     source_code: String,
     agent_hash: String,
@@ -140,7 +142,7 @@ pub async fn run(
                     "The full LLM review will happen when you submit to the network.",
                     "",
                     "To test LLM review locally:",
-                    &format!("  export OPENROUTER_API_KEY=sk-or-..."),
+                    "  export OPENROUTER_API_KEY=sk-or-...",
                     &format!("  term review {}", filename),
                 ],
             );

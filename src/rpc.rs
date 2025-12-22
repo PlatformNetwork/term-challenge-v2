@@ -1039,7 +1039,7 @@ async fn get_validators_list(State(state): State<Arc<RpcState>>) -> impl IntoRes
 
     let validator_list: Vec<ValidatorInfoResponse> = validators
         .iter()
-        .filter_map(|v| {
+        .map(|v| {
             // The hotkey is stored as a hex string
             let hotkey_hex = v.hotkey.clone();
 
@@ -1058,11 +1058,11 @@ async fn get_validators_list(State(state): State<Arc<RpcState>>) -> impl IntoRes
                 hotkey_hex.clone()
             };
 
-            Some(ValidatorInfoResponse {
+            ValidatorInfoResponse {
                 hotkey_ss58,
                 hotkey_hex,
                 stake: v.stake,
-            })
+            }
         })
         .collect();
 

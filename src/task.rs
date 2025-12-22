@@ -7,18 +7,13 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Task difficulty level
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Difficulty {
     Easy,
+    #[default]
     Medium,
     Hard,
-}
-
-impl Default for Difficulty {
-    fn default() -> Self {
-        Self::Medium
-    }
 }
 
 /// Terminal-bench compatible description entry

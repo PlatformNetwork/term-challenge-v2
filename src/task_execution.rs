@@ -678,7 +678,7 @@ mod tests {
 
     #[test]
     fn test_progress_update() {
-        let mut progress = EvaluationProgress::new(
+        let progress = EvaluationProgress::new(
             "eval1".to_string(),
             "agent1".to_string(),
             "validator1".to_string(),

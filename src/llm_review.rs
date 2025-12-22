@@ -19,16 +19,11 @@ use thiserror::Error;
 use tracing::{debug, error, info, warn};
 
 /// LLM Provider configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum LlmProvider {
+    #[default]
     OpenRouter,
     Chutes,
-}
-
-impl Default for LlmProvider {
-    fn default() -> Self {
-        LlmProvider::OpenRouter
-    }
 }
 
 /// LLM configuration

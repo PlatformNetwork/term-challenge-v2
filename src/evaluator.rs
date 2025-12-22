@@ -159,7 +159,7 @@ impl TaskEvaluator {
 
         // Write instruction file
         let instruction = task.instruction();
-        let encoded_instruction = base64::engine::general_purpose::STANDARD.encode(&instruction);
+        let encoded_instruction = base64::engine::general_purpose::STANDARD.encode(instruction.as_bytes());
         container
             .exec(&[
                 "sh",
@@ -197,7 +197,7 @@ impl TaskEvaluator {
                 &container,
                 &language,
                 &agent.env_vars,
-                &instruction,
+                instruction,
                 task.config.timeout_secs as u64,
                 50, // max_steps
             )

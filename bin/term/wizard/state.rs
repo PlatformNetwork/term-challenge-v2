@@ -130,6 +130,7 @@ pub struct ValidatorInfo {
     /// Hotkey in hex format (for encryption)
     pub hotkey: String,
     /// Hotkey in SS58 format (for display)
+    #[allow(dead_code)]
     pub hotkey_ss58: String,
     pub stake: u64,
     pub api_key: Option<String>,

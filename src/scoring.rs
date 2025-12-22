@@ -13,13 +13,8 @@ use std::collections::HashMap;
 /// - No difficulty weighting
 /// - No time bonus
 /// - No cost efficiency factor
+#[derive(Default)]
 pub struct ScoreCalculator;
-
-impl Default for ScoreCalculator {
-    fn default() -> Self {
-        Self
-    }
-}
 
 impl ScoreCalculator {
     /// Create a new score calculator
@@ -234,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_score_passed_task() {
-        let calculator = ScoreCalculator::default();
+        let calculator = ScoreCalculator;
         let task = create_test_task(Difficulty::Medium);
         let result = TaskResult::success(
             "test".to_string(),
@@ -250,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_score_failed_task() {
-        let calculator = ScoreCalculator::default();
+        let calculator = ScoreCalculator;
         let task = create_test_task(Difficulty::Easy);
         let result = TaskResult::failure(
             "test".to_string(),
@@ -267,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_score() {
-        let calculator = ScoreCalculator::default();
+        let calculator = ScoreCalculator;
 
         let task1 = create_test_task(Difficulty::Easy);
         let task2 = create_test_task(Difficulty::Hard);
