@@ -493,7 +493,7 @@ impl ExternalAgent {
 
         // Start agent server on first step
         {
-            let mut state = self.state.lock().await;
+            let state = self.state.lock().await;
             if !state.agent_started {
                 drop(state);
                 self.start_agent_server(&container_id).await?;
