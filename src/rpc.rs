@@ -18,7 +18,7 @@
 //! the platform validator.
 
 use crate::{
-    agent_registry::SubmissionAllowance,
+    agent_registry::{AgentStatus, SubmissionAllowance},
     chain_storage::ChainStorage,
     config::ChallengeConfig,
     encrypted_api_key::ApiKeyConfig,
@@ -37,11 +37,22 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
-use platform_challenge_sdk::{ChallengeP2PMessage, DecryptionKeyReveal, EncryptedSubmission};
+use platform_challenge_sdk::{
+    ChallengeP2PMessage, DecryptApiKeyRequest, DecryptApiKeyResponse, DecryptionKeyReveal,
+    EncryptedApiKey, EncryptedSubmission,
+};
 use platform_core::Hotkey;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
+use parking_lot::RwLock;
+use once_cell::sync::Lazy;
+
+/// Global storage for pending API key decryption responses
+/// Maps request_id -> DecryptApiKeyResponse
+static PENDING_DECRYPT_RESPONSES: Lazy<RwLock<HashMap<String, DecryptApiKeyResponse>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// RPC Configuration
 #[derive(Debug, Clone)]
@@ -174,7 +185,8 @@ impl TermChallengeRpc {
             // Info
             .route("/whitelist", get(get_whitelist))
             .route("/stats", get(get_stats))
-            .route("/validators", post(update_validators))
+            .route("/validators", get(get_validators_list))
+            .route("/validators/update", post(update_validators))
             // Platform Authentication (REQUIRED before P2P endpoints)
             .route("/auth", post(platform_authenticate))
             .route("/auth/status", get(auth_status))
@@ -318,33 +330,61 @@ async fn submit_agent(
         }
     };
 
-    // Build API keys info for response
-    let api_keys_info = req.api_keys.as_ref().map(|keys| {
-        let (mode, validator_count) = match keys {
-            ApiKeyConfig::Shared { encrypted_keys } => ("shared".to_string(), encrypted_keys.len()),
-            ApiKeyConfig::PerValidator { encrypted_keys } => {
-                ("per_validator".to_string(), encrypted_keys.len())
-            }
-        };
-        ApiKeysInfo {
-            provided: true,
-            mode,
-            validator_count,
+    // API keys are REQUIRED for LLM verification
+    // Miners must provide either:
+    // - "shared": One API key encrypted for all validators
+    // - "per_validator": Different API key for each validator (more secure)
+    let api_keys = match req.api_keys {
+        Some(keys) => keys,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SubmitResponse {
+                    success: false,
+                    agent_hash: None,
+                    status: None,
+                    error: Some("API keys required: Provide 'api_keys' with type 'shared' or 'per_validator' for LLM verification. Use OpenRouter or Chutes API key.".to_string()),
+                    api_keys_info: None,
+                }),
+            );
         }
-    });
+    };
 
-    // Log API key info
-    if let Some(ref info) = api_keys_info {
-        info!(
-            "Submission includes API keys: mode={}, validators={}",
-            info.mode, info.validator_count
+    // Build API keys info for response
+    let (mode, validator_count) = match &api_keys {
+        ApiKeyConfig::Shared { encrypted_keys } => ("shared".to_string(), encrypted_keys.len()),
+        ApiKeyConfig::PerValidator { encrypted_keys } => {
+            ("per_validator".to_string(), encrypted_keys.len())
+        }
+    };
+
+    // Validate that we have at least one encrypted key
+    if validator_count == 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(SubmitResponse {
+                success: false,
+                agent_hash: None,
+                status: None,
+                error: Some("API keys required: 'encrypted_keys' array cannot be empty".to_string()),
+                api_keys_info: None,
+            }),
         );
     }
 
+    let api_keys_info = Some(ApiKeysInfo {
+        provided: true,
+        mode: mode.clone(),
+        validator_count,
+    });
+
+    info!(
+        "Submission includes API keys: mode={}, validators={}",
+        mode, validator_count
+    );
+
     // Store API keys in submission metadata for later retrieval by validators
-    let metadata = req
-        .api_keys
-        .map(|keys| serde_json::to_value(&keys).unwrap_or(serde_json::Value::Null));
+    let metadata = Some(serde_json::to_value(&api_keys).unwrap_or(serde_json::Value::Null));
 
     let submission = AgentSubmission {
         source_code: req.source_code,
@@ -355,17 +395,77 @@ async fn submit_agent(
         metadata,
     };
 
-    match state.handler.submit(submission, req.stake).await {
-        Ok(status) => (
-            StatusCode::OK,
-            Json(SubmitResponse {
-                success: true,
-                agent_hash: Some(status.agent_hash.clone()),
-                status: Some(status),
-                error: None,
-                api_keys_info,
-            }),
-        ),
+    match state.handler.submit(submission.clone(), req.stake).await {
+        Ok(status) => {
+            // Auto-trigger evaluation if agent is distributed
+            if status.status == AgentStatus::Distributed {
+                let evaluation_id = uuid::Uuid::new_v4().to_string();
+                let agent_hash = status.agent_hash.clone();
+                let source_code = submission.source_code.clone();
+                let validator_hotkey = std::env::var("VALIDATOR_HOTKEY")
+                    .unwrap_or_else(|_| "auto-eval".to_string());
+                let progress_store = state.progress_store.clone();
+                let config = state.challenge_config.clone();
+
+                // Create initial progress entry
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let initial_progress = crate::task_execution::EvaluationProgress {
+                    evaluation_id: evaluation_id.clone(),
+                    agent_hash: agent_hash.clone(),
+                    validator_hotkey: validator_hotkey.clone(),
+                    total_tasks: 0,
+                    completed_tasks: 0,
+                    passed_tasks: 0,
+                    failed_tasks: 0,
+                    current_task_index: 0,
+                    current_task_id: None,
+                    progress_percent: 0.0,
+                    total_cost_usd: 0.0,
+                    cost_limit_usd: 10.0,
+                    cost_limit_reached: false,
+                    started_at: now,
+                    estimated_completion: None,
+                    tasks: std::collections::HashMap::new(),
+                    status: crate::task_execution::EvaluationStatus::Running,
+                    final_score: None,
+                };
+                state.progress_store.start_evaluation(initial_progress);
+
+                info!(
+                    "Auto-triggering evaluation {} for agent {}",
+                    &evaluation_id[..8],
+                    &agent_hash[..16.min(agent_hash.len())]
+                );
+
+                // Spawn evaluation in background
+                tokio::spawn(async move {
+                    run_evaluation_with_progress(
+                        evaluation_id,
+                        agent_hash,
+                        validator_hotkey,
+                        source_code,
+                        None, // No webhook
+                        progress_store,
+                        config,
+                    )
+                    .await;
+                });
+            }
+
+            (
+                StatusCode::OK,
+                Json(SubmitResponse {
+                    success: true,
+                    agent_hash: Some(status.agent_hash.clone()),
+                    status: Some(status),
+                    error: None,
+                    api_keys_info,
+                }),
+            )
+        }
         Err(e) => {
             warn!("Submission failed: {}", e);
             (
@@ -906,6 +1006,71 @@ async fn update_validators(
 ) -> impl IntoResponse {
     state.handler.update_validators(validators);
     StatusCode::OK
+}
+
+/// Validator info for API key encryption
+#[derive(Debug, Serialize)]
+pub struct ValidatorInfoResponse {
+    /// Validator hotkey in SS58 format (e.g., "5GziQCc...")
+    pub hotkey_ss58: String,
+    /// Validator hotkey in hex format (for encryption)
+    pub hotkey_hex: String,
+    /// Validator stake in RAO
+    pub stake: u64,
+}
+
+/// Response with list of validators
+#[derive(Debug, Serialize)]
+pub struct ValidatorsListResponse {
+    /// List of active validators
+    pub validators: Vec<ValidatorInfoResponse>,
+    /// Total number of validators
+    pub count: usize,
+    /// Instructions for API key encryption
+    pub encryption_info: &'static str,
+}
+
+/// Get list of active validators for API key encryption
+/// Miners need this to encrypt their API keys for each validator
+async fn get_validators_list(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
+    let validators = state.handler.get_validators();
+    
+    let validator_list: Vec<ValidatorInfoResponse> = validators
+        .iter()
+        .filter_map(|v| {
+            // The hotkey is stored as a hex string
+            let hotkey_hex = v.hotkey.clone();
+            
+            // Try to convert hex to bytes and then to SS58
+            let hotkey_ss58 = if let Ok(bytes) = hex::decode(&hotkey_hex) {
+                if bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    platform_core::Hotkey(arr).to_ss58()
+                } else {
+                    // If not 32 bytes, use hex as-is
+                    hotkey_hex.clone()
+                }
+            } else {
+                // If not valid hex, assume it's already SS58
+                hotkey_hex.clone()
+            };
+            
+            Some(ValidatorInfoResponse {
+                hotkey_ss58,
+                hotkey_hex,
+                stake: v.stake,
+            })
+        })
+        .collect();
+    
+    let count = validator_list.len();
+    
+    Json(ValidatorsListResponse {
+        validators: validator_list,
+        count,
+        encryption_info: "Encrypt your API key (OpenRouter/Chutes) for each validator using X25519+ChaCha20Poly1305. Use 'hotkey_hex' for encryption. For 'shared' mode, encrypt the same key for all validators.",
+    })
 }
 
 /// Trigger evaluation request
@@ -1700,6 +1865,32 @@ async fn handle_basic_p2p_message(
                 weight_msg.result.weights.len(),
                 weight_msg.epoch
             );
+            None
+        }
+        ChallengeP2PMessage::DecryptApiKeyRequest(_) => {
+            // This should not be received by challenge - it's sent TO platform
+            warn!("Received DecryptApiKeyRequest - this should be sent to platform, not challenge");
+            None
+        }
+        ChallengeP2PMessage::DecryptApiKeyResponse(response) => {
+            if response.success {
+                info!(
+                    "Received decrypted API key for agent {} (request {})",
+                    &response.agent_hash[..16.min(response.agent_hash.len())],
+                    &response.request_id[..8]
+                );
+                // Store the decrypted API key for use in LLM review
+                // This will be handled by a pending request mechanism
+                PENDING_DECRYPT_RESPONSES
+                    .write()
+                    .insert(response.request_id.clone(), response);
+            } else {
+                warn!(
+                    "API key decryption failed for agent {}: {}",
+                    &response.agent_hash[..16.min(response.agent_hash.len())],
+                    response.error.as_deref().unwrap_or("unknown error")
+                );
+            }
             None
         }
     }

@@ -19,9 +19,9 @@ path = "bin/server/main.rs"
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
 
-# Platform SDK from GitHub (pinned to latest with P2P bridge support)
-platform-challenge-sdk = { git = "https://github.com/PlatformNetwork/platform.git", rev = "8abeda7" }
-platform-core = { git = "https://github.com/PlatformNetwork/platform.git", rev = "8abeda7" }
+# Platform SDK from GitHub (with API key decryption support)
+platform-challenge-sdk = { git = "https://github.com/PlatformNetwork/platform.git", rev = "297eb91" }
+platform-core = { git = "https://github.com/PlatformNetwork/platform.git", rev = "297eb91" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full", "process"] }
@@ -73,6 +73,7 @@ tempfile = "3.12"
 
 # Concurrency
 parking_lot = "0.12"
+once_cell = "1.19"
 
 # Compression for binary distribution and Docker builds
 flate2 = "1.0"

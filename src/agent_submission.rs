@@ -172,6 +172,11 @@ impl AgentSubmissionHandler {
         *self.validators.write() = validators;
     }
 
+    /// Get the current validators list
+    pub fn get_validators(&self) -> Vec<ValidatorInfo> {
+        self.validators.read().clone()
+    }
+
     /// Set current epoch
     pub fn set_epoch(&self, epoch: u64) {
         self.registry.set_epoch(epoch);
@@ -230,29 +235,17 @@ impl AgentSubmissionHandler {
         self.registry
             .update_status(&entry.agent_hash, AgentStatus::Verified, None)?;
 
-        // Step 4: Classify validators
+        // Step 4: Get all validators and distribute to ALL of them immediately
+        // SIMPLIFIED: No top/bottom distinction, all validators get source code
         let validators = self.validators.read().clone();
-        let (source_recipients, obfuscated_recipients) =
-            self.distributor.classify_validators(&validators);
+        let all_validators: Vec<String> = validators.iter().map(|v| v.hotkey.clone()).collect();
 
-        if source_recipients.is_empty() {
-            warn!("No top validators available for source distribution");
-            let status = SubmissionStatus {
-                agent_hash: entry.agent_hash.clone(),
-                status: AgentStatus::Verified,
-                verification_result: Some(verification),
-                distribution_status: None,
-                error: Some("No top validators available".to_string()),
-                created_at: entry.submitted_at,
-                updated_at: entry.updated_at,
-            };
-            self.submissions
-                .write()
-                .insert(entry.agent_hash.clone(), status.clone());
-            return Ok(status);
-        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-        // Step 5: Create source package for top validators
+        // Step 5: Create source package for ALL validators
         let source_package = self.distributor.create_source_package(
             &submission.source_code,
             &entry.agent_hash,
@@ -262,44 +255,24 @@ impl AgentSubmissionHandler {
             .write()
             .insert(entry.agent_hash.clone(), source_package);
 
-        // Step 6: Generate expected obfuscated hash (deterministic)
-        let (_, expected_hash) = self
-            .distributor
-            .generate_obfuscated(&submission.source_code, &entry.agent_hash);
+        // Step 6: Mark as Distributed immediately (no consensus needed)
+        self.registry
+            .update_status(&entry.agent_hash, AgentStatus::Distributed, None)?;
 
-        // Step 7: Create pending consensus entry
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let pending = PendingConsensus {
-            agent_hash: entry.agent_hash.clone(),
-            source_code: submission.source_code.clone(),
-            expected_obfuscated_hash: expected_hash.clone(),
-            signatures: vec![],
-            required_signatures: 2, // 2 of 3 top validators
-            source_recipients: source_recipients.clone(),
-            created_at: now,
-        };
-        self.pending_consensus
-            .write()
-            .insert(entry.agent_hash.clone(), pending);
-
-        // Create initial status (pending consensus)
+        // Create distribution status - all validators receive source
         let distribution_status = DistributionStatus {
             total_validators: validators.len(),
-            source_recipients: source_recipients.clone(),
-            obfuscated_recipients: obfuscated_recipients.clone(),
-            obfuscated_hash: Some(expected_hash),
-            consensus_signers: vec![],
-            consensus_reached: false,
+            source_recipients: all_validators.clone(),
+            obfuscated_recipients: vec![], // No obfuscation needed
+            obfuscated_hash: None,
+            consensus_signers: all_validators.clone(), // All validators "signed" implicitly
+            consensus_reached: true, // Always reached (simplified)
             distributed_at: now,
         };
 
         let status = SubmissionStatus {
             agent_hash: entry.agent_hash.clone(),
-            status: AgentStatus::Verified,
+            status: AgentStatus::Distributed,
             verification_result: Some(verification),
             distribution_status: Some(distribution_status),
             error: None,
@@ -312,10 +285,10 @@ impl AgentSubmissionHandler {
             .insert(entry.agent_hash.clone(), status.clone());
 
         info!(
-            "Submission accepted for agent {} in {:?} - awaiting consensus from {} top validators",
+            "Submission accepted and distributed for agent {} in {:?} - distributed to {} validators",
             entry.agent_hash,
             start_time.elapsed(),
-            source_recipients.len(),
+            all_validators.len(),
         );
 
         Ok(status)

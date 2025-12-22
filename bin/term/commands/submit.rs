@@ -59,12 +59,19 @@ struct CanSubmitResponse {
 #[derive(Debug, Deserialize)]
 struct ValidatorsResponse {
     validators: Vec<ValidatorInfo>,
+    #[allow(dead_code)]
+    count: usize,
+    #[allow(dead_code)]
+    encryption_info: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct ValidatorInfo {
-    hotkey: String,
+    /// SS58 format hotkey (for display)
+    hotkey_ss58: String,
+    /// Hex format hotkey (for encryption)
+    hotkey_hex: String,
     stake: u64,
 }
 
@@ -317,19 +324,20 @@ async fn get_validators(rpc_url: &str) -> Result<Vec<String>> {
                 .await
                 .map_err(|e| anyhow!("Failed to parse validators: {}", e))?;
 
+            // Return hotkey_hex for encryption
             Ok(validators_resp
                 .validators
                 .into_iter()
-                .map(|v| v.hotkey)
+                .map(|v| v.hotkey_hex)
                 .collect())
         }
-        _ => {
-            // If endpoint not available, return default test validators
-            Ok(vec![
-                "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
-                "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
-                "5DAAnrj7VHTznn2AWBemMuyBwZWs6FNFjdyVXUeYum3PTXFy".to_string(),
-            ])
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            Err(anyhow!("Failed to get validators: {} - {}", status, body))
+        }
+        Err(e) => {
+            Err(anyhow!("Failed to connect to RPC: {}", e))
         }
     }
 }
@@ -366,17 +374,26 @@ async fn prepare_api_keys(
         }
     }
 
-    // If shared API key
-    if let Some(key) = api_key {
-        let config = ApiKeyConfigBuilder::shared(key)
-            .build(validator_hotkeys)
-            .map_err(|e| anyhow!("Failed to encrypt API key: {}", e))?;
-
-        return Ok(Some(config));
+    // Shared API key is REQUIRED for LLM verification
+    match api_key {
+        Some(key) => {
+            let config = ApiKeyConfigBuilder::shared(key)
+                .build(validator_hotkeys)
+                .map_err(|e| anyhow!("Failed to encrypt API key: {}", e))?;
+            Ok(Some(config))
+        }
+        None => {
+            Err(anyhow!(
+                "API key required for LLM verification.\n\
+                Provide --api-key <OPENROUTER_OR_CHUTES_KEY> for shared mode,\n\
+                or --per-validator --api-keys-file <FILE> for per-validator mode.\n\
+                \n\
+                Get an API key from:\n\
+                  - OpenRouter: https://openrouter.ai/keys\n\
+                  - Chutes: https://chutes.ai"
+            ))
+        }
     }
-
-    // No API keys
-    Ok(None)
 }
 
 async fn submit_agent(

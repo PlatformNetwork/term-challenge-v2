@@ -671,6 +671,15 @@ impl SecureSubmissionHandler {
                 // For now, just log. Could be used for weight consensus
                 None
             }
+            ChallengeP2PMessage::DecryptApiKeyRequest(_) => {
+                // This should not be received - it's sent TO platform
+                warn!("Received DecryptApiKeyRequest in secure handler - should be sent to platform");
+                None
+            }
+            ChallengeP2PMessage::DecryptApiKeyResponse(_) => {
+                // Handled by the basic P2P handler in rpc.rs
+                None
+            }
         }
     }
 

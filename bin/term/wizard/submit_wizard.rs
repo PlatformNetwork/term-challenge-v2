@@ -479,7 +479,10 @@ async fn fetch_validators(state: &mut WizardState) -> Result<()> {
             }
             #[derive(serde::Deserialize)]
             struct ValidatorData {
-                hotkey: String,
+                /// SS58 format (for display)
+                hotkey_ss58: String,
+                /// Hex format (for encryption)
+                hotkey_hex: String,
                 stake: u64,
             }
 
@@ -488,7 +491,8 @@ async fn fetch_validators(state: &mut WizardState) -> Result<()> {
                     .validators
                     .into_iter()
                     .map(|v| ValidatorInfo {
-                        hotkey: v.hotkey,
+                        hotkey: v.hotkey_hex,
+                        hotkey_ss58: v.hotkey_ss58,
                         stake: v.stake,
                         api_key: None,
                     })
