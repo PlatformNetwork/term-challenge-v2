@@ -21,6 +21,7 @@ use crate::{
     agent_registry::{AgentStatus, SubmissionAllowance},
     blockchain_evaluation::AggregatedResult,
     chain_storage::ChainStorage,
+    code_visibility::{CodeVisibilityManager, VisibilityConfig},
     config::ChallengeConfig,
     encrypted_api_key::ApiKeyConfig,
     p2p_bridge::{HttpP2PBroadcaster, OutboxMessage, P2PMessageEnvelope, P2PValidatorInfo},
@@ -89,6 +90,8 @@ pub struct RpcState {
     pub sudo_controller: Arc<SudoController>,
     /// Current epoch (updated periodically)
     pub current_epoch: std::sync::atomic::AtomicU64,
+    /// Code visibility manager - controls when miner code becomes public
+    pub code_visibility: Arc<CodeVisibilityManager>,
 }
 
 /// Term Challenge RPC Server
@@ -111,7 +114,13 @@ impl TermChallengeRpc {
         owner_hotkey: String,
     ) -> Self {
         let auth_manager = Arc::new(PlatformAuthManager::new(challenge_id.clone()));
-        let sudo_controller = Arc::new(SudoController::new(owner_hotkey));
+        let sudo_controller = Arc::new(SudoController::new(owner_hotkey.clone()));
+
+        // Create code visibility manager with owner as root
+        let code_visibility = Arc::new(CodeVisibilityManager::new(
+            owner_hotkey,
+            VisibilityConfig::default(),
+        ));
 
         Self {
             config,
@@ -126,6 +135,7 @@ impl TermChallengeRpc {
                 secure_handler,
                 sudo_controller,
                 current_epoch: std::sync::atomic::AtomicU64::new(0),
+                code_visibility,
             }),
         }
     }
@@ -220,6 +230,15 @@ impl TermChallengeRpc {
             .route("/sudo/reviews/approve/:agent_hash", post(approve_agent))
             .route("/sudo/reviews/reject/:agent_hash", post(reject_agent))
             .route("/sudo/cooldowns", get(get_miner_cooldowns))
+            // Code visibility endpoints
+            .route("/code/:agent_hash", get(get_agent_code))
+            .route("/code/:agent_hash/status", get(get_code_visibility_status))
+            .route("/code/public", get(get_public_code_agents))
+            .route("/code/pending", get(get_pending_visibility_agents))
+            .route("/code/stats", get(get_visibility_stats))
+            .route("/sudo/code/reveal/:agent_hash", post(sudo_reveal_code))
+            .route("/sudo/code/add_sudo", post(add_sudo_viewer))
+            .route("/sudo/code/remove_sudo", post(remove_sudo_viewer))
             .with_state(self.state.clone())
     }
 
@@ -2591,4 +2610,228 @@ async fn get_blockchain_status(
             "submission_method": "P2P broadcast (ChallengeP2PMessage::EvaluationResult)"
         })),
     )
+}
+
+// ==================== Code Visibility Handlers ====================
+
+#[derive(Debug, Deserialize)]
+struct GetCodeQuery {
+    /// Requester's hotkey (for visibility check)
+    hotkey: Option<String>,
+}
+
+/// Get agent code (if visible or authorized)
+///
+/// Returns:
+/// - Source code if: requester is sudo, owner, or code is public
+/// - Visibility status and requirements otherwise
+async fn get_agent_code(
+    State(state): State<Arc<RpcState>>,
+    Path(agent_hash): Path<String>,
+    Query(query): Query<GetCodeQuery>,
+) -> impl IntoResponse {
+    let requester = query.hotkey.unwrap_or_default();
+
+    match state.code_visibility.get_code(&agent_hash, &requester) {
+        Ok(result) => (StatusCode::OK, Json(serde_json::json!(result))),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": e.to_string()
+            })),
+        ),
+    }
+}
+
+/// Get code visibility status for an agent
+async fn get_code_visibility_status(
+    State(state): State<Arc<RpcState>>,
+    Path(agent_hash): Path<String>,
+) -> impl IntoResponse {
+    match state.code_visibility.get_status(&agent_hash) {
+        Some(visibility) => {
+            let current_epoch = state
+                .current_epoch
+                .load(std::sync::atomic::Ordering::Relaxed);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "agent_hash": visibility.agent_hash,
+                    "miner_hotkey": visibility.miner_hotkey,
+                    "status": visibility.status,
+                    "submitted_epoch": visibility.submitted_epoch,
+                    "validator_completions": visibility.validator_count(),
+                    "validators_needed": visibility.validators_needed(),
+                    "visibility_eligible_epoch": visibility.visibility_eligible_epoch,
+                    "epochs_until_visible": visibility.epochs_until_visible(current_epoch),
+                    "visible_since_epoch": visibility.visible_since_epoch,
+                    "manually_revealed_by": visibility.manually_revealed_by,
+                    "completed_by": visibility.completions.iter().map(|c| serde_json::json!({
+                        "validator": c.validator_hotkey,
+                        "epoch": c.completed_epoch,
+                        "tasks": c.tasks_completed,
+                        "score": c.score
+                    })).collect::<Vec<_>>(),
+                    "requirements": {
+                        "min_validators": crate::code_visibility::MIN_VALIDATORS_FOR_VISIBILITY,
+                        "min_epochs": crate::code_visibility::MIN_EPOCHS_FOR_VISIBILITY
+                    }
+                })),
+            )
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("Agent {} not found", agent_hash)
+            })),
+        ),
+    }
+}
+
+/// Get all agents with public code
+async fn get_public_code_agents(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
+    let public_agents = state.code_visibility.get_public_agents();
+
+    Json(serde_json::json!({
+        "count": public_agents.len(),
+        "agents": public_agents.iter().map(|v| serde_json::json!({
+            "agent_hash": v.agent_hash,
+            "miner_hotkey": v.miner_hotkey,
+            "status": v.status,
+            "visible_since_epoch": v.visible_since_epoch,
+            "validator_completions": v.validator_count(),
+            "code_hash": v.code_hash
+        })).collect::<Vec<_>>()
+    }))
+}
+
+/// Get agents pending visibility (enough validators but waiting for epochs)
+async fn get_pending_visibility_agents(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
+    let pending_agents = state.code_visibility.get_pending_agents();
+    let current_epoch = state
+        .current_epoch
+        .load(std::sync::atomic::Ordering::Relaxed);
+
+    Json(serde_json::json!({
+        "count": pending_agents.len(),
+        "agents": pending_agents.iter().map(|v| serde_json::json!({
+            "agent_hash": v.agent_hash,
+            "miner_hotkey": v.miner_hotkey,
+            "status": v.status,
+            "validator_completions": v.validator_count(),
+            "epochs_until_visible": v.epochs_until_visible(current_epoch),
+            "visibility_eligible_epoch": v.visibility_eligible_epoch
+        })).collect::<Vec<_>>()
+    }))
+}
+
+/// Get code visibility statistics
+async fn get_visibility_stats(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
+    let stats = state.code_visibility.stats();
+    Json(stats)
+}
+
+#[derive(Debug, Deserialize)]
+struct SudoRevealRequest {
+    /// Sudo hotkey performing the reveal
+    sudo_hotkey: String,
+}
+
+/// Sudo: Force reveal an agent's code (bypass normal visibility rules)
+async fn sudo_reveal_code(
+    State(state): State<Arc<RpcState>>,
+    headers: HeaderMap,
+    Path(agent_hash): Path<String>,
+    Json(req): Json<SudoRevealRequest>,
+) -> impl IntoResponse {
+    // Verify sudo authentication
+    if let Err(e) = verify_sudo_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    match state
+        .code_visibility
+        .sudo_reveal(&agent_hash, &req.sudo_hotkey)
+    {
+        Ok(visibility) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "success": true,
+                "message": format!("Code for agent {} has been revealed", agent_hash),
+                "agent_hash": visibility.agent_hash,
+                "status": visibility.status,
+                "revealed_by": req.sudo_hotkey,
+                "visible_since_epoch": visibility.visible_since_epoch
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": e.to_string()
+            })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AddSudoViewerRequest {
+    /// Hotkey to grant sudo viewing privileges
+    hotkey: String,
+}
+
+/// Sudo: Add a new sudo viewer (can view any code)
+async fn add_sudo_viewer(
+    State(state): State<Arc<RpcState>>,
+    headers: HeaderMap,
+    Json(req): Json<AddSudoViewerRequest>,
+) -> impl IntoResponse {
+    // Verify sudo authentication
+    if let Err(e) = verify_sudo_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    state.code_visibility.add_sudo(&req.hotkey);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": format!("Added {} as sudo viewer", req.hotkey),
+            "hotkey": req.hotkey
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoveSudoViewerRequest {
+    /// Hotkey to remove sudo viewing privileges
+    hotkey: String,
+}
+
+/// Sudo: Remove a sudo viewer
+async fn remove_sudo_viewer(
+    State(state): State<Arc<RpcState>>,
+    headers: HeaderMap,
+    Json(req): Json<RemoveSudoViewerRequest>,
+) -> impl IntoResponse {
+    // Verify sudo authentication
+    if let Err(e) = verify_sudo_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    state.code_visibility.remove_sudo(&req.hotkey);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": format!("Removed {} from sudo viewers", req.hotkey),
+            "hotkey": req.hotkey
+        })),
+    )
+        .into_response()
 }

@@ -32,6 +32,7 @@ pub mod bench;
 pub mod blockchain_evaluation;
 pub mod chain_storage;
 pub mod challenge;
+pub mod code_visibility;
 pub mod config;
 pub mod container_backend;
 pub mod distributed_store;
@@ -75,6 +76,11 @@ pub use chain_storage::{
     LeaderboardEntry, OnChainEvaluationResult, ValidatorVote,
 };
 pub use challenge::{create_terminal_bench_challenge, TerminalBenchChallenge};
+pub use code_visibility::{
+    AgentVisibility, CodeViewResult, CodeVisibilityManager, ValidatorCompletion, VisibilityConfig,
+    VisibilityError, VisibilityRequirements, VisibilityStats, VisibilityStatus,
+    MIN_EPOCHS_FOR_VISIBILITY, MIN_VALIDATORS_FOR_VISIBILITY,
+};
 pub use config::{
     ChallengeConfig, EvaluationConfig, ExecutionConfig, ModelWhitelist, ModuleWhitelist,
     PricingConfig,
