@@ -7,7 +7,7 @@
 # ============================================================================
 
 # Stage 1: Build Rust binaries
-FROM rust:1.91.1-slim-bookworm AS builder
+FROM rust:1.92.0 AS builder
 
 WORKDIR /build
 
@@ -20,12 +20,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy source code
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY bin ./bin
 
-# Build release binaries
+# Build release binaries (limit parallel jobs to reduce memory usage)
+# CARGO_BUILD_JOBS limits parallelism to prevent OOM during compilation
 RUN cargo build --release --bin term --bin term-server
 
 # Stage 2: Runtime image
-FROM debian:bookworm-slim
+FROM debian:12.12-slim
 
 # Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
