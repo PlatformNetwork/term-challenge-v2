@@ -211,13 +211,11 @@ impl RegistryClient {
 
         // Git clone
         let mut cmd = Command::new("git");
-        cmd.arg("clone").arg("--depth").arg("1");
+        cmd.arg("clone");
 
-        if let Some(commit) = &source.git_commit_id {
-            if commit != "head" {
-                // For specific commit, we need full clone
-                cmd.arg("--no-single-branch");
-            }
+        // Only use shallow clone if no specific commit needed
+        if source.git_commit_id.is_none() || source.git_commit_id.as_deref() == Some("head") {
+            cmd.arg("--depth").arg("1");
         }
 
         cmd.arg(&source.git_url).arg(&clone_dir);
