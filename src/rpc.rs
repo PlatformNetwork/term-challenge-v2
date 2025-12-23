@@ -227,6 +227,7 @@ impl TermChallengeRpc {
             .route("/sudo/rules/remove/:index", delete(remove_llm_rule))
             .route("/sudo/rules/enabled", post(set_llm_enabled))
             .route("/sudo/reviews/pending", get(get_pending_manual_reviews))
+            .route("/sudo/reviews/:agent_hash", get(get_review_details))
             .route("/sudo/reviews/approve/:agent_hash", post(approve_agent))
             .route("/sudo/reviews/reject/:agent_hash", post(reject_agent))
             .route("/sudo/cooldowns", get(get_miner_cooldowns))
@@ -2327,6 +2328,46 @@ async fn get_pending_manual_reviews(
             "reviews": reviews
         })),
     )
+}
+
+/// Get details for a specific review (includes source code)
+async fn get_review_details(
+    State(state): State<Arc<RpcState>>,
+    headers: HeaderMap,
+    Path(agent_hash): Path<String>,
+) -> impl IntoResponse {
+    // Sudo key required to see review details
+    if let Err((status, msg)) = verify_sudo_auth(&state, &headers) {
+        return (
+            status,
+            Json(serde_json::json!({"success": false, "error": msg})),
+        );
+    }
+
+    match state.sudo_controller.get_manual_review(&agent_hash) {
+        Some(review) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "success": true,
+                "agent_hash": review.agent_hash,
+                "miner_hotkey": review.miner_hotkey,
+                "source_code": review.source_code,
+                "rejection_reasons": review.rejection_reasons,
+                "submitted_at": review.submitted_at.to_rfc3339(),
+                "status": format!("{:?}", review.status),
+                "reviewed_at": review.reviewed_at.map(|t| t.to_rfc3339()),
+                "reviewed_by": review.reviewed_by,
+                "review_notes": review.review_notes
+            })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "success": false,
+                "error": format!("No review found for agent {}", agent_hash)
+            })),
+        ),
+    }
 }
 
 /// Request to approve/reject an agent

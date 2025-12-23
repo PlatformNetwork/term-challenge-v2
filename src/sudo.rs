@@ -538,6 +538,9 @@ impl Default for LlmValidationRules {
 pub struct PendingManualReview {
     pub agent_hash: String,
     pub miner_hotkey: String,
+    /// Source code of the agent (for owner review)
+    pub source_code: String,
+    /// LLM rejection reasons
     pub rejection_reasons: Vec<String>,
     pub submitted_at: DateTime<Utc>,
     pub status: ManualReviewStatus,
@@ -1703,16 +1706,18 @@ impl SudoController {
 
     // ========== Manual Review Management ==========
 
-    /// Queue an agent for manual review
+    /// Queue an agent for manual review (with source code for owner inspection)
     pub fn queue_manual_review(
         &self,
         agent_hash: String,
         miner_hotkey: String,
+        source_code: String,
         rejection_reasons: Vec<String>,
     ) {
         let review = PendingManualReview {
             agent_hash: agent_hash.clone(),
             miner_hotkey,
+            source_code,
             rejection_reasons,
             submitted_at: Utc::now(),
             status: ManualReviewStatus::Pending,

@@ -40,6 +40,14 @@ pub enum SubnetCommand {
     EnableValidation(OwnerAuthArgs),
     /// Disable agent validation/evaluation  
     DisableValidation(OwnerAuthArgs),
+    /// List agents pending manual review (rejected by LLM)
+    Reviews(ReviewListArgs),
+    /// View details and code of a specific agent in review
+    ReviewCode(ReviewCodeArgs),
+    /// Approve an agent that was rejected by LLM
+    Approve(ReviewActionArgs),
+    /// Reject an agent permanently
+    Reject(ReviewActionArgs),
 }
 
 #[derive(Debug, Args)]
@@ -52,6 +60,39 @@ pub struct OwnerAuthArgs {
     /// Owner hotkey (SS58 address) - required, must match your public key
     #[arg(long, required = true)]
     pub hotkey: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ReviewListArgs {
+    /// Sudo API key for authentication
+    #[arg(long, env = "SUDO_API_KEY")]
+    pub sudo_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ReviewCodeArgs {
+    /// Agent hash to view
+    #[arg(long)]
+    pub agent_hash: String,
+
+    /// Sudo API key for authentication
+    #[arg(long, env = "SUDO_API_KEY")]
+    pub sudo_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ReviewActionArgs {
+    /// Agent hash to approve/reject
+    #[arg(long)]
+    pub agent_hash: String,
+
+    /// Reason or notes for the action
+    #[arg(long)]
+    pub reason: Option<String>,
+
+    /// Sudo API key for authentication
+    #[arg(long, env = "SUDO_API_KEY")]
+    pub sudo_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -79,12 +120,17 @@ struct SubnetStatusResponse {
 }
 
 pub async fn run(args: SubnetArgs) -> Result<()> {
+    let rpc_url = &args.rpc_url;
     match args.command {
-        SubnetCommand::Status => get_status(&args.rpc_url).await,
-        SubnetCommand::EnableUploads(auth) => set_uploads(&args.rpc_url, true, auth).await,
-        SubnetCommand::DisableUploads(auth) => set_uploads(&args.rpc_url, false, auth).await,
-        SubnetCommand::EnableValidation(auth) => set_validation(&args.rpc_url, true, auth).await,
-        SubnetCommand::DisableValidation(auth) => set_validation(&args.rpc_url, false, auth).await,
+        SubnetCommand::Status => get_status(rpc_url).await,
+        SubnetCommand::EnableUploads(auth) => set_uploads(rpc_url, true, auth).await,
+        SubnetCommand::DisableUploads(auth) => set_uploads(rpc_url, false, auth).await,
+        SubnetCommand::EnableValidation(auth) => set_validation(rpc_url, true, auth).await,
+        SubnetCommand::DisableValidation(auth) => set_validation(rpc_url, false, auth).await,
+        SubnetCommand::Reviews(review_args) => list_reviews(rpc_url, review_args).await,
+        SubnetCommand::ReviewCode(code_args) => view_review_code(rpc_url, code_args).await,
+        SubnetCommand::Approve(action_args) => approve_agent_review(rpc_url, action_args).await,
+        SubnetCommand::Reject(action_args) => reject_agent_review(rpc_url, action_args).await,
     }
 }
 
@@ -376,4 +422,276 @@ fn derive_ss58_from_ed25519(key: &VerifyingKey) -> String {
     data.extend_from_slice(&hash[0..2]);
 
     bs58::encode(data).into_string()
+}
+
+// ==================== Review Commands ====================
+
+/// List pending reviews
+async fn list_reviews(rpc_url: &str, args: ReviewListArgs) -> Result<()> {
+    println!("\n{} Fetching pending reviews...\n", INFO);
+
+    let sudo_key = get_sudo_key(args.sudo_key)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+
+    let url = format!("{}/sudo/reviews/pending", rpc_url);
+    let response = client
+        .get(&url)
+        .header("X-Sudo-Key", &sudo_key)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!("Failed to get reviews: HTTP {}", response.status()));
+    }
+
+    let result: serde_json::Value = response.json().await?;
+
+    if !result["success"].as_bool().unwrap_or(false) {
+        return Err(anyhow!(
+            "Error: {}",
+            result["error"].as_str().unwrap_or("Unknown error")
+        ));
+    }
+
+    let reviews = result["reviews"].as_array();
+    let count = result["count"].as_u64().unwrap_or(0);
+
+    println!(
+        "  {} Pending Manual Reviews: {}\n",
+        style("=").bold(),
+        count
+    );
+
+    if count == 0 {
+        println!("  {} No agents pending review", INFO);
+    } else if let Some(reviews) = reviews {
+        for review in reviews {
+            let agent_hash = review["agent_hash"].as_str().unwrap_or("?");
+            let miner = review["miner_hotkey"].as_str().unwrap_or("?");
+            let reasons = review["rejection_reasons"]
+                .as_array()
+                .map(|r| {
+                    r.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+
+            println!(
+                "  {} Agent: {}",
+                CROSS,
+                style(&agent_hash[..16.min(agent_hash.len())]).red()
+            );
+            println!("     Miner: {}", style(miner).cyan());
+            println!("     Reasons: {}", style(&reasons).yellow());
+            println!();
+        }
+
+        println!(
+            "  {} Use 'term subnet review-code --agent-hash <hash>' to view code",
+            INFO
+        );
+        println!(
+            "  {} Use 'term subnet approve --agent-hash <hash>' to approve",
+            INFO
+        );
+        println!(
+            "  {} Use 'term subnet reject --agent-hash <hash>' to reject",
+            INFO
+        );
+    }
+
+    println!();
+    Ok(())
+}
+
+/// View code of an agent in review
+async fn view_review_code(rpc_url: &str, args: ReviewCodeArgs) -> Result<()> {
+    println!("\n{} Fetching review details...\n", INFO);
+
+    let sudo_key = get_sudo_key(args.sudo_key)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+
+    let url = format!("{}/sudo/reviews/{}", rpc_url, args.agent_hash);
+    let response = client
+        .get(&url)
+        .header("X-Sudo-Key", &sudo_key)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!("Failed to get review: HTTP {}", response.status()));
+    }
+
+    let result: serde_json::Value = response.json().await?;
+
+    if !result["success"].as_bool().unwrap_or(false) {
+        return Err(anyhow!(
+            "Error: {}",
+            result["error"].as_str().unwrap_or("Unknown error")
+        ));
+    }
+
+    let agent_hash = result["agent_hash"].as_str().unwrap_or("?");
+    let miner = result["miner_hotkey"].as_str().unwrap_or("?");
+    let source_code = result["source_code"].as_str().unwrap_or("");
+    let reasons = result["rejection_reasons"]
+        .as_array()
+        .map(|r| r.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let status = result["status"].as_str().unwrap_or("?");
+
+    println!("  {} Agent Review Details", style("=").bold());
+    println!();
+    println!("  Agent Hash: {}", style(agent_hash).cyan());
+    println!("  Miner:      {}", style(miner).cyan());
+    println!("  Status:     {}", style(status).yellow());
+    println!();
+    println!("  {} LLM Rejection Reasons:", CROSS);
+    for reason in &reasons {
+        println!("    - {}", style(reason).red());
+    }
+    println!();
+    println!("  {} Source Code:", INFO);
+    println!("  {}", style("─".repeat(60)).dim());
+    for (i, line) in source_code.lines().enumerate() {
+        println!("  {:4} │ {}", style(i + 1).dim(), line);
+    }
+    println!("  {}", style("─".repeat(60)).dim());
+    println!();
+
+    Ok(())
+}
+
+/// Approve an agent
+async fn approve_agent_review(rpc_url: &str, args: ReviewActionArgs) -> Result<()> {
+    println!("\n{} Approving agent...\n", INFO);
+
+    let sudo_key = get_sudo_key(args.sudo_key)?;
+
+    let confirm = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!(
+            "Are you sure you want to APPROVE agent {}?",
+            style(&args.agent_hash[..16.min(args.agent_hash.len())]).cyan()
+        ))
+        .default(false)
+        .interact()?;
+
+    if !confirm {
+        println!("\n{} Operation cancelled", CROSS);
+        return Ok(());
+    }
+
+    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+
+    let url = format!("{}/sudo/reviews/approve/{}", rpc_url, args.agent_hash);
+    let body = serde_json::json!({
+        "notes": args.reason
+    });
+
+    let response = client
+        .post(&url)
+        .header("X-Sudo-Key", &sudo_key)
+        .json(&body)
+        .send()
+        .await?;
+
+    let status_code = response.status();
+    let result: serde_json::Value = response.json().await?;
+
+    if result["success"].as_bool().unwrap_or(false) {
+        println!(
+            "\n{} Agent {} approved successfully!",
+            CHECK,
+            style(&args.agent_hash[..16.min(args.agent_hash.len())]).green()
+        );
+        println!("   The agent will now proceed to evaluation.");
+    } else {
+        println!(
+            "\n{} Failed to approve: {}",
+            CROSS,
+            style(result["error"].as_str().unwrap_or("Unknown error")).red()
+        );
+        if !status_code.is_success() {
+            println!("   HTTP Status: {}", status_code);
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+/// Reject an agent
+async fn reject_agent_review(rpc_url: &str, args: ReviewActionArgs) -> Result<()> {
+    println!("\n{} Rejecting agent...\n", INFO);
+
+    let sudo_key = get_sudo_key(args.sudo_key)?;
+
+    let confirm = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!(
+            "Are you sure you want to REJECT agent {}? (Miner will be blocked for 3 epochs)",
+            style(&args.agent_hash[..16.min(args.agent_hash.len())]).red()
+        ))
+        .default(false)
+        .interact()?;
+
+    if !confirm {
+        println!("\n{} Operation cancelled", CROSS);
+        return Ok(());
+    }
+
+    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+
+    let url = format!("{}/sudo/reviews/reject/{}", rpc_url, args.agent_hash);
+    let body = serde_json::json!({
+        "reason": args.reason.unwrap_or_else(|| "Manual rejection by subnet owner".to_string())
+    });
+
+    let response = client
+        .post(&url)
+        .header("X-Sudo-Key", &sudo_key)
+        .json(&body)
+        .send()
+        .await?;
+
+    let status_code = response.status();
+    let result: serde_json::Value = response.json().await?;
+
+    if result["success"].as_bool().unwrap_or(false) {
+        println!(
+            "\n{} Agent {} rejected!",
+            CHECK,
+            style(&args.agent_hash[..16.min(args.agent_hash.len())]).red()
+        );
+        println!("   Miner has been blocked for 3 epochs.");
+    } else {
+        println!(
+            "\n{} Failed to reject: {}",
+            CROSS,
+            style(result["error"].as_str().unwrap_or("Unknown error")).red()
+        );
+        if !status_code.is_success() {
+            println!("   HTTP Status: {}", status_code);
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+/// Get sudo key from args or prompt
+fn get_sudo_key(key: Option<String>) -> Result<String> {
+    match key {
+        Some(k) => Ok(k),
+        None => {
+            println!("{}", style("Enter your sudo API key:").yellow());
+            let key = Password::with_theme(&ColorfulTheme::default())
+                .with_prompt("Sudo key")
+                .interact()?;
+            Ok(key)
+        }
+    }
 }
