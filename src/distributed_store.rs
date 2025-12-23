@@ -41,9 +41,14 @@ pub const MIN_CONSENSUS_VALIDATORS: usize = 2;
 // DISTRIBUTED STORAGE MANAGER
 // ============================================================================
 
+/// Sled tree names
+const TREE_PARTITION: &str = "partition";
+const TREE_METADATA: &str = "metadata";
+const KEY_PARTITION_STATE: &str = "partition_state";
+
 /// Manages distributed storage for term-challenge
 pub struct DistributedStore {
-    /// Local partition
+    /// Local partition (in-memory cache, backed by sled)
     partition: Arc<RwLock<ChallengePartition>>,
     /// Our validator keypair
     keypair: Arc<Keypair>,
@@ -59,10 +64,12 @@ pub struct DistributedStore {
     pending_broadcasts: Arc<RwLock<Vec<ChallengeNetworkMessage>>>,
     /// Validator stakes (for consensus weighting)
     validator_stakes: Arc<RwLock<HashMap<String, u64>>>,
+    /// Sled database for persistence (None = in-memory only)
+    db: Option<sled::Db>,
 }
 
 impl DistributedStore {
-    /// Create a new distributed store
+    /// Create a new in-memory distributed store (no persistence)
     pub fn new(keypair: Arc<Keypair>, initial_stake: u64, block_height: u64) -> Self {
         Self {
             partition: Arc::new(RwLock::new(ChallengePartition::new(
@@ -76,6 +83,185 @@ impl DistributedStore {
             total_validators: Arc::new(RwLock::new(1)),
             pending_broadcasts: Arc::new(RwLock::new(Vec::new())),
             validator_stakes: Arc::new(RwLock::new(HashMap::new())),
+            db: None,
+        }
+    }
+
+    /// Create a distributed store with sled persistence
+    pub fn new_with_persistence(
+        keypair: Arc<Keypair>,
+        initial_stake: u64,
+        block_height: u64,
+        data_dir: std::path::PathBuf,
+    ) -> Self {
+        // Ensure directory exists
+        if let Err(e) = std::fs::create_dir_all(&data_dir) {
+            warn!("Failed to create data directory {:?}: {}", data_dir, e);
+        }
+
+        // Open sled database
+        let db_path = data_dir.join("distributed_store.sled");
+        let db = match sled::open(&db_path) {
+            Ok(db) => {
+                info!("Opened sled database at {:?}", db_path);
+                Some(db)
+            }
+            Err(e) => {
+                error!("Failed to open sled database: {}", e);
+                None
+            }
+        };
+
+        // Load existing partition from sled
+        let partition = Self::load_partition_from_sled(db.as_ref(), block_height);
+        let entry_count = partition.entries.len();
+
+        if entry_count > 0 {
+            info!(
+                "Loaded {} entries from sled database at {:?}",
+                entry_count, db_path
+            );
+        }
+
+        Self {
+            partition: Arc::new(RwLock::new(partition)),
+            keypair,
+            our_stake: Arc::new(RwLock::new(initial_stake)),
+            current_block: Arc::new(RwLock::new(block_height)),
+            current_epoch: Arc::new(RwLock::new(0)),
+            total_validators: Arc::new(RwLock::new(1)),
+            pending_broadcasts: Arc::new(RwLock::new(Vec::new())),
+            validator_stakes: Arc::new(RwLock::new(HashMap::new())),
+            db,
+        }
+    }
+
+    /// Load partition from sled database
+    fn load_partition_from_sled(db: Option<&sled::Db>, fallback_block: u64) -> ChallengePartition {
+        let Some(db) = db else {
+            return ChallengePartition::new(TERM_BENCH_CHALLENGE_ID.to_string(), fallback_block);
+        };
+
+        let tree = match db.open_tree(TREE_PARTITION) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("Failed to open partition tree: {}", e);
+                return ChallengePartition::new(
+                    TERM_BENCH_CHALLENGE_ID.to_string(),
+                    fallback_block,
+                );
+            }
+        };
+
+        // Load partition state (metadata like total_size, write_counts, etc.)
+        let mut partition = match tree.get(KEY_PARTITION_STATE) {
+            Ok(Some(bytes)) => match serde_json::from_slice::<ChallengePartition>(&bytes) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("Failed to deserialize partition state: {}", e);
+                    ChallengePartition::new(TERM_BENCH_CHALLENGE_ID.to_string(), fallback_block)
+                }
+            },
+            _ => ChallengePartition::new(TERM_BENCH_CHALLENGE_ID.to_string(), fallback_block),
+        };
+
+        // Load individual entries from sled (more efficient for large datasets)
+        for item in tree.iter() {
+            if let Ok((key, value)) = item {
+                let key_str = String::from_utf8_lossy(&key);
+                if key_str.starts_with("entry:") {
+                    if let Ok(entry) = serde_json::from_slice::<StorageEntry>(&value) {
+                        partition.entries.insert(entry.metadata.key.clone(), entry);
+                    }
+                }
+            }
+        }
+
+        partition
+    }
+
+    /// Save partition to sled (called after writes)
+    fn save_partition(&self) {
+        let Some(db) = &self.db else {
+            return; // No persistence configured
+        };
+
+        let tree = match db.open_tree(TREE_PARTITION) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("Failed to open partition tree for save: {}", e);
+                return;
+            }
+        };
+
+        let partition = self.partition.read();
+
+        // Save partition state (without entries - those are saved separately)
+        let state_for_save = ChallengePartition {
+            challenge_id: partition.challenge_id.clone(),
+            entries: HashMap::new(), // Entries saved separately
+            total_size: partition.total_size,
+            write_counts: partition.write_counts.clone(),
+            created_at_block: partition.created_at_block,
+            last_modified_block: partition.last_modified_block,
+        };
+
+        if let Ok(bytes) = serde_json::to_vec(&state_for_save) {
+            if let Err(e) = tree.insert(KEY_PARTITION_STATE, bytes) {
+                warn!("Failed to save partition state: {}", e);
+            }
+        }
+
+        // Save each entry separately for efficient incremental updates
+        for (key, entry) in &partition.entries {
+            let entry_key = format!("entry:{}", key);
+            if let Ok(bytes) = serde_json::to_vec(entry) {
+                if let Err(e) = tree.insert(entry_key.as_bytes(), bytes) {
+                    warn!("Failed to save entry {}: {}", key, e);
+                }
+            }
+        }
+
+        // Flush to disk
+        if let Err(e) = db.flush() {
+            warn!("Failed to flush sled database: {}", e);
+        }
+    }
+
+    /// Save single entry to sled (more efficient for single writes)
+    fn save_entry(&self, entry: &StorageEntry) {
+        let Some(db) = &self.db else {
+            return;
+        };
+
+        let tree = match db.open_tree(TREE_PARTITION) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("Failed to open partition tree: {}", e);
+                return;
+            }
+        };
+
+        let entry_key = format!("entry:{}", entry.metadata.key);
+        if let Ok(bytes) = serde_json::to_vec(entry) {
+            if let Err(e) = tree.insert(entry_key.as_bytes(), bytes) {
+                warn!("Failed to save entry {}: {}", entry.metadata.key, e);
+            }
+        }
+
+        // Update partition state
+        let partition = self.partition.read();
+        let state_for_save = ChallengePartition {
+            challenge_id: partition.challenge_id.clone(),
+            entries: HashMap::new(),
+            total_size: partition.total_size,
+            write_counts: partition.write_counts.clone(),
+            created_at_block: partition.created_at_block,
+            last_modified_block: partition.last_modified_block,
+        };
+
+        if let Ok(bytes) = serde_json::to_vec(&state_for_save) {
+            let _ = tree.insert(KEY_PARTITION_STATE, bytes);
         }
     }
 
@@ -158,6 +344,7 @@ impl DistributedStore {
         let entry = self.partition.write().apply_write(request);
         if let Some(entry) = entry {
             self.broadcast_write(&entry);
+            self.save_entry(&entry);
             info!("Stored submission: {}", submission.submission_id);
         }
 
@@ -243,6 +430,7 @@ impl DistributedStore {
         let entry = self.partition.write().apply_write(request);
         if let Some(entry) = entry {
             self.broadcast_write(&entry);
+            self.save_entry(&entry);
             info!(
                 "Stored evaluation for agent {} by {}",
                 evaluation.agent_hash, evaluation.validator_hotkey
@@ -352,7 +540,9 @@ impl DistributedStore {
             return Err(StoreError::ValidationFailed(format!("{:?}", validation)));
         }
 
-        self.partition.write().apply_write(request);
+        if let Some(entry) = self.partition.write().apply_write(request) {
+            self.save_entry(&entry);
+        }
         debug!(
             "Stored compressed log for agent {} ({} -> {} bytes)",
             agent_hash,
@@ -506,6 +696,7 @@ impl DistributedStore {
         let entry = self.partition.write().apply_write(request);
         if let Some(entry) = entry {
             self.broadcast_write(&entry);
+            self.save_entry(&entry);
         }
 
         Ok(())
@@ -716,13 +907,17 @@ impl DistributedStore {
 
         // Store it
         let key = entry.metadata.key.clone();
-        let mut partition = self.partition.write();
-        partition.total_size += entry.metadata.size;
-        if let Some(old) = partition.entries.get(&key) {
-            partition.total_size -= old.metadata.size;
+        let entry_clone = entry.clone();
+        {
+            let mut partition = self.partition.write();
+            partition.total_size += entry.metadata.size;
+            if let Some(old) = partition.entries.get(&key) {
+                partition.total_size -= old.metadata.size;
+            }
+            partition.entries.insert(key.clone(), entry);
+            partition.last_modified_block = *self.current_block.read();
         }
-        partition.entries.insert(key.clone(), entry);
-        partition.last_modified_block = *self.current_block.read();
+        self.save_entry(&entry_clone);
 
         debug!("Applied received entry: {}", key);
     }
@@ -822,7 +1017,11 @@ impl DistributedStore {
     /// Cleanup expired entries
     pub fn cleanup(&self) -> usize {
         let block = *self.current_block.read();
-        self.partition.write().cleanup_expired(block)
+        let removed = self.partition.write().cleanup_expired(block);
+        if removed > 0 {
+            self.save_partition();
+        }
+        removed
     }
 
     /// Get partition stats

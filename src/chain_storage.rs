@@ -356,8 +356,8 @@ impl Default for Leaderboard {
 
 // ==================== Chain Storage Manager ====================
 
-/// File name for persistent kv_store
-const KV_STORE_FILE: &str = "kv_store.json";
+/// Sled tree name for kv_store
+const TREE_KV_STORE: &str = "kv_store";
 
 /// Manages on-chain storage for term-challenge
 pub struct ChainStorage {
@@ -379,8 +379,8 @@ pub struct ChainStorage {
     total_validators: Arc<RwLock<usize>>,
     /// Generic key-value store for persistent state (validator-specific, no P2P sync)
     kv_store: Arc<RwLock<HashMap<String, Vec<u8>>>>,
-    /// Data directory for persistence (None = in-memory only)
-    data_dir: Option<std::path::PathBuf>,
+    /// Sled database for persistence (None = in-memory only)
+    db: Option<sled::Db>,
 }
 
 impl ChainStorage {
@@ -396,26 +396,39 @@ impl ChainStorage {
             current_block: Arc::new(RwLock::new(0)),
             total_validators: Arc::new(RwLock::new(0)),
             kv_store: Arc::new(RwLock::new(HashMap::new())),
-            data_dir: None,
+            db: None,
         }
     }
 
-    /// Create storage with disk persistence for kv_store
+    /// Create storage with sled persistence for kv_store
     pub fn new_with_persistence(data_dir: std::path::PathBuf) -> Self {
         // Ensure directory exists
         if let Err(e) = std::fs::create_dir_all(&data_dir) {
             tracing::warn!("Failed to create data directory {:?}: {}", data_dir, e);
         }
 
-        // Load existing kv_store from disk
-        let kv_store = Self::load_kv_store(&data_dir);
+        // Open sled database
+        let db_path = data_dir.join("chain_storage.sled");
+        let db = match sled::open(&db_path) {
+            Ok(db) => {
+                tracing::info!("Opened sled database at {:?}", db_path);
+                Some(db)
+            }
+            Err(e) => {
+                tracing::error!("Failed to open sled database: {}", e);
+                None
+            }
+        };
+
+        // Load existing kv_store from sled
+        let kv_store = Self::load_kv_store_from_sled(db.as_ref());
         let loaded_count = kv_store.len();
 
         if loaded_count > 0 {
             tracing::info!(
-                "Loaded {} keys from persistent storage at {:?}",
+                "Loaded {} keys from sled database at {:?}",
                 loaded_count,
-                data_dir
+                db_path
             );
         }
 
@@ -429,80 +442,69 @@ impl ChainStorage {
             current_block: Arc::new(RwLock::new(0)),
             total_validators: Arc::new(RwLock::new(0)),
             kv_store: Arc::new(RwLock::new(kv_store)),
-            data_dir: Some(data_dir),
+            db,
         }
     }
 
-    /// Load kv_store from disk
-    fn load_kv_store(data_dir: &std::path::Path) -> HashMap<String, Vec<u8>> {
-        let path = data_dir.join(KV_STORE_FILE);
-        if !path.exists() {
+    /// Load kv_store from sled database
+    fn load_kv_store_from_sled(db: Option<&sled::Db>) -> HashMap<String, Vec<u8>> {
+        let Some(db) = db else {
             return HashMap::new();
-        }
+        };
 
-        match std::fs::read_to_string(&path) {
-            Ok(content) => {
-                // Stored as HashMap<String, String> where value is base64-encoded bytes
-                match serde_json::from_str::<HashMap<String, String>>(&content) {
-                    Ok(encoded) => encoded
-                        .into_iter()
-                        .filter_map(|(k, v)| {
-                            use base64::Engine;
-                            base64::engine::general_purpose::STANDARD
-                                .decode(&v)
-                                .ok()
-                                .map(|bytes| (k, bytes))
-                        })
-                        .collect(),
-                    Err(e) => {
-                        tracing::warn!("Failed to parse kv_store file: {}", e);
-                        HashMap::new()
-                    }
-                }
-            }
+        let tree = match db.open_tree(TREE_KV_STORE) {
+            Ok(t) => t,
             Err(e) => {
-                tracing::warn!("Failed to read kv_store file: {}", e);
-                HashMap::new()
+                tracing::warn!("Failed to open kv_store tree: {}", e);
+                return HashMap::new();
+            }
+        };
+
+        let mut store = HashMap::new();
+        for item in tree.iter() {
+            if let Ok((key, value)) = item {
+                let key_str = String::from_utf8_lossy(&key).to_string();
+                store.insert(key_str, value.to_vec());
             }
         }
+        store
     }
 
-    /// Save kv_store to disk (called after every write)
-    fn save_kv_store(&self) {
-        let Some(data_dir) = &self.data_dir else {
+    /// Save single key to sled (called after every write)
+    fn save_to_sled(&self, key: &str, value: &[u8]) {
+        let Some(db) = &self.db else {
             return; // No persistence configured
         };
 
-        let path = data_dir.join(KV_STORE_FILE);
-        let store = self.kv_store.read();
-
-        // Encode bytes as base64 for JSON storage
-        use base64::Engine;
-        let encoded: HashMap<String, String> = store
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.clone(),
-                    base64::engine::general_purpose::STANDARD.encode(v),
-                )
-            })
-            .collect();
-
-        match serde_json::to_string_pretty(&encoded) {
-            Ok(json) => {
-                // Write to temp file then rename for atomicity
-                let temp_path = path.with_extension("json.tmp");
-                if let Err(e) = std::fs::write(&temp_path, &json) {
-                    tracing::warn!("Failed to write kv_store temp file: {}", e);
-                    return;
-                }
-                if let Err(e) = std::fs::rename(&temp_path, &path) {
-                    tracing::warn!("Failed to rename kv_store file: {}", e);
-                }
-            }
+        let tree = match db.open_tree(TREE_KV_STORE) {
+            Ok(t) => t,
             Err(e) => {
-                tracing::warn!("Failed to serialize kv_store: {}", e);
+                tracing::warn!("Failed to open kv_store tree: {}", e);
+                return;
             }
+        };
+
+        if let Err(e) = tree.insert(key.as_bytes(), value) {
+            tracing::warn!("Failed to save key {}: {}", key, e);
+        }
+    }
+
+    /// Remove key from sled
+    fn remove_from_sled(&self, key: &str) {
+        let Some(db) = &self.db else {
+            return;
+        };
+
+        let tree = match db.open_tree(TREE_KV_STORE) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("Failed to open kv_store tree: {}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = tree.remove(key.as_bytes()) {
+            tracing::warn!("Failed to remove key {}: {}", key, e);
         }
     }
 
@@ -529,11 +531,11 @@ impl ChainStorage {
             .and_then(|bytes| serde_json::from_slice(bytes).ok())
     }
 
-    /// Set JSON value in key-value store (persisted to disk if configured)
+    /// Set JSON value in key-value store (persisted to sled if configured)
     pub fn set_json<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<(), String> {
         let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
-        self.kv_store.write().insert(key.to_string(), bytes);
-        self.save_kv_store();
+        self.kv_store.write().insert(key.to_string(), bytes.clone());
+        self.save_to_sled(key, &bytes);
         Ok(())
     }
 
@@ -542,17 +544,17 @@ impl ChainStorage {
         self.kv_store.read().get(key).cloned()
     }
 
-    /// Set raw bytes in key-value store (persisted to disk if configured)
+    /// Set raw bytes in key-value store (persisted to sled if configured)
     pub fn set_bytes(&self, key: &str, value: Vec<u8>) {
+        self.save_to_sled(key, &value);
         self.kv_store.write().insert(key.to_string(), value);
-        self.save_kv_store();
     }
 
-    /// Remove key from store (persisted to disk if configured)
+    /// Remove key from store (persisted to sled if configured)
     pub fn remove(&self, key: &str) -> Option<Vec<u8>> {
         let result = self.kv_store.write().remove(key);
         if result.is_some() {
-            self.save_kv_store();
+            self.remove_from_sled(key);
         }
         result
     }
