@@ -1308,16 +1308,39 @@ async fn run_evaluation_with_progress(
         std::env::var("TASKS_DIR").unwrap_or_else(|_| "/app/tasks".to_string()),
     );
 
+    // Auto-download tasks from registry if none exist locally
     let task_registry = match TaskRegistry::new(tasks_dir.clone()) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("Failed to load TaskRegistry from {:?}: {}", tasks_dir, e);
-            update_progress_failed(
-                &progress_store,
-                &evaluation_id,
-                &format!("Failed to load tasks: {}", e),
-            );
-            return;
+        Ok(r) if r.count() > 0 => r,
+        _ => {
+            info!("No local tasks found, downloading from Terminal-Bench registry...");
+
+            // Download tasks from the harbor registry (terminal-bench@2.0, first 30 tasks)
+            match auto_download_tasks(&tasks_dir, 30).await {
+                Ok(count) => {
+                    info!("Downloaded {} tasks from registry", count);
+                    match TaskRegistry::new(tasks_dir.clone()) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            error!("Failed to load TaskRegistry after download: {}", e);
+                            update_progress_failed(
+                                &progress_store,
+                                &evaluation_id,
+                                &format!("Failed to load tasks after download: {}", e),
+                            );
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to download tasks from registry: {}", e);
+                    update_progress_failed(
+                        &progress_store,
+                        &evaluation_id,
+                        &format!("Failed to download tasks: {}", e),
+                    );
+                    return;
+                }
+            }
         }
     };
 
@@ -3123,4 +3146,106 @@ async fn set_validation_enabled(
         )
             .into_response(),
     }
+}
+
+/// Auto-download tasks from Terminal-Bench registry
+///
+/// Downloads tasks from the harbor registry and copies them to the tasks directory.
+/// Returns the number of tasks downloaded.
+async fn auto_download_tasks(
+    tasks_dir: &std::path::Path,
+    max_tasks: usize,
+) -> anyhow::Result<usize> {
+    use crate::bench::registry::RegistryClient;
+    use std::fs;
+
+    info!(
+        "Auto-downloading tasks from Terminal-Bench registry (max: {})",
+        max_tasks
+    );
+
+    // Create tasks directory if it doesn't exist
+    fs::create_dir_all(tasks_dir)?;
+
+    // Create registry client and fetch registry
+    let mut client = RegistryClient::new();
+    client.fetch_registry().await?;
+
+    // Download terminal-bench@2.0 dataset
+    let dataset_name = "terminal-bench";
+    let dataset_version = "2.0";
+    info!(
+        "Downloading from dataset: {}@{}",
+        dataset_name, dataset_version
+    );
+
+    // Download dataset tasks
+    let task_paths = client
+        .download_dataset(dataset_name, dataset_version, false)
+        .await?;
+
+    // Copy tasks to tasks_dir (up to max_tasks)
+    let mut copied = 0;
+    for (i, task_path) in task_paths.iter().enumerate() {
+        if i >= max_tasks {
+            break;
+        }
+
+        // Get task name from path
+        let task_name = task_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("task_{}", i));
+
+        let dest_dir = tasks_dir.join(&task_name);
+
+        // Skip if already exists
+        if dest_dir.exists() {
+            copied += 1;
+            continue;
+        }
+
+        // Copy entire task directory
+        if let Err(e) = copy_dir_recursive(task_path, &dest_dir) {
+            warn!("Failed to copy task {}: {}", task_name, e);
+            continue;
+        }
+
+        copied += 1;
+        debug!("Copied task: {}", task_name);
+    }
+
+    info!(
+        "Successfully downloaded {} tasks to {:?}",
+        copied, tasks_dir
+    );
+    Ok(copied)
+}
+
+/// Recursively copy a directory
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    use std::fs;
+
+    if !src.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Source is not a directory",
+        ));
+    }
+
+    fs::create_dir_all(dst)?;
+
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
+
+    Ok(())
 }
