@@ -90,8 +90,11 @@ impl DockerExecutor {
         while let Some(result) = stream.next().await {
             match result {
                 Ok(info) => {
+                    // Only log important status changes, skip repetitive ones
                     if let Some(status) = info.status {
-                        debug!("Pull status: {}", status);
+                        if status.contains("Pull complete") || status.contains("Already exists") {
+                            debug!("Pull: {}", status);
+                        }
                     }
                 }
                 Err(e) => {
