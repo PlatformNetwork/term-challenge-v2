@@ -62,6 +62,7 @@ pub mod task_execution;
 pub mod terminal_harness;
 pub mod validator_distribution;
 pub mod weight_calculator;
+pub mod x25519_encryption;
 
 pub use agent_queue::{
     AgentQueue, EvalRequest, EvalResult, QueueAgentInfo, QueueConfig, QueueStats,

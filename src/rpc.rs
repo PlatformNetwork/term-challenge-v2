@@ -96,8 +96,15 @@ pub struct RpcState {
     pub metagraph_cache: Arc<crate::metagraph_cache::MetagraphCache>,
     /// LLM Review manager for code review before evaluation
     pub llm_review: Arc<crate::llm_review::LlmReviewManager>,
-    /// API key cache - stores decrypted API keys by agent hash
-    pub api_key_cache: Arc<parking_lot::RwLock<HashMap<String, String>>>,
+    /// API key cache - stores decrypted API keys and provider by agent hash
+    pub api_key_cache: Arc<parking_lot::RwLock<HashMap<String, CachedApiKey>>>,
+}
+
+/// Cached API key with provider info
+#[derive(Clone, Debug)]
+pub struct CachedApiKey {
+    pub api_key: String,
+    pub provider: String,
 }
 
 /// Term Challenge RPC Server
@@ -305,6 +312,14 @@ pub struct SubmitRequest {
     /// When provided, each validator can only decrypt their assigned key
     #[serde(default)]
     pub api_keys: Option<ApiKeyConfig>,
+    /// LLM provider for the API key (openrouter, chutes, openai, anthropic, grok)
+    /// Defaults to "openrouter" if not specified
+    #[serde(default = "default_provider")]
+    pub llm_provider: String,
+}
+
+fn default_provider() -> String {
+    "openrouter".to_string()
 }
 
 #[derive(Debug, Serialize)]
@@ -481,9 +496,12 @@ async fn submit_agent(
     });
 
     info!(
-        "Submission includes API keys: mode={}, validators={}",
-        mode, validator_count
+        "Submission includes API keys: mode={}, validators={}, provider={}",
+        mode, validator_count, req.llm_provider
     );
+
+    // Capture LLM provider before consuming req
+    let llm_provider = req.llm_provider.clone();
 
     // Store API keys in submission metadata for later retrieval by validators
     let metadata = Some(serde_json::to_value(&api_keys).unwrap_or(serde_json::Value::Null));
@@ -518,17 +536,23 @@ async fn submit_agent(
                     &validator_hotkey[..32.min(validator_hotkey.len())]
                 );
                 let decrypted_api_key = decrypt_api_key_for_validator(&api_keys, &validator_hotkey);
-                match &decrypted_api_key {
+                let cached_api_key = match &decrypted_api_key {
                     Some(key) => {
                         info!(
-                            "Successfully decrypted API key for agent {} (key length: {})",
+                            "Successfully decrypted API key for agent {} (key length: {}, provider: {})",
                             &agent_hash[..16],
-                            key.len()
+                            key.len(),
+                            &llm_provider
                         );
+                        let cached = CachedApiKey {
+                            api_key: key.clone(),
+                            provider: llm_provider.clone(),
+                        };
                         state
                             .api_key_cache
                             .write()
-                            .insert(agent_hash.clone(), key.clone());
+                            .insert(agent_hash.clone(), cached.clone());
+                        Some(cached)
                     }
                     None => {
                         warn!(
@@ -536,8 +560,9 @@ async fn submit_agent(
                             &validator_hotkey[..32.min(validator_hotkey.len())],
                             &agent_hash[..16]
                         );
+                        None
                     }
-                }
+                };
 
                 // Create initial progress entry
                 let now = std::time::SystemTime::now()
@@ -589,7 +614,7 @@ async fn submit_agent(
                         Some(handler),
                         chain_storage,
                         Some(llm_review),
-                        decrypted_api_key,
+                        cached_api_key,
                     )
                     .await;
                 });
@@ -1369,7 +1394,7 @@ async fn run_evaluation_with_progress(
     handler: Option<Arc<crate::agent_submission::AgentSubmissionHandler>>,
     chain_storage: Arc<crate::chain_storage::ChainStorage>,
     llm_review: Option<Arc<crate::llm_review::LlmReviewManager>>,
-    api_key: Option<String>,
+    cached_api_key: Option<CachedApiKey>,
 ) {
     use crate::task::{Task, TaskRegistry};
     use crate::task_execution::{EvaluationStatus, TaskExecutionState, TaskStatus};
@@ -1379,16 +1404,32 @@ async fn run_evaluation_with_progress(
         &agent_hash[..16.min(agent_hash.len())]
     );
 
-    // Step 1: LLM Review (if enabled)
+    // Step 1: LLM Review (if enabled and we have miner's API key)
     if let Some(ref llm_mgr) = llm_review {
-        info!(
-            "Running LLM code review for agent {}",
-            &agent_hash[..16.min(agent_hash.len())]
-        );
+        // Use miner's API key for LLM review
+        let review_result = if let Some(ref cached_key) = cached_api_key {
+            info!(
+                "Running LLM code review for agent {} using miner's {} API key",
+                &agent_hash[..16.min(agent_hash.len())],
+                &cached_key.provider
+            );
+            llm_mgr
+                .review_code_with_miner_key(
+                    &agent_hash,
+                    &source_code,
+                    &cached_key.api_key,
+                    &cached_key.provider,
+                )
+                .await
+        } else {
+            info!(
+                "Running LLM code review for agent {} (no miner API key - using default)",
+                &agent_hash[..16.min(agent_hash.len())]
+            );
+            llm_mgr.review_code(&agent_hash, &source_code).await
+        };
 
-        // Update progress - LLM review starting (status stays Running)
-
-        match llm_mgr.review_code(&agent_hash, &source_code).await {
+        match review_result {
             Ok(review_result) => {
                 if review_result.approved {
                     info!(
@@ -1480,13 +1521,15 @@ async fn run_evaluation_with_progress(
         env_vars: {
             let mut env = Vec::new();
             // Pass API key to agent if available
-            if let Some(ref key) = api_key {
-                env.push(("LLM_API_KEY".to_string(), key.clone()));
-                env.push(("OPENROUTER_API_KEY".to_string(), key.clone()));
+            if let Some(ref cached_key) = cached_api_key {
+                env.push(("LLM_API_KEY".to_string(), cached_key.api_key.clone()));
+                env.push(("OPENROUTER_API_KEY".to_string(), cached_key.api_key.clone()));
+                env.push(("LLM_PROVIDER".to_string(), cached_key.provider.clone()));
                 info!(
-                    "Passing API key to agent {} (length: {})",
+                    "Passing API key to agent {} (length: {}, provider: {})",
                     &agent_hash[..16.min(agent_hash.len())],
-                    key.len()
+                    cached_key.api_key.len(),
+                    cached_key.provider
                 );
             } else {
                 warn!(
