@@ -77,7 +77,7 @@ pub struct RpcState {
     pub handler: Arc<AgentSubmissionHandler>,
     pub progress_store: Arc<ProgressStore>,
     pub chain_storage: Arc<ChainStorage>,
-    pub challenge_config: ChallengeConfig,
+    pub challenge_config: Arc<parking_lot::RwLock<ChallengeConfig>>,
     /// P2P broadcaster for queuing messages to platform validator
     pub p2p_broadcaster: Arc<HttpP2PBroadcaster>,
     /// Secure submission handler for commit-reveal protocol
@@ -130,7 +130,7 @@ impl TermChallengeRpc {
                 chain_storage,
                 auth_manager,
                 challenge_id,
-                challenge_config,
+                challenge_config: Arc::new(parking_lot::RwLock::new(challenge_config)),
                 p2p_broadcaster,
                 secure_handler,
                 sudo_controller,
@@ -244,6 +244,13 @@ impl TermChallengeRpc {
             .route("/sudo/subnet/status", get(get_subnet_control_status))
             .route("/sudo/subnet/uploads", post(set_uploads_enabled))
             .route("/sudo/subnet/validation", post(set_validation_enabled))
+            // Model blacklist management (sudo only)
+            .route("/sudo/models/blacklist", get(get_model_blacklist))
+            .route("/sudo/models/block", post(block_model))
+            .route("/sudo/models/unblock", post(unblock_model))
+            .route("/sudo/models/block_org", post(block_org))
+            .route("/sudo/models/unblock_org", post(unblock_org))
+            .route("/sudo/models/block_pattern", post(block_pattern))
             .with_state(self.state.clone())
     }
 
@@ -446,7 +453,7 @@ async fn submit_agent(
                 let validator_hotkey =
                     std::env::var("VALIDATOR_HOTKEY").unwrap_or_else(|_| "auto-eval".to_string());
                 let progress_store = state.progress_store.clone();
-                let config = state.challenge_config.clone();
+                let config = state.challenge_config.read().clone();
                 let handler = state.handler.clone();
                 let chain_storage = state.chain_storage.clone();
 
@@ -1187,13 +1194,15 @@ async fn trigger_evaluation(
     let webhook_url = body.as_ref().and_then(|b| b.webhook_url.clone());
 
     // Create evaluation progress entry for real-time tracking
+    let config = state.challenge_config.read();
     let mut progress = crate::task_execution::EvaluationProgress::new_simple(
         evaluation_id.clone(),
         agent_hash.clone(),
         validator_hotkey.clone(),
-        state.challenge_config.evaluation.tasks_per_evaluation,
-        state.challenge_config.pricing.max_total_cost_usd,
+        config.evaluation.tasks_per_evaluation,
+        config.pricing.max_total_cost_usd,
     );
+    drop(config);
     progress.status = crate::task_execution::EvaluationStatus::Running;
 
     state.progress_store.start_evaluation(progress);
@@ -1211,7 +1220,7 @@ async fn trigger_evaluation(
     let miner_h = agent.miner_hotkey.clone();
     let validator_h = validator_hotkey.clone();
     let progress_store = state.progress_store.clone();
-    let challenge_config = state.challenge_config.clone();
+    let challenge_config = state.challenge_config.read().clone();
     let handler = state.handler.clone();
     let chain_storage = state.chain_storage.clone();
 
@@ -1625,19 +1634,19 @@ async fn get_running_evaluations(State(state): State<Arc<RpcState>>) -> impl Int
 // ==================== Config Handlers ====================
 
 async fn get_challenge_config(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
-    Json(state.challenge_config.clone())
+    Json(state.challenge_config.read().clone())
 }
 
 async fn get_module_whitelist(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
-    Json(state.challenge_config.module_whitelist.clone())
+    Json(state.challenge_config.read().module_whitelist.clone())
 }
 
 async fn get_model_whitelist(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
-    Json(state.challenge_config.model_whitelist.clone())
+    Json(state.challenge_config.read().model_whitelist.clone())
 }
 
 async fn get_pricing_config(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
-    Json(state.challenge_config.pricing.clone())
+    Json(state.challenge_config.read().pricing.clone())
 }
 
 // ==================== Chain Storage Handlers ====================
@@ -3248,4 +3257,192 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     }
 
     Ok(())
+}
+
+// ==================== Model Blacklist Handlers (Sudo) ====================
+
+/// Get current model blacklist
+async fn get_model_blacklist(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
+    let config = state.challenge_config.read();
+    Json(serde_json::json!({
+        "blocked_models": config.model_whitelist.blocked_models,
+        "blocked_orgs": config.model_whitelist.blocked_orgs,
+        "blocked_patterns": config.model_whitelist.blocked_patterns,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct BlockModelRequest {
+    model: String,
+    owner_hotkey: String,
+    signature: String,
+}
+
+/// Block a specific model
+async fn block_model(
+    State(state): State<Arc<RpcState>>,
+    Json(req): Json<BlockModelRequest>,
+) -> impl IntoResponse {
+    // Verify owner signature
+    let owner = state.sudo_controller.owner_hotkey().to_string();
+    let message = format!("block_model:{}:{}", req.model, req.owner_hotkey);
+    if let Err(e) = verify_owner_signature(&req.owner_hotkey, &message, &req.signature, &owner) {
+        return e.into_response();
+    }
+
+    let mut config = state.challenge_config.write();
+    config.model_whitelist.block_model(&req.model);
+    info!("Model '{}' blocked by {}", req.model, req.owner_hotkey);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": format!("Model '{}' blocked", req.model)
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct UnblockModelRequest {
+    model: String,
+    owner_hotkey: String,
+    signature: String,
+}
+
+/// Unblock a specific model
+async fn unblock_model(
+    State(state): State<Arc<RpcState>>,
+    Json(req): Json<UnblockModelRequest>,
+) -> impl IntoResponse {
+    let owner = state.sudo_controller.owner_hotkey().to_string();
+    let message = format!("unblock_model:{}:{}", req.model, req.owner_hotkey);
+    if let Err(e) = verify_owner_signature(&req.owner_hotkey, &message, &req.signature, &owner) {
+        return e.into_response();
+    }
+
+    let mut config = state.challenge_config.write();
+    config.model_whitelist.unblock_model(&req.model);
+    info!("Model '{}' unblocked by {}", req.model, req.owner_hotkey);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": format!("Model '{}' unblocked", req.model)
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct BlockOrgRequest {
+    org: String,
+    owner_hotkey: String,
+    signature: String,
+}
+
+/// Block all models from an organization
+async fn block_org(
+    State(state): State<Arc<RpcState>>,
+    Json(req): Json<BlockOrgRequest>,
+) -> impl IntoResponse {
+    let owner = state.sudo_controller.owner_hotkey().to_string();
+    let message = format!("block_org:{}:{}", req.org, req.owner_hotkey);
+    if let Err(e) = verify_owner_signature(&req.owner_hotkey, &message, &req.signature, &owner) {
+        return e.into_response();
+    }
+
+    let mut config = state.challenge_config.write();
+    config.model_whitelist.block_org(&req.org);
+    info!("Organization '{}' blocked by {}", req.org, req.owner_hotkey);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": format!("Organization '{}' blocked", req.org)
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct UnblockOrgRequest {
+    org: String,
+    owner_hotkey: String,
+    signature: String,
+}
+
+/// Unblock an organization
+async fn unblock_org(
+    State(state): State<Arc<RpcState>>,
+    Json(req): Json<UnblockOrgRequest>,
+) -> impl IntoResponse {
+    let owner = state.sudo_controller.owner_hotkey().to_string();
+    let message = format!("unblock_org:{}:{}", req.org, req.owner_hotkey);
+    if let Err(e) = verify_owner_signature(&req.owner_hotkey, &message, &req.signature, &owner) {
+        return e.into_response();
+    }
+
+    let mut config = state.challenge_config.write();
+    config.model_whitelist.unblock_org(&req.org);
+    info!(
+        "Organization '{}' unblocked by {}",
+        req.org, req.owner_hotkey
+    );
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": format!("Organization '{}' unblocked", req.org)
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct BlockPatternRequest {
+    pattern: String,
+    owner_hotkey: String,
+    signature: String,
+}
+
+/// Block models matching a regex pattern
+async fn block_pattern(
+    State(state): State<Arc<RpcState>>,
+    Json(req): Json<BlockPatternRequest>,
+) -> impl IntoResponse {
+    let owner = state.sudo_controller.owner_hotkey().to_string();
+    let message = format!("block_pattern:{}:{}", req.pattern, req.owner_hotkey);
+    if let Err(e) = verify_owner_signature(&req.owner_hotkey, &message, &req.signature, &owner) {
+        return e.into_response();
+    }
+
+    // Validate regex pattern
+    if regex::Regex::new(&req.pattern).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "Invalid regex pattern"
+            })),
+        )
+            .into_response();
+    }
+
+    let mut config = state.challenge_config.write();
+    config.model_whitelist.block_pattern(&req.pattern);
+    info!("Pattern '{}' blocked by {}", req.pattern, req.owner_hotkey);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": format!("Pattern '{}' blocked", req.pattern)
+        })),
+    )
+        .into_response()
 }
