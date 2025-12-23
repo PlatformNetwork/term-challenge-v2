@@ -44,6 +44,7 @@ pub mod evaluation_pipeline;
 pub mod evaluator;
 pub mod llm_client;
 pub mod llm_review;
+pub mod metagraph_cache;
 pub mod p2p_bridge;
 pub mod p2p_chain_storage;
 pub mod platform_auth;

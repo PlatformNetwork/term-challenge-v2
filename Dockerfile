@@ -7,7 +7,8 @@
 # ============================================================================
 
 # Stage 1: Chef - prepare recipe for dependency caching
-FROM rust:1.92.0-slim AS chef
+# Use bookworm (Debian 12) to match runtime GLIBC version
+FROM rust:1.92.0-slim-bookworm AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /build
 

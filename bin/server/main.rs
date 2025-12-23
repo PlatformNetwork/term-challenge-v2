@@ -193,6 +193,9 @@ async fn main() -> Result<()> {
         &owner_hotkey[..16.min(owner_hotkey.len())]
     );
 
+    // Get Platform URL for metagraph verification
+    let platform_url = std::env::var("PLATFORM_URL").ok();
+
     let rpc = TermChallengeRpc::new(
         rpc_config,
         handler,
@@ -203,6 +206,7 @@ async fn main() -> Result<()> {
         secure_handler,
         args.challenge_id.clone(),
         owner_hotkey,
+        platform_url,
     );
 
     info!("Term Challenge Server ready");

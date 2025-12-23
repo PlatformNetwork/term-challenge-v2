@@ -92,6 +92,8 @@ pub struct RpcState {
     pub current_epoch: std::sync::atomic::AtomicU64,
     /// Code visibility manager - controls when miner code becomes public
     pub code_visibility: Arc<CodeVisibilityManager>,
+    /// Metagraph cache - verifies miner registration on subnet
+    pub metagraph_cache: Arc<crate::metagraph_cache::MetagraphCache>,
 }
 
 /// Term Challenge RPC Server
@@ -112,6 +114,7 @@ impl TermChallengeRpc {
         secure_handler: Option<Arc<SecureSubmissionHandler>>,
         challenge_id: String,
         owner_hotkey: String,
+        platform_url: Option<String>,
     ) -> Self {
         let auth_manager = Arc::new(PlatformAuthManager::new(challenge_id.clone()));
         let sudo_controller = Arc::new(SudoController::new(owner_hotkey.clone()));
@@ -121,6 +124,14 @@ impl TermChallengeRpc {
             owner_hotkey,
             VisibilityConfig::default(),
         ));
+
+        // Create metagraph cache for miner registration verification
+        let platform_rpc =
+            platform_url.unwrap_or_else(|| "https://chain.platform.network".to_string());
+        let metagraph_cache = Arc::new(crate::metagraph_cache::MetagraphCache::new(platform_rpc));
+
+        // Start background refresh for metagraph cache
+        metagraph_cache.clone().start_background_refresh();
 
         Self {
             config,
@@ -136,6 +147,7 @@ impl TermChallengeRpc {
                 sudo_controller,
                 current_epoch: std::sync::atomic::AtomicU64::new(0),
                 code_visibility,
+                metagraph_cache,
             }),
         }
     }
@@ -358,6 +370,37 @@ async fn submit_agent(
     Json(req): Json<SubmitRequest>,
 ) -> impl IntoResponse {
     info!("Received submission from miner {}", req.miner_hotkey);
+
+    // Verify miner is registered on the subnet metagraph
+    if !state.metagraph_cache.is_registered(&req.miner_hotkey) {
+        // If cache not initialized yet, try a refresh
+        if !state.metagraph_cache.is_initialized() {
+            if let Err(e) = state.metagraph_cache.refresh().await {
+                tracing::warn!("Failed to refresh metagraph cache: {}", e);
+            }
+        }
+
+        // Check again after potential refresh
+        if !state.metagraph_cache.is_registered(&req.miner_hotkey) {
+            tracing::warn!(
+                "Rejected submission from unregistered miner: {}",
+                req.miner_hotkey
+            );
+            return (
+                StatusCode::FORBIDDEN,
+                Json(SubmitResponse {
+                    success: false,
+                    agent_hash: None,
+                    status: None,
+                    error: Some(format!(
+                        "Miner {} is not registered on subnet 100. Please register first.",
+                        req.miner_hotkey
+                    )),
+                    api_keys_info: None,
+                }),
+            );
+        }
+    }
 
     let signature = match hex::decode(&req.signature) {
         Ok(s) => s,
