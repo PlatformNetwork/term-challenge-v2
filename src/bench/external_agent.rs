@@ -33,7 +33,7 @@ use super::runner::Agent;
 use super::session::{AgentResponse, TmuxSession};
 
 /// Base image for agents (must have SDKs installed)
-const AGENT_BASE_IMAGE: &str = "ghcr.io/platformnetwork/term-challenge:latest";
+const AGENT_BASE_IMAGE: &str = "term-challenge:fixed-sdk";
 
 /// HTTP port for agent communication
 const AGENT_HTTP_PORT: u16 = 8765;
@@ -208,35 +208,8 @@ impl ExternalAgent {
             return Ok(id.clone());
         }
 
-        // Pull image if needed
-        info!("Checking for agent base image: {}", AGENT_BASE_IMAGE);
-        use bollard::image::CreateImageOptions;
-
-        let mut stream = self.docker.create_image(
-            Some(CreateImageOptions {
-                from_image: AGENT_BASE_IMAGE,
-                ..Default::default()
-            }),
-            None,
-            None,
-        );
-
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(info) => {
-                    if let Some(status) = info.status {
-                        debug!("Pull: {}", status);
-                    }
-                }
-                Err(e) => {
-                    if self.docker.inspect_image(AGENT_BASE_IMAGE).await.is_ok() {
-                        warn!("Failed to pull latest image, using cached: {}", e);
-                        break;
-                    }
-                    bail!("Failed to pull base image: {}", e);
-                }
-            }
-        }
+        // Check and pull image if needed
+        self.ensure_image_available().await?;
 
         // Build environment variables
         let env: Vec<String> = self
@@ -389,10 +362,10 @@ impl ExternalAgent {
             .join("; ");
 
         let cmd = if env_exports.is_empty() {
-            "nohup python3 -B /agent/agent.py > /agent/stdout.log 2>/agent/stderr.log &".to_string()
+            "FORCE_HTTP_SERVER=1 nohup python3 -B /agent/agent.py > /agent/stdout.log 2>/agent/stderr.log &".to_string()
         } else {
             format!(
-                "nohup sh -c '{}; python3 -B /agent/agent.py' > /agent/stdout.log 2>/agent/stderr.log &"
+                "FORCE_HTTP_SERVER=1 nohup sh -c '{}; python3 -B /agent/agent.py' > /agent/stdout.log 2>/agent/stderr.log &"
                 , env_exports
             )
         };
@@ -575,6 +548,86 @@ impl ExternalAgent {
         }
 
         state.agent_started = false;
+        Ok(())
+    }
+
+    /// Check and pull Docker image if needed with caching logic
+    async fn ensure_image_available(&self) -> Result<()> {
+        use bollard::image::CreateImageOptions;
+
+        info!("Checking for agent base image: {}", AGENT_BASE_IMAGE);
+
+        // First, check if image exists locally
+        match self.docker.inspect_image(AGENT_BASE_IMAGE).await {
+            Ok(image_details) => {
+                // Image exists locally, use cached version for efficiency
+                let created = image_details.created.as_ref().and_then(|dt| {
+                    dt.parse::<chrono::DateTime<chrono::Utc>>()
+                        .ok()
+                        .map(|dt| dt.timestamp() as i64)
+                });
+
+                let now = chrono::Utc::now().timestamp();
+                let age_hours = created
+                    .map(|created| (now - created) / 3600)
+                    .unwrap_or(i64::MAX);
+
+                if age_hours < 24 && std::env::var("TERM_FORCE_IMAGE_PULL").is_err() {
+                    info!(
+                        "Using cached image ({} hours old): {}",
+                        age_hours, AGENT_BASE_IMAGE
+                    );
+                    return Ok(());
+                } else {
+                    info!(
+                        "Image is older than 24h or force pull requested, checking for updates..."
+                    );
+                }
+            }
+            Err(e) => {
+                // Image doesn't exist locally, we need to pull it
+                info!("Image not found locally, pulling: {}", e);
+            }
+        }
+
+        // Pull the latest image
+        info!("Pulling latest image: {}", AGENT_BASE_IMAGE);
+        let mut stream = self.docker.create_image(
+            Some(CreateImageOptions {
+                from_image: AGENT_BASE_IMAGE,
+                ..Default::default()
+            }),
+            None,
+            None,
+        );
+
+        let mut total_layers = 0;
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(info) => {
+                    if let Some(status) = info.status {
+                        if status.starts_with("Downloading") || status.starts_with("Extracting") {
+                            debug!("Pull: {}", status);
+                        } else if status.starts_with("Layer") {
+                            total_layers += 1;
+                            if total_layers % 5 == 0 {
+                                debug!("Downloaded {} layers...", total_layers);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // If pull fails, check if we have a cached version to fall back to
+                    if self.docker.inspect_image(AGENT_BASE_IMAGE).await.is_ok() {
+                        warn!("Failed to pull latest image, using cached: {}", e);
+                        return Ok(());
+                    }
+                    bail!("Failed to pull base image: {}", e);
+                }
+            }
+        }
+
+        info!("Successfully pulled image: {}", AGENT_BASE_IMAGE);
         Ok(())
     }
 

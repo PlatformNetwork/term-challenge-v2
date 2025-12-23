@@ -71,7 +71,8 @@ COPY sdk/python /opt/term-sdk/python
 RUN cd /opt/term-sdk/python && \
     pip3 install --break-system-packages -e . && \
     python3 -c "from term_sdk import Agent, Request, Response, run; print('Python SDK installed')" && \
-    rm -rf /opt/term-sdk/python/term_sdk/__pycache__
+    rm -rf /opt/term-sdk/python/term_sdk/__pycache__ && \
+    echo "SDK installed with HTTP server fix"
 
 # Copy default data and tasks
 COPY data /app/data

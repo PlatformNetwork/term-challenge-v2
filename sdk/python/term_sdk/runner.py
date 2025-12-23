@@ -130,8 +130,11 @@ def run(agent: Agent, port: int = None) -> None:
     """
     import os
     
-    # Auto-detect: if stdin is piped, use stdio mode (for evaluator)
-    if not sys.stdin.isatty():
+    # Check for FORCE_HTTP mode (for external agent system)
+    force_http_mode = os.environ.get('FORCE_HTTP_SERVER') == '1'
+    
+    # Auto-detect: if stdin is piped and not forced, use stdio mode (for evaluator)
+    if not sys.stdin.isatty() and not force_http_mode:
         run_stdio(agent)
         return
     
