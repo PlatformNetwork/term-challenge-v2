@@ -37,12 +37,12 @@
 //! └──────────────────┘                  └───────────────────┘
 //! ```
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use parking_lot::RwLock;
 use platform_core::Hotkey;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sp_core::{sr25519, Pair};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -349,28 +349,33 @@ impl PlatformAuthManager {
     }
 }
 
-/// Verify an ed25519 signature
+/// Verify an sr25519 signature
 fn verify_signature(hotkey: &Hotkey, message: &[u8], signature: &[u8]) -> bool {
-    // Parse verifying key from hotkey bytes
-    let verifying_key = match VerifyingKey::from_bytes(hotkey.as_bytes()) {
-        Ok(k) => k,
-        Err(e) => {
-            error!("Failed to parse hotkey as verifying key: {}", e);
-            return false;
-        }
-    };
+    // Parse public key from hotkey bytes
+    let hotkey_bytes = hotkey.as_bytes();
+    if hotkey_bytes.len() != 32 {
+        error!(
+            "Invalid hotkey length: expected 32 bytes, got {}",
+            hotkey_bytes.len()
+        );
+        return false;
+    }
+    let mut pubkey_bytes = [0u8; 32];
+    pubkey_bytes.copy_from_slice(hotkey_bytes);
+    let public = sr25519::Public::from_raw(pubkey_bytes);
 
-    // Parse signature
-    let sig = match Signature::from_slice(signature) {
-        Ok(s) => s,
-        Err(e) => {
-            error!("Failed to parse signature: {}", e);
+    // Parse signature (64 bytes for sr25519)
+    let sig_bytes: [u8; 64] = match signature.try_into() {
+        Ok(b) => b,
+        Err(_) => {
+            error!("Invalid signature length: expected 64 bytes");
             return false;
         }
     };
+    let sig = sr25519::Signature::from_raw(sig_bytes);
 
     // Verify
-    verifying_key.verify(message, &sig).is_ok()
+    sr25519::Pair::verify(&sig, message, &public)
 }
 
 /// Helper to create auth message that platform should sign

@@ -82,13 +82,44 @@ pub async fn run(agent: PathBuf) -> Result<()> {
         }
     }
 
-    // Check for required structure
+    // Check for required structure (term_sdk format)
     print_step(4, 5, "Checking code structure...");
-    let has_function = source.contains("def ");
-    let has_class = source.contains("class ");
 
-    if !has_function && !has_class {
-        warnings.push("No functions or classes defined".to_string());
+    // Check for term_sdk import
+    let has_sdk_import = source.contains("from term_sdk import")
+        || source.contains("import term_sdk")
+        || source.contains("from termsdk import")
+        || source.contains("import termsdk");
+
+    if !has_sdk_import {
+        warnings.push(
+            "No term_sdk import found (expected: from term_sdk import Agent, ...)".to_string(),
+        );
+    }
+
+    // Check for Agent class extending base
+    let has_agent_class =
+        source.contains("class ") && (source.contains("(Agent)") || source.contains("( Agent )"));
+
+    if !has_agent_class {
+        warnings.push("No Agent class found (expected: class MyAgent(Agent):)".to_string());
+    }
+
+    // Check for solve() method
+    let has_solve = source.contains("def solve") || source.contains("async def solve");
+
+    if !has_solve {
+        errors.push("Missing solve() method - required by term_sdk".to_string());
+    }
+
+    // Check for run() entry point
+    let has_run = source.contains("run(") && source.contains("if __name__");
+
+    if !has_run {
+        warnings.push(
+            "No run() entry point (expected: if __name__ == '__main__': run(MyAgent()))"
+                .to_string(),
+        );
     }
 
     // Check encoding

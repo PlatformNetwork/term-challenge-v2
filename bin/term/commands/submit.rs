@@ -3,9 +3,9 @@
 use crate::print_banner;
 use crate::style::*;
 use anyhow::{anyhow, Result};
-use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sp_core::{sr25519, Pair};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -221,16 +221,16 @@ fn validate_source(source: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_key_and_derive_hotkey(key: &str) -> Result<(SigningKey, String)> {
-    let secret_bytes: [u8; 32];
+fn parse_key_and_derive_hotkey(key: &str) -> Result<(sr25519::Pair, String)> {
+    let pair: sr25519::Pair;
 
-    // Try hex first (64 chars = 32 bytes)
+    // Try hex first (64 chars = 32 bytes seed)
     if key.len() == 64 {
         if let Ok(bytes) = hex::decode(key) {
             if bytes.len() == 32 {
-                secret_bytes = bytes
-                    .try_into()
-                    .map_err(|_| anyhow!("Invalid key length"))?;
+                let mut seed = [0u8; 32];
+                seed.copy_from_slice(&bytes);
+                pair = sr25519::Pair::from_seed(&seed);
             } else {
                 return Err(anyhow!("Invalid hex key: expected 32 bytes"));
             }
@@ -240,21 +240,20 @@ fn parse_key_and_derive_hotkey(key: &str) -> Result<(SigningKey, String)> {
     }
     // Try as mnemonic (12+ words)
     else if key.split_whitespace().count() >= 12 {
-        let mut hasher = Sha256::new();
-        hasher.update(key.as_bytes());
-        let hash = hasher.finalize();
-        secret_bytes = hash.into();
+        pair = sr25519::Pair::from_phrase(key, None)
+            .map_err(|e| anyhow!("Invalid mnemonic: {:?}", e))?
+            .0;
     } else {
         return Err(anyhow!(
             "Invalid key format. Use 64-char hex or 12+ word mnemonic"
         ));
     }
 
-    let signing_key = SigningKey::from_bytes(&secret_bytes);
-    let public_key = signing_key.verifying_key();
-    let hotkey = hex::encode(public_key.as_bytes());
+    // Get public key and convert to hex
+    let public = pair.public();
+    let hotkey = hex::encode(public.0);
 
-    Ok((signing_key, hotkey))
+    Ok((pair, hotkey))
 }
 
 async fn check_can_submit_and_get_validators(
@@ -396,16 +395,16 @@ async fn submit_agent(
     rpc_url: &str,
     source: &str,
     miner_hotkey: &str,
-    signing_key: &SigningKey,
+    signing_key: &sr25519::Pair,
     stake: u64,
     name: Option<String>,
     api_keys: Option<ApiKeyConfig>,
 ) -> Result<String> {
     let client = reqwest::Client::new();
 
-    // Sign the source code
+    // Sign the source code with sr25519
     let signature = signing_key.sign(source.as_bytes());
-    let signature_hex = hex::encode(signature.to_bytes());
+    let signature_hex = hex::encode(signature.0);
 
     let request = SubmitRequest {
         source_code: source.to_string(),

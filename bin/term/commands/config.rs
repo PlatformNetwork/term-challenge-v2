@@ -60,7 +60,7 @@ struct ChallengeConfig {
 
 async fn fetch_config(rpc_url: &str) -> Result<ChallengeConfig> {
     let client = reqwest::Client::new();
-    let url = format!("{}/challenge/term-bench/config", rpc_url);
+    let url = format!("{}/challenge/term-challenge/config", rpc_url);
 
     match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -68,7 +68,7 @@ async fn fetch_config(rpc_url: &str) -> Result<ChallengeConfig> {
             Ok(ChallengeConfig {
                 challenge_id: data["challenge_id"]
                     .as_str()
-                    .unwrap_or("term-bench")
+                    .unwrap_or("term-challenge")
                     .to_string(),
                 name: data["name"]
                     .as_str()
@@ -88,7 +88,7 @@ async fn fetch_config(rpc_url: &str) -> Result<ChallengeConfig> {
         _ => {
             // Return defaults if can't connect
             Ok(ChallengeConfig {
-                challenge_id: "term-bench".to_string(),
+                challenge_id: "term-challenge".to_string(),
                 name: "Terminal Benchmark".to_string(),
                 status: "active".to_string(),
                 min_stake: 1000,

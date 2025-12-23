@@ -102,7 +102,7 @@ struct LeaderboardEntry {
 async fn fetch_leaderboard(rpc_url: &str, limit: usize) -> Result<Vec<LeaderboardEntry>> {
     let client = reqwest::Client::new();
     let url = format!(
-        "{}/challenge/term-bench/leaderboard?limit={}",
+        "{}/challenge/term-challenge/leaderboard?limit={}",
         rpc_url, limit
     );
 

@@ -6,9 +6,9 @@ use anyhow::{anyhow, Result};
 use clap::{Args, Subcommand};
 use console::{style, Emoji};
 use dialoguer::{theme::ColorfulTheme, Confirm, Password};
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use sp_core::{sr25519, Pair};
 use std::time::Duration;
 
 static LOCK: Emoji<'_, '_> = Emoji("🔒", "[LOCKED]");
@@ -218,10 +218,10 @@ async fn set_uploads(rpc_url: &str, enabled: bool, auth: OwnerAuthArgs) -> Resul
         return Ok(());
     }
 
-    // Create and sign request
+    // Create and sign request with sr25519
     let message = format!("set_uploads_enabled:{}:{}", enabled, hotkey);
     let signature = signing_key.sign(message.as_bytes());
-    let signature_hex = hex::encode(signature.to_bytes());
+    let signature_hex = hex::encode(signature.0);
 
     let request = SubnetControlRequest {
         enabled,
@@ -290,10 +290,10 @@ async fn set_validation(rpc_url: &str, enabled: bool, auth: OwnerAuthArgs) -> Re
         return Ok(());
     }
 
-    // Create and sign request
+    // Create and sign request with sr25519
     let message = format!("set_validation_enabled:{}:{}", enabled, hotkey);
     let signature = signing_key.sign(message.as_bytes());
-    let signature_hex = hex::encode(signature.to_bytes());
+    let signature_hex = hex::encode(signature.0);
 
     let request = SubnetControlRequest {
         enabled,
@@ -348,40 +348,49 @@ async fn set_validation(rpc_url: &str, enabled: bool, auth: OwnerAuthArgs) -> Re
 }
 
 /// Get owner credentials from args or prompt
-fn get_owner_credentials(auth: OwnerAuthArgs) -> Result<(String, SigningKey)> {
+fn get_owner_credentials(auth: OwnerAuthArgs) -> Result<(String, sr25519::Pair)> {
     let seed = match auth.seed {
         Some(s) => s,
         None => {
             println!(
                 "{}",
-                style("Enter your owner secret seed (32 bytes hex):").yellow()
+                style("Enter your owner secret seed (32 bytes hex or mnemonic):").yellow()
             );
             Password::with_theme(&ColorfulTheme::default())
-                .with_prompt("Secret seed (hex)")
+                .with_prompt("Secret seed")
                 .interact()?
         }
     };
 
-    // Parse hex seed
-    let seed_hex = seed.trim().trim_start_matches("0x");
-    let seed_bytes = hex::decode(seed_hex).map_err(|e| anyhow!("Invalid hex seed: {}", e))?;
+    let seed = seed.trim();
 
-    if seed_bytes.len() != 32 {
-        return Err(anyhow!(
-            "Seed must be exactly 32 bytes (64 hex chars), got {} bytes",
-            seed_bytes.len()
-        ));
-    }
+    // Try as mnemonic first (12+ words)
+    let pair = if seed.split_whitespace().count() >= 12 {
+        sr25519::Pair::from_phrase(seed, None)
+            .map_err(|e| anyhow!("Invalid mnemonic: {:?}", e))?
+            .0
+    } else {
+        // Parse hex seed
+        let seed_hex = seed.trim_start_matches("0x");
+        let seed_bytes = hex::decode(seed_hex).map_err(|e| anyhow!("Invalid hex seed: {}", e))?;
 
-    let seed_array: [u8; 32] = seed_bytes
-        .try_into()
-        .map_err(|_| anyhow!("Seed must be 32 bytes"))?;
+        if seed_bytes.len() != 32 {
+            return Err(anyhow!(
+                "Seed must be exactly 32 bytes (64 hex chars), got {} bytes",
+                seed_bytes.len()
+            ));
+        }
 
-    let signing_key = SigningKey::from_bytes(&seed_array);
+        let seed_array: [u8; 32] = seed_bytes
+            .try_into()
+            .map_err(|_| anyhow!("Seed must be 32 bytes"))?;
+
+        sr25519::Pair::from_seed(&seed_array)
+    };
 
     // Verify public key matches hotkey
-    let verifying_key = signing_key.verifying_key();
-    let derived_hotkey = derive_ss58_from_ed25519(&verifying_key);
+    let public = pair.public();
+    let derived_hotkey = derive_ss58_from_sr25519(&public);
 
     if derived_hotkey != auth.hotkey {
         println!(
@@ -399,13 +408,13 @@ fn get_owner_credentials(auth: OwnerAuthArgs) -> Result<(String, SigningKey)> {
         style(&auth.hotkey).cyan().bold()
     );
 
-    Ok((auth.hotkey, signing_key))
+    Ok((auth.hotkey, pair))
 }
 
-/// Derive SS58 address from ed25519 public key
+/// Derive SS58 address from sr25519 public key
 /// Uses SS58 format with prefix 42 (generic substrate)
-fn derive_ss58_from_ed25519(key: &VerifyingKey) -> String {
-    let public_bytes = key.as_bytes();
+fn derive_ss58_from_sr25519(key: &sr25519::Public) -> String {
+    let public_bytes = &key.0;
 
     // SS58 encoding with prefix 42 (generic substrate)
     let prefix: u8 = 42;

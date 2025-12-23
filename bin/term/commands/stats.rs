@@ -111,25 +111,99 @@ struct RecentSubmission {
 
 async fn fetch_stats(rpc_url: &str) -> Result<NetworkStats> {
     let client = reqwest::Client::new();
-    let url = format!("{}/challenge/term-bench/stats", rpc_url);
 
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let data: serde_json::Value = resp.json().await?;
-            Ok(NetworkStats {
-                validators: data["validators"].as_u64().unwrap_or(0) as u32,
-                current_epoch: data["current_epoch"].as_u64().unwrap_or(0),
-                total_agents: data["total_agents"].as_u64().unwrap_or(0) as u32,
-                active_agents: data["active_agents"].as_u64().unwrap_or(0) as u32,
-                evaluated_today: data["evaluated_today"].as_u64().unwrap_or(0) as u32,
-                best_score: data["best_score"].as_f64().unwrap_or(0.0),
-                avg_score: data["avg_score"].as_f64().unwrap_or(0.0),
-                median_score: data["median_score"].as_f64().unwrap_or(0.0),
-                recent_submissions: Vec::new(),
-            })
+    // Fetch challenge stats
+    let stats_url = format!("{}/challenge/term-challenge/stats", rpc_url);
+    let mut stats = NetworkStats::default();
+
+    if let Ok(resp) = client.get(&stats_url).send().await {
+        if resp.status().is_success() {
+            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                stats.current_epoch = data["current_epoch"].as_u64().unwrap_or(0);
+                stats.total_agents = data["total_agents"].as_u64().unwrap_or(0) as u32;
+                stats.active_agents = data["active_agents"].as_u64().unwrap_or(0) as u32;
+            }
         }
-        _ => Ok(NetworkStats::default()),
     }
+
+    // Fetch validator count from platform RPC
+    let rpc_url_path = format!("{}/rpc", rpc_url);
+    let rpc_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "validator_list",
+        "params": [],
+        "id": 1
+    });
+
+    if let Ok(resp) = client.post(&rpc_url_path).json(&rpc_request).send().await {
+        if resp.status().is_success() {
+            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                if let Some(result) = data.get("result") {
+                    stats.validators = result["total"].as_u64().unwrap_or(0) as u32;
+                    // Also get epoch from epoch_current
+                }
+            }
+        }
+    }
+
+    // Fetch current epoch from platform RPC
+    let epoch_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "epoch_current",
+        "params": [],
+        "id": 2
+    });
+
+    if let Ok(resp) = client.post(&rpc_url_path).json(&epoch_request).send().await {
+        if resp.status().is_success() {
+            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                if let Some(result) = data.get("result") {
+                    stats.current_epoch = result["epochNumber"]
+                        .as_u64()
+                        .unwrap_or(stats.current_epoch);
+                }
+            }
+        }
+    }
+
+    // Fetch leaderboard for scores
+    let leaderboard_url = format!("{}/challenge/term-challenge/leaderboard", rpc_url);
+    if let Ok(resp) = client.get(&leaderboard_url).send().await {
+        if resp.status().is_success() {
+            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                if let Some(entries) = data["entries"].as_array() {
+                    if !entries.is_empty() {
+                        let scores: Vec<f64> =
+                            entries.iter().filter_map(|e| e["score"].as_f64()).collect();
+
+                        if !scores.is_empty() {
+                            stats.best_score = scores.iter().cloned().fold(0.0, f64::max);
+                            stats.avg_score = scores.iter().sum::<f64>() / scores.len() as f64;
+
+                            let mut sorted = scores.clone();
+                            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                            stats.median_score = sorted[sorted.len() / 2];
+                        }
+
+                        // Recent submissions
+                        stats.recent_submissions = entries
+                            .iter()
+                            .take(5)
+                            .filter_map(|e| {
+                                Some(RecentSubmission {
+                                    hash: e["agent_hash"].as_str()?.to_string(),
+                                    score: e["score"].as_f64(),
+                                    time: e["updated_at"].as_str().unwrap_or("recent").to_string(),
+                                })
+                            })
+                            .collect();
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(stats)
 }
 
 use crate::style::colors;

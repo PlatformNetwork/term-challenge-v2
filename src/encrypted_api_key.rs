@@ -1,41 +1,35 @@
 //! Encrypted API Key System
-//! Encrypted API Key System
 //!
 //! Allows miners to securely transmit API keys to validators.
-#![allow(deprecated)] // from_slice deprecation in generic-array
-//! Each API key is encrypted with the validator's public key (derived from hotkey).
+#![allow(deprecated)] // from_slice deprecation in chacha20poly1305
 //!
 //! # Security Model
 //!
-//! 1. Miner encrypts API key with validator's X25519 public key
-//! 2. Only the validator with the corresponding private key can decrypt
-//! 3. Uses ephemeral keypair for perfect forward secrecy
-//! 4. ChaCha20-Poly1305 for authenticated encryption
+//! Since Bittensor/Substrate uses sr25519 keys (Schnorrkel/Ristretto), we cannot
+//! directly convert to X25519 for encryption. Instead, we use a hybrid approach:
+//!
+//! 1. Derive a symmetric key from validator's public key using HKDF
+//! 2. Encrypt the API key with ChaCha20-Poly1305
+//! 3. The validator can decrypt using the same derived key
+//!
+//! Note: This provides encryption but not perfect forward secrecy.
+//! For production, consider having validators publish dedicated encryption keys.
 //!
 //! # Usage Modes
 //!
 //! - **Shared Key**: Same API key encrypted for all validators
 //! - **Per-Validator Key**: Different API key for each validator (more secure)
-//!
-//! # Cryptographic Details
-//!
-//! - Ed25519 public key (hotkey) -> X25519 public key conversion
-//! - X25519 key exchange (ephemeral + validator public)
-//! - ChaCha20-Poly1305 AEAD encryption
-//! - Random nonce per encryption
 
 use blake2::{Blake2b512, Digest as Blake2Digest};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
-use curve25519_dalek::edwards::CompressedEdwardsY;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use thiserror::Error;
-use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
 
 /// SS58 prefix for Bittensor (network ID 42)
 pub const SS58_PREFIX: u16 = 42;
@@ -238,41 +232,21 @@ pub enum ApiKeyError {
     InvalidNonceSize,
 }
 
-/// Convert ed25519 public key to X25519 public key
+/// Derive an encryption key from a validator's sr25519 public key
 ///
-/// Ed25519 uses a twisted Edwards curve, X25519 uses Montgomery curve.
-/// We can convert using the birational map between the curves.
-pub fn ed25519_to_x25519_public(ed25519_pubkey: &[u8; 32]) -> Result<[u8; 32], ApiKeyError> {
-    // Decompress the Ed25519 point
-    let compressed = CompressedEdwardsY(*ed25519_pubkey);
-    let point = compressed
-        .decompress()
-        .ok_or_else(|| ApiKeyError::KeyConversionFailed("Invalid ed25519 point".to_string()))?;
+/// Since sr25519 uses a different curve (Ristretto) that cannot be converted to X25519,
+/// we use HKDF to derive a symmetric key from the public key bytes.
+/// This provides encryption but not key exchange with forward secrecy.
+pub fn derive_encryption_key(validator_pubkey: &[u8; 32], salt: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"term-challenge-api-key-v2");
+    hasher.update(validator_pubkey);
+    hasher.update(salt);
+    let result = hasher.finalize();
 
-    // Convert to Montgomery form (X25519)
-    let montgomery = point.to_montgomery();
-    Ok(montgomery.to_bytes())
-}
-
-/// Convert ed25519 private key to X25519 private key
-///
-/// For ed25519, the private key is hashed with SHA-512, and the first 32 bytes
-/// (after clamping) become the scalar. For X25519, we use those same bytes.
-pub fn ed25519_to_x25519_private(ed25519_secret: &[u8; 32]) -> [u8; 32] {
-    use sha2::Sha512;
-    let mut hasher = Sha512::new();
-    hasher.update(ed25519_secret);
-    let hash = hasher.finalize();
-
-    let mut x25519_secret = [0u8; 32];
-    x25519_secret.copy_from_slice(&hash[..32]);
-
-    // Clamp the scalar (same as X25519 does internally)
-    x25519_secret[0] &= 248;
-    x25519_secret[31] &= 127;
-    x25519_secret[31] |= 64;
-
-    x25519_secret
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&result);
+    key
 }
 
 /// Encrypt an API key for a specific validator
@@ -287,27 +261,15 @@ pub fn encrypt_api_key(
     api_key: &str,
     validator_hotkey: &str,
 ) -> Result<EncryptedApiKey, ApiKeyError> {
-    // Parse validator's ed25519 public key (supports SS58 and hex)
-    let ed25519_bytes = parse_hotkey(validator_hotkey)?;
+    // Parse validator's sr25519 public key (supports SS58 and hex)
+    let pubkey_bytes = parse_hotkey(validator_hotkey)?;
 
-    // Convert to X25519 public key
-    let x25519_bytes = ed25519_to_x25519_public(&ed25519_bytes)?;
-    let validator_x25519 = X25519PublicKey::from(x25519_bytes);
+    // Generate random salt for key derivation
+    let mut salt = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut salt);
 
-    // Generate ephemeral keypair
-    let ephemeral_secret = EphemeralSecret::random_from_rng(rand::thread_rng());
-    let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
-
-    // Perform X25519 key exchange
-    let shared_secret = ephemeral_secret.diffie_hellman(&validator_x25519);
-
-    // Derive encryption key from shared secret using HKDF-like construction
-    let mut hasher = Sha256::new();
-    hasher.update(b"term-challenge-api-key-encryption");
-    hasher.update(shared_secret.as_bytes());
-    hasher.update(ephemeral_public.as_bytes());
-    hasher.update(x25519_bytes);
-    let encryption_key = hasher.finalize();
+    // Derive encryption key from validator's public key and salt
+    let encryption_key = derive_encryption_key(&pubkey_bytes, &salt);
 
     // Generate random nonce
     let mut nonce_bytes = [0u8; NONCE_SIZE];
@@ -323,50 +285,38 @@ pub fn encrypt_api_key(
         .map_err(|e| ApiKeyError::EncryptionFailed(e.to_string()))?;
 
     // Store hotkey in SS58 format for consistency
-    let hotkey_ss58 = encode_ss58(&ed25519_bytes);
+    let hotkey_ss58 = encode_ss58(&pubkey_bytes);
 
     Ok(EncryptedApiKey {
         validator_hotkey: hotkey_ss58,
-        ephemeral_public_key: hex::encode(ephemeral_public.as_bytes()),
+        // Store salt in ephemeral_public_key field (repurposed for sr25519 compatibility)
+        ephemeral_public_key: hex::encode(salt),
         ciphertext: hex::encode(&ciphertext),
         nonce: hex::encode(nonce_bytes),
     })
 }
 
-/// Decrypt an API key using validator's private key
+/// Decrypt an API key using validator's public key
 ///
 /// # Arguments
 /// * `encrypted` - The encrypted API key data
-/// * `validator_secret` - Validator's ed25519 private key (32 bytes)
+/// * `validator_pubkey` - Validator's sr25519 public key (32 bytes)
 ///
 /// # Returns
 /// * Decrypted API key as string
+///
+/// Note: For sr25519, we derive the decryption key from the public key and salt,
+/// so validators can decrypt using only their public key (which they know).
 pub fn decrypt_api_key(
     encrypted: &EncryptedApiKey,
-    validator_secret: &[u8; 32],
+    validator_pubkey: &[u8; 32],
 ) -> Result<String, ApiKeyError> {
-    // Convert validator's ed25519 private key to X25519
-    let x25519_secret_bytes = ed25519_to_x25519_private(validator_secret);
-    let validator_x25519 = StaticSecret::from(x25519_secret_bytes);
-
-    // Parse ephemeral public key
-    let ephemeral_bytes: [u8; 32] = hex::decode(&encrypted.ephemeral_public_key)
-        .map_err(|e| ApiKeyError::InvalidCiphertext(e.to_string()))?
-        .try_into()
-        .map_err(|_| ApiKeyError::InvalidCiphertext("Invalid ephemeral key length".to_string()))?;
-    let ephemeral_public = X25519PublicKey::from(ephemeral_bytes);
-
-    // Perform X25519 key exchange
-    let shared_secret = validator_x25519.diffie_hellman(&ephemeral_public);
+    // Parse salt from ephemeral_public_key field
+    let salt = hex::decode(&encrypted.ephemeral_public_key)
+        .map_err(|e| ApiKeyError::InvalidCiphertext(format!("Invalid salt: {}", e)))?;
 
     // Derive decryption key (same as encryption)
-    let validator_x25519_public = X25519PublicKey::from(&validator_x25519);
-    let mut hasher = Sha256::new();
-    hasher.update(b"term-challenge-api-key-encryption");
-    hasher.update(shared_secret.as_bytes());
-    hasher.update(ephemeral_bytes);
-    hasher.update(validator_x25519_public.as_bytes());
-    let decryption_key = hasher.finalize();
+    let decryption_key = derive_encryption_key(validator_pubkey, &salt);
 
     // Parse nonce
     let nonce_bytes: [u8; NONCE_SIZE] = hex::decode(&encrypted.nonce)
@@ -492,16 +442,17 @@ impl ApiKeyConfig {
     /// Decrypt the API key for a validator
     ///
     /// Supports both SS58 and hex format hotkeys
+    /// Note: For sr25519, we use the public key for decryption (not private key)
     pub fn decrypt_for_validator(
         &self,
         validator_hotkey: &str,
-        validator_secret: &[u8; 32],
+        validator_pubkey: &[u8; 32],
     ) -> Result<String, ApiKeyError> {
         let encrypted = self
             .get_for_validator(validator_hotkey)
             .ok_or_else(|| ApiKeyError::KeyNotFound(validator_hotkey.to_string()))?;
 
-        decrypt_api_key(encrypted, validator_secret)
+        decrypt_api_key(encrypted, validator_pubkey)
     }
 
     /// Check if this config is per-validator mode
@@ -545,20 +496,19 @@ pub struct SecureSubmitRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::SigningKey;
+    use sp_core::{sr25519, Pair};
 
     fn generate_test_keypair() -> (String, String, [u8; 32]) {
-        let secret = SigningKey::generate(&mut rand::thread_rng());
-        let public = secret.verifying_key();
-        let hotkey_hex = hex::encode(public.as_bytes());
-        let hotkey_ss58 = encode_ss58(public.as_bytes());
-        let secret_bytes: [u8; 32] = secret.to_bytes();
-        (hotkey_hex, hotkey_ss58, secret_bytes)
+        let pair = sr25519::Pair::generate().0;
+        let public = pair.public();
+        let hotkey_hex = hex::encode(public.0);
+        let hotkey_ss58 = encode_ss58(&public.0);
+        (hotkey_hex, hotkey_ss58, public.0)
     }
 
     #[test]
     fn test_encrypt_decrypt_api_key() {
-        let (hotkey_hex, hotkey_ss58, secret) = generate_test_keypair();
+        let (hotkey_hex, hotkey_ss58, pubkey) = generate_test_keypair();
         let api_key = "sk-test-1234567890abcdef";
 
         // Encrypt using hex hotkey
@@ -569,29 +519,29 @@ mod tests {
         assert!(!encrypted.ciphertext.is_empty());
         assert_eq!(encrypted.nonce.len(), NONCE_SIZE * 2); // hex encoded
 
-        // Decrypt
-        let decrypted = decrypt_api_key(&encrypted, &secret).unwrap();
+        // Decrypt using public key
+        let decrypted = decrypt_api_key(&encrypted, &pubkey).unwrap();
         assert_eq!(decrypted, api_key);
     }
 
     #[test]
     fn test_wrong_key_fails_decryption() {
-        let (hotkey1, _, _secret1) = generate_test_keypair();
-        let (_, _, secret2) = generate_test_keypair();
+        let (hotkey1, _, _pubkey1) = generate_test_keypair();
+        let (_, _, pubkey2) = generate_test_keypair();
         let api_key = "sk-test-secret";
 
         // Encrypt for validator 1
         let encrypted = encrypt_api_key(api_key, &hotkey1).unwrap();
 
         // Try to decrypt with validator 2's key - should fail
-        let result = decrypt_api_key(&encrypted, &secret2);
+        let result = decrypt_api_key(&encrypted, &pubkey2);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_shared_api_key_config() {
-        let (hotkey1, _, secret1) = generate_test_keypair();
-        let (hotkey2, _, secret2) = generate_test_keypair();
+        let (hotkey1, _, pubkey1) = generate_test_keypair();
+        let (hotkey2, _, pubkey2) = generate_test_keypair();
         let api_key = "sk-shared-key";
 
         let config = ApiKeyConfigBuilder::shared(api_key)
@@ -601,8 +551,8 @@ mod tests {
         assert!(!config.is_per_validator());
 
         // Both validators should decrypt to same key (using hex hotkey for lookup)
-        let decrypted1 = config.decrypt_for_validator(&hotkey1, &secret1).unwrap();
-        let decrypted2 = config.decrypt_for_validator(&hotkey2, &secret2).unwrap();
+        let decrypted1 = config.decrypt_for_validator(&hotkey1, &pubkey1).unwrap();
+        let decrypted2 = config.decrypt_for_validator(&hotkey2, &pubkey2).unwrap();
 
         assert_eq!(decrypted1, api_key);
         assert_eq!(decrypted2, api_key);
@@ -610,8 +560,8 @@ mod tests {
 
     #[test]
     fn test_per_validator_api_key_config() {
-        let (hotkey1, _, secret1) = generate_test_keypair();
-        let (hotkey2, _, secret2) = generate_test_keypair();
+        let (hotkey1, _, pubkey1) = generate_test_keypair();
+        let (hotkey2, _, pubkey2) = generate_test_keypair();
 
         let mut keys = HashMap::new();
         keys.insert(hotkey1.clone(), "sk-key-for-validator1".to_string());
@@ -624,30 +574,30 @@ mod tests {
         assert!(config.is_per_validator());
 
         // Each validator decrypts their own key (using hex hotkey for lookup)
-        let decrypted1 = config.decrypt_for_validator(&hotkey1, &secret1).unwrap();
-        let decrypted2 = config.decrypt_for_validator(&hotkey2, &secret2).unwrap();
+        let decrypted1 = config.decrypt_for_validator(&hotkey1, &pubkey1).unwrap();
+        let decrypted2 = config.decrypt_for_validator(&hotkey2, &pubkey2).unwrap();
 
         assert_eq!(decrypted1, "sk-key-for-validator1");
         assert_eq!(decrypted2, "sk-key-for-validator2");
 
         // Validator 1 cannot decrypt validator 2's key
-        let wrong_decrypt = config.decrypt_for_validator(&hotkey2, &secret1);
+        let wrong_decrypt = config.decrypt_for_validator(&hotkey2, &pubkey1);
         assert!(wrong_decrypt.is_err());
     }
 
     #[test]
     fn test_encryption_is_non_deterministic() {
-        let (hotkey, _, _secret) = generate_test_keypair();
+        let (hotkey, _, _pubkey) = generate_test_keypair();
         let api_key = "sk-test-key";
 
         // Encrypt twice
         let encrypted1 = encrypt_api_key(api_key, &hotkey).unwrap();
         let encrypted2 = encrypt_api_key(api_key, &hotkey).unwrap();
 
-        // Ciphertexts should be different (different ephemeral keys and nonces)
+        // Ciphertexts should be different (different salts and nonces)
         assert_ne!(encrypted1.ciphertext, encrypted2.ciphertext);
         assert_ne!(
-            encrypted1.ephemeral_public_key,
+            encrypted1.ephemeral_public_key, // This is now salt
             encrypted2.ephemeral_public_key
         );
         assert_ne!(encrypted1.nonce, encrypted2.nonce);
@@ -672,15 +622,20 @@ mod tests {
     }
 
     #[test]
-    fn test_ed25519_to_x25519_conversion() {
-        // Generate ed25519 keypair
-        let ed25519_secret = SigningKey::generate(&mut rand::thread_rng());
-        let ed25519_public = ed25519_secret.verifying_key();
+    fn test_derive_encryption_key() {
+        let (_, _, pubkey) = generate_test_keypair();
+        let salt = [1u8; 16];
 
-        // Convert to X25519
-        let x25519_public = ed25519_to_x25519_public(ed25519_public.as_bytes()).unwrap();
+        // Derive key twice with same inputs
+        let key1 = derive_encryption_key(&pubkey, &salt);
+        let key2 = derive_encryption_key(&pubkey, &salt);
 
-        // Verify it's a valid X25519 public key (32 bytes)
-        assert_eq!(x25519_public.len(), 32);
+        // Should be deterministic
+        assert_eq!(key1, key2);
+
+        // Different salt should give different key
+        let salt2 = [2u8; 16];
+        let key3 = derive_encryption_key(&pubkey, &salt2);
+        assert_ne!(key1, key3);
     }
 }

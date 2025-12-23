@@ -2980,43 +2980,28 @@ fn verify_owner_signature(
         }
     };
 
-    // Use ed25519_dalek for verification
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    // Use sr25519 for verification (Substrate/Bittensor standard)
+    use sp_core::{sr25519, Pair};
 
-    let verifying_key = match VerifyingKey::from_bytes(&public_key_bytes) {
-        Ok(k) => k,
-        Err(e) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(SubnetControlResponse {
-                    success: false,
-                    enabled: false,
-                    message: "Invalid public key".to_string(),
-                    error: Some(format!("Failed to parse public key: {}", e)),
-                }),
-            ));
-        }
-    };
+    let public = sr25519::Public::from_raw(public_key_bytes);
 
-    let signature = match Signature::from_slice(&signature_bytes) {
-        Ok(s) => s,
-        Err(e) => {
+    let sig_bytes: [u8; 64] = match signature_bytes.try_into() {
+        Ok(b) => b,
+        Err(_) => {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(SubnetControlResponse {
                     success: false,
                     enabled: false,
                     message: "Invalid signature format".to_string(),
-                    error: Some(format!("Signature parse error: {}", e)),
+                    error: Some("Signature must be 64 bytes".to_string()),
                 }),
             ));
         }
     };
+    let signature = sr25519::Signature::from_raw(sig_bytes);
 
-    if verifying_key
-        .verify(message.as_bytes(), &signature)
-        .is_err()
-    {
+    if !sr25519::Pair::verify(&signature, message.as_bytes(), &public) {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(SubnetControlResponse {

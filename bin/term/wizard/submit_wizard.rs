@@ -3,14 +3,15 @@
 use anyhow::Result;
 use console::{style, Term};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
-use ed25519_dalek::SigningKey;
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
+use sp_core::{sr25519, Pair};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use term_challenge::{
-    encode_ss58, ApiKeyConfig, ApiKeyConfigBuilder, PythonWhitelist, WhitelistConfig,
+    encode_ss58, ApiKeyConfig, ApiKeyConfigBuilder, EncryptedApiKey, PythonWhitelist,
+    WhitelistConfig,
 };
 
 pub async fn run_submit_wizard(rpc_url: &str) -> Result<()> {
@@ -199,7 +200,7 @@ fn select_agent_file() -> Result<PathBuf> {
     }
 }
 
-fn enter_miner_key() -> Result<(SigningKey, String)> {
+fn enter_miner_key() -> Result<(sr25519::Pair, String)> {
     println!("  {}", style("Step 2: Enter Miner Key").bold());
     println!("  {}", style("(64-char hex or 12+ word mnemonic)").dim());
     println!();
@@ -211,33 +212,31 @@ fn enter_miner_key() -> Result<(SigningKey, String)> {
     parse_miner_key(&key)
 }
 
-fn parse_miner_key(key: &str) -> Result<(SigningKey, String)> {
-    let secret_bytes: [u8; 32];
+fn parse_miner_key(key: &str) -> Result<(sr25519::Pair, String)> {
+    let pair: sr25519::Pair;
 
     if key.len() == 64 {
         let bytes = hex::decode(key)?;
         if bytes.len() == 32 {
-            secret_bytes = bytes
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("Invalid length"))?;
+            let mut seed = [0u8; 32];
+            seed.copy_from_slice(&bytes);
+            pair = sr25519::Pair::from_seed(&seed);
         } else {
             return Err(anyhow::anyhow!("Invalid hex key length"));
         }
     } else if key.split_whitespace().count() >= 12 {
-        let mut hasher = Sha256::new();
-        hasher.update(key.as_bytes());
-        let hash = hasher.finalize();
-        secret_bytes = hash.into();
+        pair = sr25519::Pair::from_phrase(key, None)
+            .map_err(|e| anyhow::anyhow!("Invalid mnemonic: {:?}", e))?
+            .0;
     } else {
         return Err(anyhow::anyhow!("Invalid key format"));
     }
 
-    let signing_key = SigningKey::from_bytes(&secret_bytes);
-    let public_key = signing_key.verifying_key();
-    let pubkey_bytes: [u8; 32] = *public_key.as_bytes();
-    let hotkey_ss58 = encode_ss58(&pubkey_bytes);
+    // Get public key and convert to SS58
+    let public = pair.public();
+    let hotkey_ss58 = encode_ss58(&public.0);
 
-    Ok((signing_key, hotkey_ss58))
+    Ok((pair, hotkey_ss58))
 }
 
 fn validate_agent(source: &str) -> Result<()> {
@@ -249,12 +248,39 @@ fn validate_agent(source: &str) -> Result<()> {
         anyhow::bail!("Validation failed:\n  {}", errors);
     }
 
-    // Check for Agent class and step method
-    if !source.contains("class") || (!source.contains("Agent") && !source.contains("agent")) {
-        println!("  {} No Agent class detected", style("⚠").yellow());
+    // Check for term_sdk import
+    let has_sdk_import = source.contains("from term_sdk import")
+        || source.contains("import term_sdk")
+        || source.contains("from termsdk import")
+        || source.contains("import termsdk");
+
+    if !has_sdk_import {
+        println!("  {} No term_sdk import detected", style("⚠").yellow());
     }
-    if !source.contains("def step") && !source.contains("async def step") {
-        println!("  {} No step() method detected", style("⚠").yellow());
+
+    // Check for Agent class (extends Agent base class)
+    let has_agent_class =
+        source.contains("class") && (source.contains("(Agent)") || source.contains("( Agent )"));
+
+    if !has_agent_class {
+        println!(
+            "  {} No Agent class detected (should extend Agent)",
+            style("⚠").yellow()
+        );
+    }
+
+    // Check for solve() method (new SDK format)
+    let has_solve = source.contains("def solve") || source.contains("async def solve");
+
+    if !has_solve {
+        println!("  {} No solve() method detected", style("⚠").yellow());
+    }
+
+    // Check for run() call at the end
+    let has_run = source.contains("run(") && source.contains("if __name__");
+
+    if !has_run {
+        println!("  {} No run() entry point detected", style("⚠").yellow());
     }
 
     Ok(())
@@ -270,10 +296,19 @@ struct ValidatorInfo {
 
 async fn fetch_validators(rpc_url: &str) -> Result<Vec<ValidatorInfo>> {
     let client = reqwest::Client::new();
-    let url = format!("{}/validators", rpc_url);
+
+    // Use JSON-RPC to fetch validators from platform
+    let rpc_endpoint = format!("{}/rpc", rpc_url);
+    let rpc_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "validator_list",
+        "params": [],
+        "id": 1
+    });
 
     let resp = client
-        .get(&url)
+        .post(&rpc_endpoint)
+        .json(&rpc_request)
         .timeout(Duration::from_secs(10))
         .send()
         .await?;
@@ -282,27 +317,55 @@ async fn fetch_validators(rpc_url: &str) -> Result<Vec<ValidatorInfo>> {
         anyhow::bail!("Failed to fetch validators: {}", resp.status());
     }
 
-    #[derive(serde::Deserialize)]
-    struct ValidatorsResponse {
-        validators: Vec<ValidatorData>,
-    }
-    #[derive(serde::Deserialize)]
-    struct ValidatorData {
-        hotkey_ss58: String,
-        hotkey_hex: String,
-        stake: u64,
+    let data: serde_json::Value = resp.json().await?;
+
+    // Check for error
+    if let Some(error) = data.get("error") {
+        anyhow::bail!("RPC error: {}", error);
     }
 
-    let data: ValidatorsResponse = resp.json().await?;
-    Ok(data
-        .validators
-        .into_iter()
-        .map(|v| ValidatorInfo {
-            hotkey: v.hotkey_hex,
-            hotkey_ss58: v.hotkey_ss58,
-            stake: v.stake,
-        })
-        .collect())
+    // Parse validators from result
+    let validators = data["result"]["validators"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Invalid validators response"))?;
+
+    let mut result = Vec::new();
+    for v in validators {
+        let hotkey_hex = v["hotkey"].as_str().unwrap_or("").to_string();
+
+        // Convert hex hotkey to SS58
+        let hotkey_ss58 = if hotkey_hex.len() == 64 {
+            if let Ok(bytes) = hex::decode(&hotkey_hex) {
+                if bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    encode_ss58(&arr)
+                } else {
+                    hotkey_hex.clone()
+                }
+            } else {
+                hotkey_hex.clone()
+            }
+        } else {
+            hotkey_hex.clone()
+        };
+
+        let stake = v["stake"].as_u64().unwrap_or(0);
+
+        if !hotkey_hex.is_empty() {
+            result.push(ValidatorInfo {
+                hotkey: hotkey_hex,
+                hotkey_ss58,
+                stake,
+            });
+        }
+    }
+
+    if result.is_empty() {
+        anyhow::bail!("No validators found");
+    }
+
+    Ok(result)
 }
 
 fn configure_api_keys(validators: &[ValidatorInfo]) -> Result<Option<ApiKeyConfig>> {
@@ -338,16 +401,49 @@ fn configure_api_keys(validators: &[ValidatorInfo]) -> Result<Option<ApiKeyConfi
 
             let validator_hotkeys: Vec<String> =
                 validators.iter().map(|v| v.hotkey.clone()).collect();
-            let config = ApiKeyConfigBuilder::shared(&api_key)
-                .build(&validator_hotkeys)
-                .map_err(|e| anyhow::anyhow!("Failed to encrypt: {}", e))?;
 
-            println!(
-                "  {} API key encrypted for {} validators",
-                style("✓").green(),
-                validators.len()
-            );
-            Ok(Some(config))
+            // Try to encrypt - if it fails (sr25519 keys don't support ed25519->x25519 conversion),
+            // we'll return the API key in a simple format that the server can handle
+            match ApiKeyConfigBuilder::shared(&api_key).build(&validator_hotkeys) {
+                Ok(config) => {
+                    println!(
+                        "  {} API key encrypted for {} validators",
+                        style("✓").green(),
+                        validators.len()
+                    );
+                    Ok(Some(config))
+                }
+                Err(_e) => {
+                    // Encryption failed - validators likely use sr25519 keys (Substrate)
+                    // which cannot be converted to X25519 for encryption.
+                    // We'll create a simple unencrypted config that the server will handle.
+                    println!(
+                        "  {} Using unencrypted API key (sr25519 validators)",
+                        style("⚠").yellow()
+                    );
+
+                    // Create a simple shared config with plaintext key (base64 encoded for transport)
+                    let encoded_key = base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        api_key.as_bytes(),
+                    );
+
+                    // Build a minimal config - server will detect unencrypted format
+                    let encrypted_keys: Vec<EncryptedApiKey> = validators
+                        .iter()
+                        .map(|v| {
+                            EncryptedApiKey {
+                                validator_hotkey: v.hotkey_ss58.clone(),
+                                ephemeral_public_key: "unencrypted".to_string(),
+                                ciphertext: encoded_key.clone(),
+                                nonce: "000000000000000000000000".to_string(), // 12 bytes hex = 24 chars
+                            }
+                        })
+                        .collect();
+
+                    Ok(Some(ApiKeyConfig::Shared { encrypted_keys }))
+                }
+            }
         }
         1 => {
             // Per-validator keys
@@ -375,16 +471,49 @@ fn configure_api_keys(validators: &[ValidatorInfo]) -> Result<Option<ApiKeyConfi
 
             let validator_hotkeys: Vec<String> =
                 validators.iter().map(|v| v.hotkey.clone()).collect();
-            let config = ApiKeyConfigBuilder::per_validator(keys.clone())
-                .build(&validator_hotkeys)
-                .map_err(|e| anyhow::anyhow!("Failed to encrypt: {}", e))?;
 
-            println!(
-                "  {} API keys configured for {} validators",
-                style("✓").green(),
-                keys.len()
-            );
-            Ok(Some(config))
+            // Try to encrypt, fall back to unencrypted if fails
+            match ApiKeyConfigBuilder::per_validator(keys.clone()).build(&validator_hotkeys) {
+                Ok(config) => {
+                    println!(
+                        "  {} API keys configured for {} validators",
+                        style("✓").green(),
+                        keys.len()
+                    );
+                    Ok(Some(config))
+                }
+                Err(_e) => {
+                    println!(
+                        "  {} Using unencrypted API keys (sr25519 validators)",
+                        style("⚠").yellow()
+                    );
+
+                    let mut encrypted_keys = HashMap::new();
+                    for (hotkey, api_key) in keys {
+                        let encoded_key = base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            api_key.as_bytes(),
+                        );
+                        let hotkey_ss58 = validators
+                            .iter()
+                            .find(|v| v.hotkey == hotkey)
+                            .map(|v| v.hotkey_ss58.clone())
+                            .unwrap_or(hotkey.clone());
+
+                        encrypted_keys.insert(
+                            hotkey.clone(),
+                            EncryptedApiKey {
+                                validator_hotkey: hotkey_ss58,
+                                ephemeral_public_key: "unencrypted".to_string(),
+                                ciphertext: encoded_key,
+                                nonce: "000000000000000000000000".to_string(),
+                            },
+                        );
+                    }
+
+                    Ok(Some(ApiKeyConfig::PerValidator { encrypted_keys }))
+                }
+            }
         }
         _ => Ok(None),
     }
@@ -416,7 +545,7 @@ fn print_review(
 async fn submit_agent(
     rpc_url: &str,
     source: &str,
-    signing_key: &SigningKey,
+    signing_key: &sr25519::Pair,
     miner_hotkey: &str,
     agent_name: &str,
     api_keys: Option<ApiKeyConfig>,
@@ -431,10 +560,9 @@ async fn submit_agent(
     pb.set_message("Signing submission...");
     pb.enable_steady_tick(Duration::from_millis(80));
 
-    // Sign source code
-    use ed25519_dalek::Signer;
+    // Sign source code with sr25519
     let signature = signing_key.sign(source.as_bytes());
-    let signature_hex = hex::encode(signature.to_bytes());
+    let signature_hex = hex::encode(signature.0);
 
     pb.set_message("Submitting to network...");
 

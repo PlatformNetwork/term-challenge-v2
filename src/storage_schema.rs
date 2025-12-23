@@ -15,7 +15,6 @@
 //! 3. Content hash verified after data received
 //! 4. If mismatch → Relay attack detected → Reject
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use parking_lot::RwLock;
 use platform_challenge_sdk::storage_schema::{
     ChallengeSchema, ClassBuilder, ClassValidation, DataClass, Field, FieldType, GlobalRules,
@@ -25,6 +24,7 @@ use platform_challenge_sdk::storage_schema::{
 use platform_core::Keypair;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sp_core::{sr25519, Pair};
 use std::collections::{HashMap, HashSet};
 
 /// Challenge ID
@@ -360,33 +360,29 @@ impl SchemaValidator for TermChallengeValidator {
             }
         };
 
-        // Create verifying key from public key bytes
-        let verifying_key = match VerifyingKey::from_bytes(&pubkey_bytes) {
-            Ok(key) => key,
-            Err(e) => {
-                tracing::debug!("Invalid public key: {}", e);
+        // Create sr25519 public key from bytes
+        let public = sr25519::Public::from_raw(pubkey_bytes);
+
+        // Parse signature (64 bytes for sr25519)
+        let sig_bytes: [u8; 64] = match request.signature.as_slice().try_into() {
+            Ok(b) => b,
+            Err(_) => {
+                tracing::debug!("Invalid signature length");
                 return false;
             }
         };
-
-        // Parse signature
-        let mut sig_bytes = [0u8; 64];
-        sig_bytes.copy_from_slice(&request.signature);
-        let signature = Signature::from_bytes(&sig_bytes);
+        let signature = sr25519::Signature::from_raw(sig_bytes);
 
         // Compute what should have been signed: SHA256(content_hash || hotkey || epoch)
         let sign_payload = request.compute_sign_payload();
 
-        // Verify signature
-        match verifying_key.verify(&sign_payload, &signature) {
-            Ok(()) => {
-                tracing::debug!("Signature verified for {}", request.submitter_hotkey);
-                true
-            }
-            Err(e) => {
-                tracing::debug!("Signature verification failed: {}", e);
-                false
-            }
+        // Verify signature using sr25519
+        if sr25519::Pair::verify(&signature, sign_payload, &public) {
+            tracing::debug!("Signature verified for {}", request.submitter_hotkey);
+            true
+        } else {
+            tracing::debug!("Signature verification failed");
+            false
         }
     }
 

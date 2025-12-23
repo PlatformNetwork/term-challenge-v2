@@ -172,7 +172,7 @@ struct ValidatorResult {
 
 async fn fetch_status(rpc_url: &str, hash: &str) -> Result<AgentStatus> {
     let client = reqwest::Client::new();
-    let url = format!("{}/challenge/term-bench/agent/{}", rpc_url, hash);
+    let url = format!("{}/challenge/term-challenge/agent/{}", rpc_url, hash);
 
     match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => {
