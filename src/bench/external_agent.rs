@@ -33,7 +33,7 @@ use super::runner::Agent;
 use super::session::{AgentResponse, TmuxSession};
 
 /// Base image for agents (must have SDKs installed)
-const AGENT_BASE_IMAGE: &str = "term-challenge:latest";
+const AGENT_BASE_IMAGE: &str = "ghcr.io/platformnetwork/term-challenge:latest";
 
 /// HTTP port for agent communication
 const AGENT_HTTP_PORT: u16 = 8765;
