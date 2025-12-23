@@ -94,6 +94,8 @@ pub struct RpcState {
     pub code_visibility: Arc<CodeVisibilityManager>,
     /// Metagraph cache - verifies miner registration on subnet
     pub metagraph_cache: Arc<crate::metagraph_cache::MetagraphCache>,
+    /// LLM Review manager for code review before evaluation
+    pub llm_review: Arc<crate::llm_review::LlmReviewManager>,
 }
 
 /// Term Challenge RPC Server
@@ -121,7 +123,7 @@ impl TermChallengeRpc {
 
         // Create code visibility manager with owner as root
         let code_visibility = Arc::new(CodeVisibilityManager::new(
-            owner_hotkey,
+            owner_hotkey.clone(),
             VisibilityConfig::default(),
         ));
 
@@ -132,6 +134,12 @@ impl TermChallengeRpc {
 
         // Start background refresh for metagraph cache
         metagraph_cache.clone().start_background_refresh();
+
+        // Create LLM review manager for code review before evaluation
+        let llm_review = Arc::new(crate::llm_review::LlmReviewManager::new(
+            crate::llm_review::LlmConfig::default(),
+            owner_hotkey.clone(),
+        ));
 
         Self {
             config,
@@ -148,6 +156,7 @@ impl TermChallengeRpc {
                 current_epoch: std::sync::atomic::AtomicU64::new(0),
                 code_visibility,
                 metagraph_cache,
+                llm_review,
             }),
         }
     }
@@ -533,6 +542,9 @@ async fn submit_agent(
                     &agent_hash[..16.min(agent_hash.len())]
                 );
 
+                // Clone llm_review for the async block
+                let llm_review = state.llm_review.clone();
+
                 // Spawn evaluation in background
                 tokio::spawn(async move {
                     run_evaluation_with_progress(
@@ -546,6 +558,7 @@ async fn submit_agent(
                         config,
                         Some(handler),
                         chain_storage,
+                        Some(llm_review),
                     )
                     .await;
                 });
@@ -1274,6 +1287,8 @@ async fn trigger_evaluation(
         .map(|pkg| pkg.source_code.clone())
         .unwrap_or_else(|| "# No source code available".to_string());
 
+    let llm_review = state.llm_review.clone();
+
     tokio::spawn(async move {
         run_evaluation_with_progress(
             eval_id,
@@ -1286,6 +1301,7 @@ async fn trigger_evaluation(
             challenge_config,
             Some(handler),
             chain_storage,
+            Some(llm_review),
         )
         .await;
     });
@@ -1317,9 +1333,82 @@ async fn run_evaluation_with_progress(
     config: crate::config::ChallengeConfig,
     handler: Option<Arc<crate::agent_submission::AgentSubmissionHandler>>,
     chain_storage: Arc<crate::chain_storage::ChainStorage>,
+    llm_review: Option<Arc<crate::llm_review::LlmReviewManager>>,
 ) {
     use crate::task::{Task, TaskRegistry};
     use crate::task_execution::{EvaluationStatus, TaskExecutionState, TaskStatus};
+
+    info!(
+        "Starting evaluation for agent {}",
+        &agent_hash[..16.min(agent_hash.len())]
+    );
+
+    // Step 1: LLM Review (if enabled)
+    if let Some(ref llm_mgr) = llm_review {
+        info!(
+            "Running LLM code review for agent {}",
+            &agent_hash[..16.min(agent_hash.len())]
+        );
+
+        // Update progress - LLM review starting (status stays Running)
+
+        match llm_mgr.review_code(&agent_hash, &source_code).await {
+            Ok(review_result) => {
+                if review_result.approved {
+                    info!(
+                        "LLM review PASSED for agent {}",
+                        &agent_hash[..16.min(agent_hash.len())]
+                    );
+                } else {
+                    warn!(
+                        "LLM review FAILED for agent {} - queuing for manual review. Reason: {}",
+                        &agent_hash[..16.min(agent_hash.len())],
+                        review_result.reason
+                    );
+
+                    // Queue for manual review
+                    llm_mgr.queue_manual_review(
+                        &agent_hash,
+                        &miner_hotkey,
+                        &source_code,
+                        crate::llm_review::AggregatedReview {
+                            agent_hash: agent_hash.clone(),
+                            total_reviews: 1,
+                            approvals: 0,
+                            rejections: 1,
+                            approval_rate: 0.0,
+                            consensus_reached: true,
+                            final_approved: false,
+                            reviews: vec![],
+                            aggregated_at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs(),
+                        },
+                    );
+
+                    // Update progress - pending manual review
+                    update_progress_failed(
+                        &progress_store,
+                        &evaluation_id,
+                        &format!(
+                            "LLM review failed - pending manual review. Reason: {}",
+                            review_result.reason
+                        ),
+                    );
+                    return;
+                }
+            }
+            Err(e) => {
+                // LLM review error - log but continue with evaluation
+                warn!(
+                    "LLM review error for agent {} (continuing with evaluation): {}",
+                    &agent_hash[..16.min(agent_hash.len())],
+                    e
+                );
+            }
+        }
+    }
 
     info!(
         "Starting Docker evaluation for agent {}",
@@ -2381,7 +2470,7 @@ async fn set_llm_enabled(
     }
 }
 
-/// Get pending manual reviews
+/// Get pending manual reviews (from LLM review failures)
 async fn get_pending_manual_reviews(
     State(state): State<Arc<RpcState>>,
     headers: HeaderMap,
@@ -2394,13 +2483,46 @@ async fn get_pending_manual_reviews(
         );
     }
 
-    let reviews = state.sudo_controller.get_pending_reviews();
+    // Get reviews from LLM review manager
+    let llm_reviews = state.llm_review.get_pending_reviews();
+    // Also get reviews from sudo controller (legacy)
+    let sudo_reviews = state.sudo_controller.get_pending_reviews();
+
+    // Combine reviews, preferring LLM reviews
+    let mut all_reviews: Vec<serde_json::Value> = llm_reviews
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "agent_hash": r.agent_hash,
+                "miner_hotkey": r.miner_hotkey,
+                "status": format!("{:?}", r.status),
+                "created_at": r.created_at,
+                "approvals": r.aggregated_review.approvals,
+                "rejections": r.aggregated_review.rejections,
+                "source": "llm_review"
+            })
+        })
+        .collect();
+
+    // Add sudo reviews that aren't duplicates
+    for r in sudo_reviews {
+        if !all_reviews.iter().any(|v| v["agent_hash"] == r.agent_hash) {
+            all_reviews.push(serde_json::json!({
+                "agent_hash": r.agent_hash,
+                "miner_hotkey": r.miner_hotkey,
+                "status": format!("{:?}", r.status),
+                "submitted_at": r.submitted_at.to_rfc3339(),
+                "source": "sudo_controller"
+            }));
+        }
+    }
+
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "success": true,
-            "count": reviews.len(),
-            "reviews": reviews
+            "count": all_reviews.len(),
+            "reviews": all_reviews
         })),
     )
 }
@@ -2452,7 +2574,7 @@ pub struct ManualReviewRequest {
     pub reason: Option<String>,
 }
 
-/// Approve an agent manually
+/// Approve an agent manually - triggers evaluation after approval
 async fn approve_agent(
     State(state): State<Arc<RpcState>>,
     headers: HeaderMap,
@@ -2469,6 +2591,98 @@ async fn approve_agent(
         }
     };
 
+    let current_epoch = state
+        .current_epoch
+        .load(std::sync::atomic::Ordering::Relaxed);
+
+    // First check LLM review queue
+    if let Some(review) = state.llm_review.process_manual_review(
+        &agent_hash,
+        true,
+        &sudo_key,
+        req.notes.clone(),
+        current_epoch,
+    ) {
+        info!(
+            "Agent {} approved via manual review - triggering evaluation",
+            &agent_hash[..16.min(agent_hash.len())]
+        );
+
+        // Trigger evaluation for the approved agent
+        let evaluation_id = uuid::Uuid::new_v4().to_string();
+        let validator_hotkey =
+            std::env::var("VALIDATOR_HOTKEY").unwrap_or_else(|_| "manual-review".to_string());
+
+        // Create initial progress entry
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let initial_progress = crate::task_execution::EvaluationProgress {
+            evaluation_id: evaluation_id.clone(),
+            agent_hash: agent_hash.clone(),
+            validator_hotkey: validator_hotkey.clone(),
+            total_tasks: 0,
+            completed_tasks: 0,
+            passed_tasks: 0,
+            failed_tasks: 0,
+            current_task_index: 0,
+            current_task_id: None,
+            progress_percent: 0.0,
+            total_cost_usd: 0.0,
+            cost_limit_usd: 10.0,
+            cost_limit_reached: false,
+            started_at: now,
+            estimated_completion: None,
+            tasks: std::collections::HashMap::new(),
+            status: crate::task_execution::EvaluationStatus::Running,
+            final_score: None,
+        };
+        state.progress_store.start_evaluation(initial_progress);
+
+        // Clone for async block
+        let eval_id = evaluation_id.clone();
+        let agent_h = agent_hash.clone();
+        let miner_h = review.miner_hotkey.clone();
+        let validator_h = validator_hotkey.clone();
+        let source_code = review.source_code.clone();
+        let progress_store = state.progress_store.clone();
+        let config = state.challenge_config.read().clone();
+        let handler = state.handler.clone();
+        let chain_storage = state.chain_storage.clone();
+
+        // Spawn evaluation (no LLM review since already approved)
+        tokio::spawn(async move {
+            run_evaluation_with_progress(
+                eval_id,
+                agent_h,
+                miner_h,
+                validator_h,
+                source_code,
+                None,
+                progress_store,
+                config,
+                Some(handler),
+                chain_storage,
+                None, // Skip LLM review - already approved
+            )
+            .await;
+        });
+
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "success": true,
+                "agent_hash": agent_hash,
+                "miner_hotkey": review.miner_hotkey,
+                "status": "approved",
+                "evaluation_id": evaluation_id,
+                "message": "Agent approved - evaluation started"
+            })),
+        );
+    }
+
+    // Fall back to sudo controller
     match state
         .sudo_controller
         .approve_agent_manually(&sudo_key, &agent_hash, req.notes)
@@ -2514,6 +2728,32 @@ async fn reject_agent(
         .current_epoch
         .load(std::sync::atomic::Ordering::Relaxed);
 
+    // First check LLM review queue
+    if let Some(review) = state.llm_review.process_manual_review(
+        &agent_hash,
+        false,
+        &sudo_key,
+        Some(reason.clone()),
+        current_epoch,
+    ) {
+        info!(
+            "Agent {} rejected via manual review - miner blocked",
+            &agent_hash[..16.min(agent_hash.len())]
+        );
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "success": true,
+                "agent_hash": agent_hash,
+                "miner_hotkey": review.miner_hotkey,
+                "status": "rejected",
+                "reason": reason,
+                "blocked_until_epoch": current_epoch + 3
+            })),
+        );
+    }
+
+    // Fall back to sudo controller
     match state.sudo_controller.reject_agent_manually(
         &sudo_key,
         &agent_hash,
