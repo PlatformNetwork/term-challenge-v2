@@ -24,7 +24,7 @@ jobs:
   # Build job - runs first and saves cache
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: platform-runner
     steps:
       - name: Free disk space
         run: |
@@ -47,7 +47,7 @@ jobs:
   # Clippy - runs after build to use cache
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: platform-runner
     needs: build
     steps:
       - name: Free disk space
@@ -79,7 +79,7 @@ jobs:
   # Test job - runs after build to use cache
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: platform-runner
     needs: build
     permissions:
       contents: write
@@ -140,7 +140,7 @@ jobs:
   # Docker build - after tests pass
   docker:
     name: Build & Push Docker
-    runs-on: ubuntu-latest
+    runs-on: platform-runner
     needs: [clippy, test]
     permissions:
       contents: read
@@ -190,7 +190,7 @@ jobs:
   # Release - only on tags
   release:
     name: Release
-    runs-on: ubuntu-latest
+    runs-on: platform-runner
     needs: [clippy, test, docker]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
