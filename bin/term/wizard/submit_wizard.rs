@@ -411,10 +411,51 @@ fn configure_api_keys(validators: &[ValidatorInfo]) -> Result<Option<ApiKeyConfi
     );
     println!();
 
+    // First, select provider
+    let providers = vec![
+        "OpenRouter (recommended - multi-model gateway)",
+        "Chutes (fast inference)",
+        "OpenAI (GPT models)",
+        "Anthropic (Claude models)",
+        "Grok/xAI (Grok models)",
+        "Skip (no API key)",
+    ];
+
+    let provider_selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("  Select LLM provider")
+        .items(&providers)
+        .default(0)
+        .interact()?;
+
+    if provider_selection == 5 {
+        return Ok(None);
+    }
+
+    let (provider_name, env_var_hint) = match provider_selection {
+        0 => ("OpenRouter", "OPENROUTER_API_KEY"),
+        1 => ("Chutes", "CHUTES_API_KEY"),
+        2 => ("OpenAI", "OPENAI_API_KEY"),
+        3 => ("Anthropic", "ANTHROPIC_API_KEY"),
+        4 => ("Grok/xAI", "GROK_API_KEY"),
+        _ => return Ok(None),
+    };
+
+    println!();
+    println!(
+        "  {} Get your API key from the provider's website",
+        style("ℹ").blue()
+    );
+    println!(
+        "  {} Or set {} environment variable",
+        style("ℹ").blue(),
+        style(env_var_hint).yellow()
+    );
+    println!();
+
     let options = vec![
         "Shared key (same key for all validators)",
         "Per-validator keys (different key per validator)",
-        "Skip (no API key)",
+        "Go back",
     ];
 
     let selection = Select::with_theme(&ColorfulTheme::default())
@@ -426,8 +467,9 @@ fn configure_api_keys(validators: &[ValidatorInfo]) -> Result<Option<ApiKeyConfi
     match selection {
         0 => {
             // Shared key
+            let prompt = format!("  Enter {} API key", provider_name);
             let api_key: String = Password::with_theme(&ColorfulTheme::default())
-                .with_prompt("  Enter LLM API key")
+                .with_prompt(&prompt)
                 .interact()?;
 
             if api_key.is_empty() {
@@ -549,6 +591,10 @@ fn configure_api_keys(validators: &[ValidatorInfo]) -> Result<Option<ApiKeyConfi
                     Ok(Some(ApiKeyConfig::PerValidator { encrypted_keys }))
                 }
             }
+        }
+        2 => {
+            // Go back - recursively call to restart provider selection
+            configure_api_keys(validators)
         }
         _ => Ok(None),
     }

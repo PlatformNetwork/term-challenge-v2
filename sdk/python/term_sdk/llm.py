@@ -118,58 +118,111 @@ PROVIDERS = {
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "env_key": "OPENROUTER_API_KEY",
+        "description": "OpenRouter - Multi-model gateway",
     },
     "chutes": {
         "url": "https://llm.chutes.ai/v1/chat/completions",
         "env_key": "CHUTES_API_KEY",
+        "description": "Chutes - Fast inference",
+    },
+    "openai": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "env_key": "OPENAI_API_KEY",
+        "description": "OpenAI - GPT models",
+    },
+    "anthropic": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "env_key": "ANTHROPIC_API_KEY",
+        "description": "Anthropic - Claude models",
+        "is_anthropic": True,
+    },
+    "grok": {
+        "url": "https://api.x.ai/v1/chat/completions",
+        "env_key": "GROK_API_KEY",
+        "description": "xAI - Grok models",
     },
 }
 
 # Model pricing per 1M tokens (input, output)
 PRICING = {
-    "z-ai/glm-4.5": (0.25, 1.25),
-    "claude-3-sonnet": (3.0, 15.0),
-    "z-ai/glm-4.5": (15.0, 75.0),
-    "claude-3.5-sonnet": (3.0, 15.0),
-    "z-ai/glm-4.5": (5.0, 15.0),
-    "z-ai/glm-4.5-mini": (0.15, 0.6),
+    # OpenAI
+    "gpt-4o": (2.5, 10.0),
+    "gpt-4o-mini": (0.15, 0.6),
     "gpt-4-turbo": (10.0, 30.0),
+    "gpt-4": (30.0, 60.0),
+    "gpt-3.5-turbo": (0.5, 1.5),
+    # Anthropic
+    "claude-3-opus": (15.0, 75.0),
+    "claude-3-sonnet": (3.0, 15.0),
+    "claude-3.5-sonnet": (3.0, 15.0),
+    "claude-3-haiku": (0.25, 1.25),
+    # Grok
+    "grok-2": (2.0, 10.0),
+    "grok-beta": (5.0, 15.0),
+    # Open source
     "llama-3": (0.2, 0.2),
     "mixtral": (0.5, 0.5),
     "qwen": (0.2, 0.2),
+    "glm-4": (0.25, 1.25),
+}
+
+# Default models per provider
+DEFAULT_MODELS = {
+    "openrouter": "anthropic/claude-3.5-sonnet",
+    "chutes": "deepseek-ai/DeepSeek-V3-0324",
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-3-5-sonnet-20241022",
+    "grok": "grok-2-latest",
 }
 
 
 class LLM:
     """
-    LLM client with streaming support.
+    LLM client with streaming support for multiple providers.
     
-    Providers: OpenRouter, Chutes
+    Providers:
+        - openrouter: Multi-model gateway (default)
+        - chutes: Fast inference
+        - openai: GPT models
+        - anthropic: Claude models
+        - grok: xAI Grok models
     
     Args:
-        provider: "openrouter" (default) or "chutes"
+        provider: Provider name (default: "openrouter")
         default_model: Default model if not specified per-call
         temperature: Default sampling temperature
         max_tokens: Default maximum response tokens
         timeout: Request timeout in seconds (default: 300, or LLM_TIMEOUT env var)
     
+    Environment Variables:
+        - OPENROUTER_API_KEY: OpenRouter API key
+        - CHUTES_API_KEY: Chutes API key
+        - OPENAI_API_KEY: OpenAI API key
+        - ANTHROPIC_API_KEY: Anthropic API key
+        - GROK_API_KEY: xAI Grok API key
+        - LLM_API_KEY: Override for any provider
+    
     Example:
         ```python
+        # OpenRouter (default)
         llm = LLM()
+        result = llm.ask("Question", model="anthropic/claude-3.5-sonnet")
         
-        # Regular call
-        result = llm.ask("Question", model="z-ai/glm-4.5")
+        # OpenAI
+        llm = LLM(provider="openai")
+        result = llm.ask("Question", model="gpt-4o-mini")
+        
+        # Anthropic
+        llm = LLM(provider="anthropic")
+        result = llm.ask("Question", model="claude-3-5-sonnet-20241022")
+        
+        # Grok
+        llm = LLM(provider="grok")
+        result = llm.ask("Question", model="grok-2-latest")
         
         # Streaming
-        for chunk in llm.stream("Long question", model="z-ai/glm-4.5"):
+        for chunk in llm.stream("Long question"):
             print(chunk, end="", flush=True)
-        
-        # Stream with early stop
-        result = llm.ask_stream(
-            "Task",
-            model="z-ai/glm-4.5",
-            on_chunk=lambda text: "STOP" not in text
-        )
         ```
     """
     
@@ -182,7 +235,6 @@ class LLM:
         timeout: Optional[int] = None,
     ):
         self.provider = provider
-        self.default_model = default_model
         self.temperature = temperature
         self.max_tokens = max_tokens
         # Timeout: user param > env var > default 300s
@@ -199,6 +251,10 @@ class LLM:
         config = PROVIDERS[provider]
         self._api_url = os.environ.get("LLM_API_URL", config["url"])
         self._api_key = os.environ.get("LLM_API_KEY") or os.environ.get(config["env_key"], "")
+        self._is_anthropic = config.get("is_anthropic", False)
+        
+        # Set default model (user > provider default)
+        self.default_model = default_model or DEFAULT_MODELS.get(provider)
         
         if not self._api_key:
             _log(f"Warning: LLM_API_KEY or {config['env_key']} not set")
@@ -327,6 +383,10 @@ class LLM:
         
         start = time.time()
         
+        # Handle Anthropic's different API format
+        if self._is_anthropic:
+            return self._chat_anthropic(messages, model, tools, temp, tokens, start)
+        
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -352,6 +412,102 @@ class LLM:
         data = response.json()
         
         return self._parse_response(data, model, start)
+    
+    def _chat_anthropic(
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        tools: Optional[List[Tool]],
+        temperature: float,
+        max_tokens: int,
+        start: float,
+    ) -> LLMResponse:
+        """Handle Anthropic's different API format."""
+        # Extract system message if present
+        system_content = None
+        filtered_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_content = msg.get("content", "")
+            else:
+                filtered_messages.append(msg)
+        
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": filtered_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        
+        if system_content:
+            payload["system"] = system_content
+        
+        if tools:
+            payload["tools"] = [self._convert_tool_to_anthropic(t) for t in tools]
+        
+        headers = {
+            "x-api-key": self._api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        
+        response = self._client.post(self._api_url, headers=headers, json=payload)
+        
+        if not response.is_success:
+            self._handle_api_error(response, model)
+        
+        data = response.json()
+        
+        return self._parse_anthropic_response(data, model, start)
+    
+    def _convert_tool_to_anthropic(self, tool: Tool) -> Dict[str, Any]:
+        """Convert OpenAI tool format to Anthropic format."""
+        return {
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": tool.parameters,
+        }
+    
+    def _parse_anthropic_response(self, data: Dict, model: str, start: float) -> LLMResponse:
+        """Parse Anthropic API response."""
+        content = data.get("content", [])
+        text = ""
+        function_calls = []
+        
+        for block in content:
+            if block.get("type") == "text":
+                text += block.get("text", "")
+            elif block.get("type") == "tool_use":
+                function_calls.append(FunctionCall(
+                    name=block.get("name", ""),
+                    arguments=block.get("input", {}),
+                    id=block.get("id"),
+                ))
+        
+        usage = data.get("usage", {})
+        prompt_tokens = usage.get("input_tokens", 0)
+        completion_tokens = usage.get("output_tokens", 0)
+        total_tokens = prompt_tokens + completion_tokens
+        
+        cost = self._calculate_cost(model, prompt_tokens, completion_tokens)
+        latency_ms = int((time.time() - start) * 1000)
+        
+        self.total_tokens += total_tokens
+        self.total_cost += cost
+        self.request_count += 1
+        self._update_model_stats(model, total_tokens, cost)
+        
+        _log(f"{model}: {total_tokens} tokens, ${cost:.4f}, {latency_ms}ms")
+        
+        return LLMResponse(
+            text=text,
+            model=model,
+            tokens=total_tokens,
+            cost=cost,
+            latency_ms=latency_ms,
+            function_calls=function_calls,
+            raw=data,
+        )
     
     def chat_stream(
         self,
