@@ -500,8 +500,12 @@ async fn submit_agent(
         mode, validator_count, req.llm_provider
     );
 
-    // Capture LLM provider before consuming req
-    let llm_provider = req.llm_provider.clone();
+    // Capture LLM provider before consuming req (default to openrouter if empty)
+    let llm_provider = if req.llm_provider.trim().is_empty() {
+        "openrouter".to_string()
+    } else {
+        req.llm_provider.clone()
+    };
 
     // Store API keys in submission metadata for later retrieval by validators
     let metadata = Some(serde_json::to_value(&api_keys).unwrap_or(serde_json::Value::Null));

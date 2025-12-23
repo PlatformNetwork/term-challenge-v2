@@ -116,6 +116,7 @@ pub fn encrypt_api_key_x25519(
     // Generate random nonce
     let mut nonce_bytes = [0u8; NONCE_SIZE];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    #[allow(deprecated)]
     let nonce = *Nonce::from_slice(&nonce_bytes);
 
     // Encrypt with ChaCha20-Poly1305
@@ -167,6 +168,7 @@ pub fn decrypt_api_key_x25519(
         .map_err(|e| X25519Error::DecryptionFailed(format!("Invalid nonce: {}", e)))?
         .try_into()
         .map_err(|_| X25519Error::DecryptionFailed("Invalid nonce size".to_string()))?;
+    #[allow(deprecated)]
     let nonce = *Nonce::from_slice(&nonce_bytes);
 
     // Parse ciphertext
