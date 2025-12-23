@@ -224,7 +224,7 @@ impl DockerExecutor {
 
     /// Build the base challenge image
     pub async fn build_base_image(&self, _dockerfile_path: &Path) -> Result<String> {
-        let image_name = "term-challenge/base:latest";
+        let image_name = "ghcr.io/platformnetwork/term-challenge:latest";
 
         // For simplicity, we'll just check if the image exists
         // In production, you'd want to build from the Dockerfile

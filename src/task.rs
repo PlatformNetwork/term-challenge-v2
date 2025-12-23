@@ -96,7 +96,7 @@ pub struct TaskConfig {
 }
 
 fn default_docker_image() -> String {
-    "term-challenge/base:latest".to_string()
+    "ghcr.io/platformnetwork/term-challenge:latest".to_string()
 }
 
 fn default_timeout() -> f64 {
@@ -325,7 +325,7 @@ pytest test_outputs.py -v
             test_timeout_secs: 30.0,
             memory_limit: "2g".to_string(),
             cpu_limit: 1.0,
-            docker_image: "term-challenge/base:latest".to_string(),
+            docker_image: "ghcr.io/platformnetwork/term-challenge:latest".to_string(),
             network_mode: "bridge".to_string(),
             env: vec![],
             test_scripts: vec![],
