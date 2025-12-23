@@ -576,6 +576,6 @@ mod tests {
         );
 
         assert!(orchestrator.uploads_enabled());
-        assert!(orchestrator.validation_enabled());
+        assert!(!orchestrator.validation_enabled()); // Disabled by default
     }
 }

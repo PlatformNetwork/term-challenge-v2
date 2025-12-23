@@ -52,7 +52,7 @@ impl Default for SubnetControlState {
     fn default() -> Self {
         Self {
             uploads_enabled: true,
-            validation_enabled: true,
+            validation_enabled: false, // Disabled by default - owner must enable via sudo
             owner_hotkey: String::new(),
             last_modified: Utc::now(),
             modified_by: String::new(),
@@ -715,7 +715,7 @@ mod tests {
     fn test_subnet_control_default() {
         let controller = SubnetController::new("validator1".to_string());
         assert!(controller.uploads_enabled());
-        assert!(controller.validation_enabled());
+        assert!(!controller.validation_enabled()); // Disabled by default
     }
 
     #[test]
