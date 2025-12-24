@@ -262,8 +262,13 @@ impl ConsensusResult {
         }
 
         // Need 50%+ to agree (consensus validation rule)
-        let required = total_validators / 2 + 1;
-        let consensus_reached = agreeing.len() >= required;
+        // If total_validators is 0 (not synced yet), we cannot reach consensus
+        let consensus_reached = if total_validators == 0 {
+            false // Cannot determine consensus without knowing validator count
+        } else {
+            let required = total_validators / 2 + 1;
+            agreeing.len() >= required
+        };
 
         // Consensus score is average of agreeing validators
         let consensus_score = if consensus_reached {
@@ -623,6 +628,14 @@ impl ChainStorage {
         let total_validators = *self.total_validators.read();
         let epoch = *self.current_epoch.read();
         let block = *self.current_block.read();
+
+        if total_validators == 0 {
+            warn!(
+                "Cannot reach consensus for agent {} - validators not synced (total_validators=0). \
+                 Platform validator needs to call /p2p/validators endpoint.",
+                agent_hash
+            );
+        }
 
         let consensus =
             ConsensusResult::from_votes(agent_hash, agent_votes, total_validators, epoch, block);

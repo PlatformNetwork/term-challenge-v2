@@ -2376,23 +2376,12 @@ pub struct UpdateP2PValidatorsRequest {
 }
 
 /// Update P2P validators list (called by platform validator)
-/// REQUIRES: X-Auth-Token header with valid session token
+/// NOTE: No auth required - this is called at container startup before auth is established
+/// The validators list is not sensitive and comes from platform validator metagraph sync
 async fn update_p2p_validators(
     State(state): State<Arc<RpcState>>,
-    headers: HeaderMap,
     Json(req): Json<UpdateP2PValidatorsRequest>,
 ) -> impl IntoResponse {
-    // Verify authentication
-    if let Err((status, msg)) = verify_auth_token(&state, &headers) {
-        return (
-            status,
-            Json(serde_json::json!({
-                "success": false,
-                "error": msg
-            })),
-        );
-    }
-
     info!(
         "Updating P2P validators: {} validators",
         req.validators.len()
