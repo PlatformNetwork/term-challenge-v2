@@ -2623,22 +2623,8 @@ pub struct OutboxResponse {
 }
 
 /// Get pending P2P messages to broadcast
-/// REQUIRES: X-Auth-Token header with valid session token
-async fn get_p2p_outbox(
-    State(state): State<Arc<RpcState>>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    // Verify authentication
-    if let Err((status, msg)) = verify_auth_token(&state, &headers) {
-        return (
-            status,
-            Json(OutboxResponse {
-                messages: vec![],
-                count: 0,
-            }),
-        );
-    }
-
+/// Called by platform validator on private Docker network - no auth required
+async fn get_p2p_outbox(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
     let messages = state.p2p_broadcaster.take_outbox();
     let count = messages.len();
 
