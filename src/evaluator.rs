@@ -48,10 +48,22 @@ impl TaskEvaluator {
     /// Create a new evaluator
     pub async fn new(max_concurrent: usize) -> Result<Self> {
         let docker = DockerExecutor::new().await?;
+
+        // Cleanup old containers from previous evaluations (>2 hours old)
+        if let Err(e) = docker.cleanup_old_containers(120).await {
+            warn!("Initial container cleanup failed: {}", e);
+        }
+
         Ok(Self {
             docker,
             max_concurrent,
         })
+    }
+
+    /// Cleanup old evaluation containers
+    /// Call this periodically to remove stale containers
+    pub async fn cleanup_old_containers(&self, max_age_minutes: u64) -> Result<(usize, usize)> {
+        self.docker.cleanup_old_containers(max_age_minutes).await
     }
 
     /// Evaluate an agent on a single task
@@ -285,16 +297,32 @@ impl TaskEvaluator {
         }
 
         // Cleanup agent container (no longer needed)
-        agent_container.stop().await.ok();
-        agent_container.remove().await.ok();
+        if let Err(e) = agent_container.stop().await {
+            debug!("Failed to stop agent container: {}", e);
+        }
+        if let Err(e) = agent_container.remove().await {
+            warn!(
+                "Failed to remove agent container {}: {}",
+                agent_container.id(),
+                e
+            );
+        }
 
         // Run the test script in TASK container
         info!("Running test script");
         let test_result = task_container.run_test(&task.test_script).await;
 
         // Cleanup task container
-        task_container.stop().await.ok();
-        task_container.remove().await.ok();
+        if let Err(e) = task_container.stop().await {
+            debug!("Failed to stop task container: {}", e);
+        }
+        if let Err(e) = task_container.remove().await {
+            warn!(
+                "Failed to remove task container {}: {}",
+                task_container.id(),
+                e
+            );
+        }
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
