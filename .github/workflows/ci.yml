@@ -98,10 +98,11 @@ jobs:
           destination_dir: badges
           keep_files: true
 
-  # Docker runs in parallel with Rust jobs (doesn't need Rust build artifacts)
+  # Docker only runs after build, clippy and test pass
   docker:
     name: Docker
     runs-on: platform-runner
+    needs: [build, clippy, test]
     permissions:
       contents: read
       packages: write
