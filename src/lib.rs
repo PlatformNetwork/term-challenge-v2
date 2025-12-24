@@ -1,41 +1,51 @@
 #![allow(dead_code, unused_variables, unused_imports)]
-//! Terminal Benchmark Challenge for Mini-Chain Subnet 100
+//! Terminal Benchmark Challenge for Platform Network
 //!
 //! This challenge evaluates AI agents on terminal-based tasks.
 //! Agents are run in Docker containers and scored based on task completion.
 //!
+//! ## Architecture (Centralized)
+//!
+//! The system uses a centralized API (platform-server) run by the subnet owner:
+//!
+//! ```text
+//! ┌─────────────────┐     ┌──────────────────────┐
+//! │     Miner       │────▶│   Platform Server    │
+//! │   (term CLI)    │     │ (chain.platform.net) │
+//! └─────────────────┘     │                      │
+//!                         │    ┌──────────┐      │
+//! ┌─────────────────┐◀────│    │PostgreSQL│      │
+//! │   Validator 1   │     │    └──────────┘      │
+//! │  (term-server)  │────▶│                      │
+//! └─────────────────┘     └──────────────────────┘
+//!        │
+//!        ▼
+//!   ┌──────────┐
+//!   │  SQLite  │ (local cache)
+//!   └──────────┘
+//! ```
+//!
 //! ## Features
 //!
 //! - **Agent Submission**: Miners submit Python source code with module whitelist
-//! - **Pre-verification**: Rate limiting based on epochs (e.g., 0.5 = 1 agent per 2 epochs)
-//! - **Code Distribution**: Source to top 3 validators + root, obfuscated to others
+//! - **Centralized Evaluation**: Validators receive submissions via WebSocket
+//! - **Local Cache**: SQLite for validator-side caching
 //! - **Secure Execution**: Agents run in isolated Docker containers
-//! - **Scoring**: Based on task completion rate and execution time
-//! - **Real-time Progress**: Track task execution via API
-//!
-//! ## Configuration
-//!
-//! The challenge includes:
-//! - **Module Whitelist**: Allowed Python modules
-//! - **Model Whitelist**: Allowed LLM models (OpenAI, Anthropic)
-//! - **Pricing**: Max cost per task and total evaluation
-//!
-//! ## Root Validator
-//!
-//! The root validator hotkey is: `5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At`
-//! This validator always receives the source code.
+//! - **Real-time Updates**: WebSocket events for all participants
+
+// ============================================================================
+// CORE MODULES (Active)
+// ============================================================================
 
 pub mod agent_queue;
 pub mod agent_registry;
 pub mod agent_submission;
 pub mod bench;
 pub mod blockchain_evaluation;
-pub mod chain_storage;
 pub mod challenge;
 pub mod code_visibility;
 pub mod config;
 pub mod container_backend;
-pub mod distributed_store;
 pub mod docker;
 pub mod emission;
 pub mod encrypted_api_key;
@@ -45,26 +55,69 @@ pub mod evaluator;
 pub mod llm_client;
 pub mod llm_review;
 pub mod metagraph_cache;
-pub mod p2p_bridge;
-pub mod p2p_chain_storage;
-pub mod platform_auth;
-pub mod progress_aggregator;
-pub mod proposal_manager;
 pub mod python_whitelist;
 pub mod reward_decay;
-pub mod rpc;
+// P2P disabled: pub mod rpc;
 pub mod scoring;
-pub mod secure_submission;
-pub mod storage_schema;
-pub mod submission_manager;
+// P2P disabled: pub mod secure_submission;
+// P2P disabled: pub mod storage_schema;
+// P2P disabled: pub mod submission_manager;
 pub mod subnet_control;
 pub mod sudo;
 pub mod task;
 pub mod task_execution;
 pub mod terminal_harness;
 pub mod validator_distribution;
-pub mod weight_calculator;
+// P2P disabled: pub mod weight_calculator;
 pub mod x25519_encryption;
+
+// ============================================================================
+// NEW CENTRALIZED MODULES
+// ============================================================================
+
+/// Compatibility layer for removed P2P dependencies
+pub mod compat;
+
+/// Client for connecting to central API (platform-server)
+pub mod central_client;
+
+/// Local SQLite storage for validators
+pub mod local_storage;
+
+/// Always-on challenge server (per architecture spec)
+pub mod server;
+
+/// Chain storage adapter (now uses central API instead of P2P)
+pub mod chain_storage;
+
+// Re-export compat types for use by other modules
+pub use compat::{
+    AgentInfo as SdkAgentInfo, ChallengeId, EvaluationResult as SdkEvaluationResult,
+    EvaluationsResponseMessage, Hotkey, PartitionStats, WeightAssignment,
+};
+
+// ============================================================================
+// DEPRECATED P2P MODULES (disabled - P2P has been removed)
+//
+// These modules are kept as comments for reference during migration.
+// They depended on: platform-challenge-sdk, platform-core, sled, libp2p
+// which have been removed in favor of the centralized API.
+// ============================================================================
+
+// NOTE: P2P modules have been disabled because their dependencies were removed.
+// - p2p_bridge: Used libp2p for peer-to-peer communication
+// - distributed_store: Used sled for distributed storage
+// - p2p_chain_storage: Used sled for chain state persistence
+// - proposal_manager: Used platform-challenge-sdk for consensus proposals
+// - platform_auth: Used platform-core for P2P authentication
+// - progress_aggregator: Used platform-challenge-sdk for progress tracking
+
+// If you need to reference the old P2P implementation:
+// 1. Check git history for these modules
+// 2. The functionality is now handled by:
+//    - central_client: Connection to platform-server
+//    - local_storage: SQLite caching for validators
+//    - chain_storage: Centralized state via API
 
 pub use agent_queue::{
     AgentQueue, EvalRequest, EvalResult, QueueAgentInfo, QueueConfig, QueueStats,
@@ -97,7 +150,7 @@ pub use container_backend::{
     ContainerBackend, ContainerHandle, DirectDockerBackend, ExecOutput, MountConfig, SandboxConfig,
     SecureBrokerBackend, DEFAULT_BROKER_SOCKET,
 };
-pub use distributed_store::{DistributedStore, StoreError, TERM_BENCH_CHALLENGE_ID};
+// P2P removed: pub use distributed_store::{DistributedStore, StoreError, TERM_BENCH_CHALLENGE_ID};
 pub use docker::{DockerConfig, DockerExecutor};
 pub use emission::{
     AggregatedMinerScore, CompetitionWeights, EmissionAllocation, EmissionConfig, EmissionManager,
@@ -114,26 +167,18 @@ pub use evaluation_pipeline::{
     TaskEvalResult,
 };
 pub use evaluator::{AgentInfo, TaskEvaluator};
-pub use p2p_bridge::{
-    HttpP2PBroadcaster, OutboxMessage, P2PBridgeState, P2PMessageEnvelope, P2PValidatorInfo,
-};
-pub use p2p_chain_storage::{
-    StorageError as P2PStorageError, TermChainStorage, CHALLENGE_ID as P2P_CHALLENGE_ID,
-    MAX_LOG_SIZE as P2P_MAX_LOG_SIZE, MAX_SOURCE_SIZE, MIN_STAKE as P2P_MIN_STAKE,
-};
-pub use progress_aggregator::{AggregatedProgress, ProgressAggregator, ValidatorProgress};
+// P2P removed: pub use p2p_bridge::{...};
+// P2P removed: pub use p2p_chain_storage::{...};
+// P2P removed: pub use progress_aggregator::{...};
 pub use python_whitelist::{ModuleVerification, PythonWhitelist, WhitelistConfig};
 pub use reward_decay::{
     AppliedDecay, CompetitionDecayState, DecayConfig, DecayCurve, DecayEvent, DecayResult,
     DecaySummary, RewardDecayManager, TopAgentState, BURN_UID,
 };
-pub use rpc::{RpcConfig as TermRpcConfig, TermChallengeRpc};
+// P2P disabled: pub use rpc::{RpcConfig as TermRpcConfig, TermChallengeRpc};
 pub use scoring::{AggregateScore, Leaderboard, ScoreCalculator};
-pub use secure_submission::{
-    DecryptedAgent, LocalEvaluation, SecureStatus, SecureSubmissionError, SecureSubmissionHandler,
-    SecureSubmissionStatus, CHALLENGE_ID,
-};
-pub use submission_manager::{ContentRecord, SubmissionState, TermSubmissionManager};
+// P2P disabled: pub use secure_submission::{...};
+// P2P disabled: pub use submission_manager::{...};
 pub use sudo::{
     Competition, CompetitionStatus, CompetitionTask, DynamicLimits, DynamicPricing,
     DynamicWhitelist, SubnetControlStatus, SudoAuditEntry, SudoConfigExport, SudoController,
@@ -151,7 +196,7 @@ pub use task_execution::{
 pub use validator_distribution::{
     CodePackage, DistributionConfig, ValidatorDistributor, ValidatorInfo,
 };
-pub use weight_calculator::TermWeightCalculator;
+// P2P disabled: pub use weight_calculator::TermWeightCalculator;
 
 // Subnet control and evaluation orchestrator
 pub use evaluation_orchestrator::{
