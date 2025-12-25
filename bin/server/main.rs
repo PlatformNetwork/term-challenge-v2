@@ -3,7 +3,7 @@
 //! This binary runs the challenge as an always-on container per the Platform architecture.
 //!
 //! Usage:
-//!   term-server --platform-url http://chain.platform.network:8080 --challenge-id term-bench
+//!   term-server --platform-url https://chain.platform.network --challenge-id term-bench
 //!
 //! Modes:
 //!   Production: Uses terminal-bench 2.0 dataset (89 tasks)
@@ -26,7 +26,11 @@ use tracing::info;
 #[command(about = "Terminal Benchmark Challenge - Always-On Server")]
 struct Args {
     /// Platform server URL
-    #[arg(long, env = "PLATFORM_URL", default_value = "http://localhost:8080")]
+    #[arg(
+        long,
+        env = "PLATFORM_URL",
+        default_value = "https://chain.platform.network"
+    )]
     platform_url: String,
 
     /// Challenge ID
