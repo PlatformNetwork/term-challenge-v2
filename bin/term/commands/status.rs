@@ -5,19 +5,19 @@ use crate::style::*;
 use anyhow::Result;
 use std::time::Duration;
 
-pub async fn run(rpc_url: &str, hash: String, watch: bool) -> Result<()> {
+pub async fn run(platform_url: &str, hash: String, watch: bool) -> Result<()> {
     if watch {
-        run_watch(rpc_url, &hash).await
+        run_watch(platform_url, &hash).await
     } else {
-        run_once(rpc_url, &hash).await
+        run_once(platform_url, &hash).await
     }
 }
 
-async fn run_once(rpc_url: &str, hash: &str) -> Result<()> {
+async fn run_once(platform_url: &str, hash: &str) -> Result<()> {
     print_banner();
     print_header("Agent Status");
 
-    let status = fetch_status(rpc_url, hash).await?;
+    let status = fetch_status(platform_url, hash).await?;
 
     print_key_value("Hash", hash);
     print_key_value("Name", &status.name);
@@ -35,44 +35,37 @@ async fn run_once(rpc_url: &str, hash: &str) -> Result<()> {
         print_key_value_colored("Score", &format!("{:.2}%", score * 100.0), colors::GREEN);
     }
 
+    if let Some(tasks) = &status.tasks_info {
+        print_key_value("Tasks", tasks);
+    }
+
     println!();
 
-    if !status.validators.is_empty() {
-        print_section("Validator Results");
+    if !status.evaluations.is_empty() {
+        print_section("Evaluations");
         println!();
 
         println!(
             "  {:<20} {:<12} {:<10} {}",
             style_bold("Validator"),
-            style_bold("Status"),
             style_bold("Score"),
-            style_bold("Tasks")
+            style_bold("Tasks"),
+            style_bold("Cost")
         );
         println!("  {}", style_dim(&"─".repeat(55)));
 
-        for v in &status.validators {
-            let v_status_color = match v.status.as_str() {
-                "pending" => colors::YELLOW,
-                "running" => colors::CYAN,
-                "completed" => colors::GREEN,
-                "failed" => colors::RED,
-                _ => colors::WHITE,
-            };
-
-            let score_str = v
-                .score
-                .map(|s| format!("{:.1}%", s * 100.0))
-                .unwrap_or_else(|| "-".to_string());
+        for eval in &status.evaluations {
+            let score_str = format!("{:.1}%", eval.score * 100.0);
+            let tasks_str = format!("{}/{}", eval.tasks_passed, eval.tasks_total);
 
             println!(
-                "  {:<20} {}{:<12}{} {:<10} {}/{}",
-                &v.validator_id[..16],
-                v_status_color,
-                v.status,
-                colors::RESET,
+                "  {:<20} {}{:<12}{} {:<10} ${:.4}",
+                &eval.validator_hotkey[..16.min(eval.validator_hotkey.len())],
+                colors::GREEN,
                 score_str,
-                v.tasks_passed,
-                v.tasks_total
+                colors::RESET,
+                tasks_str,
+                eval.total_cost_usd
             );
         }
     }
@@ -113,17 +106,19 @@ async fn run_once(rpc_url: &str, hash: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run_watch(rpc_url: &str, hash: &str) -> Result<()> {
-    println!("Watching agent {}... (Ctrl+C to stop)", &hash[..16]);
+async fn run_watch(platform_url: &str, hash: &str) -> Result<()> {
+    println!(
+        "Watching agent {}... (Ctrl+C to stop)",
+        &hash[..16.min(hash.len())]
+    );
     println!();
 
     let mut last_status = String::new();
     let mut tick = 0u64;
 
     loop {
-        let status = fetch_status(rpc_url, hash).await?;
+        let status = fetch_status(platform_url, hash).await?;
 
-        // Clear and redraw if status changed
         if status.status != last_status {
             println!();
             print_key_value("Status", &status.status);
@@ -135,7 +130,6 @@ async fn run_watch(rpc_url: &str, hash: &str) -> Result<()> {
             last_status = status.status.clone();
         }
 
-        // Show spinner
         print!("\r  {} Watching... ", spinner_frame(tick));
         std::io::Write::flush(&mut std::io::stdout())?;
 
@@ -157,78 +151,110 @@ struct AgentStatus {
     name: String,
     status: String,
     score: Option<f64>,
+    tasks_info: Option<String>,
     submitted_at: String,
     evaluated_at: Option<String>,
-    validators: Vec<ValidatorResult>,
+    evaluations: Vec<EvaluationInfo>,
 }
 
-struct ValidatorResult {
-    validator_id: String,
-    status: String,
-    score: Option<f64>,
+struct EvaluationInfo {
+    validator_hotkey: String,
+    score: f64,
     tasks_passed: u32,
     tasks_total: u32,
+    total_cost_usd: f64,
 }
 
 async fn fetch_status(platform_url: &str, hash: &str) -> Result<AgentStatus> {
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/v1/evaluations/{}", platform_url, hash);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
 
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let data: serde_json::Value = resp.json().await?;
+    // Try to find submission by hash (partial match)
+    let submissions_url = format!("{}/api/v1/submissions", platform_url);
 
-            let validators = data["validators"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .map(|v| ValidatorResult {
-                            validator_id: v["validator_id"].as_str().unwrap_or("").to_string(),
-                            status: v["status"].as_str().unwrap_or("unknown").to_string(),
-                            score: v["score"].as_f64(),
-                            tasks_passed: v["tasks_passed"].as_u64().unwrap_or(0) as u32,
-                            tasks_total: v["tasks_total"].as_u64().unwrap_or(10) as u32,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+    let submissions: Vec<serde_json::Value> = client
+        .get(&submissions_url)
+        .send()
+        .await?
+        .json()
+        .await
+        .unwrap_or_default();
 
-            Ok(AgentStatus {
-                name: data["name"].as_str().unwrap_or("unnamed").to_string(),
-                status: data["status"].as_str().unwrap_or("unknown").to_string(),
-                score: data["score"].as_f64(),
-                submitted_at: data["submitted_at"].as_str().unwrap_or("").to_string(),
-                evaluated_at: data["evaluated_at"].as_str().map(|s| s.to_string()),
-                validators,
+    // Find matching submission
+    let submission = submissions.iter().find(|s| {
+        s["agent_hash"]
+            .as_str()
+            .map(|h| h.starts_with(hash) || hash.starts_with(&h[..hash.len().min(h.len())]))
+            .unwrap_or(false)
+    });
+
+    if let Some(sub) = submission {
+        let agent_hash = sub["agent_hash"].as_str().unwrap_or(hash);
+
+        // Fetch evaluations for this agent
+        let evals_url = format!("{}/api/v1/evaluations/{}", platform_url, agent_hash);
+        let evals: Vec<serde_json::Value> = client
+            .get(&evals_url)
+            .send()
+            .await
+            .ok()
+            .and_then(|r| {
+                if r.status().is_success() {
+                    Some(r)
+                } else {
+                    None
+                }
             })
-        }
-        _ => {
-            // Return mock data for demo
-            Ok(AgentStatus {
-                name: "demo-agent".to_string(),
-                status: "evaluating".to_string(),
-                score: None,
-                submitted_at: chrono::Utc::now().to_rfc3339(),
-                evaluated_at: None,
-                validators: vec![
-                    ValidatorResult {
-                        validator_id: "12D3KooWAbCdEf123456789".to_string(),
-                        status: "completed".to_string(),
-                        score: Some(0.75),
-                        tasks_passed: 8,
-                        tasks_total: 10,
-                    },
-                    ValidatorResult {
-                        validator_id: "12D3KooWXyZ987654321".to_string(),
-                        status: "running".to_string(),
-                        score: None,
-                        tasks_passed: 5,
-                        tasks_total: 10,
-                    },
-                ],
+            .and_then(|r| futures::executor::block_on(r.json()).ok())
+            .unwrap_or_default();
+
+        let evaluations: Vec<EvaluationInfo> = evals
+            .iter()
+            .map(|e| EvaluationInfo {
+                validator_hotkey: e["validator_hotkey"].as_str().unwrap_or("").to_string(),
+                score: e["score"].as_f64().unwrap_or(0.0),
+                tasks_passed: e["tasks_passed"].as_u64().unwrap_or(0) as u32,
+                tasks_total: e["tasks_total"].as_u64().unwrap_or(0) as u32,
+                total_cost_usd: e["total_cost_usd"].as_f64().unwrap_or(0.0),
             })
-        }
+            .collect();
+
+        // Compute aggregate score
+        let avg_score = if !evaluations.is_empty() {
+            Some(evaluations.iter().map(|e| e.score).sum::<f64>() / evaluations.len() as f64)
+        } else {
+            None
+        };
+
+        let status = sub["status"].as_str().unwrap_or("pending").to_string();
+        let tasks_info = if !evaluations.is_empty() {
+            let total_passed: u32 = evaluations.iter().map(|e| e.tasks_passed).sum();
+            let total_tasks: u32 = evaluations.iter().map(|e| e.tasks_total).sum();
+            Some(format!("{}/{}", total_passed, total_tasks))
+        } else {
+            None
+        };
+
+        return Ok(AgentStatus {
+            name: sub["name"].as_str().unwrap_or("unnamed").to_string(),
+            status,
+            score: avg_score,
+            tasks_info,
+            submitted_at: sub["created_at"].as_str().unwrap_or("").to_string(),
+            evaluated_at: None,
+            evaluations,
+        });
     }
+
+    // Not found
+    Err(anyhow::anyhow!(
+        "Agent not found. Check the hash or submit an agent first.\n\
+         Searched for: {}\n\
+         API: {}/api/v1/submissions",
+        hash,
+        platform_url
+    ))
 }
 
 use crate::style::colors;
