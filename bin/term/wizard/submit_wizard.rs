@@ -329,21 +329,14 @@ struct ValidatorInfo {
     stake: u64,
 }
 
-async fn fetch_validators(rpc_url: &str) -> Result<Vec<ValidatorInfo>> {
+async fn fetch_validators(platform_url: &str) -> Result<Vec<ValidatorInfo>> {
     let client = reqwest::Client::new();
 
-    // Use JSON-RPC to fetch validators from platform
-    let rpc_endpoint = format!("{}/rpc", rpc_url);
-    let rpc_request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "validator_list",
-        "params": [],
-        "id": 1
-    });
+    // Use REST API to fetch validators from platform-server
+    let api_endpoint = format!("{}/api/v1/validators", platform_url);
 
     let resp = client
-        .post(&rpc_endpoint)
-        .json(&rpc_request)
+        .get(&api_endpoint)
         .timeout(Duration::from_secs(10))
         .send()
         .await?;
@@ -352,17 +345,7 @@ async fn fetch_validators(rpc_url: &str) -> Result<Vec<ValidatorInfo>> {
         anyhow::bail!("Failed to fetch validators: {}", resp.status());
     }
 
-    let data: serde_json::Value = resp.json().await?;
-
-    // Check for error
-    if let Some(error) = data.get("error") {
-        anyhow::bail!("RPC error: {}", error);
-    }
-
-    // Parse validators from result
-    let validators = data["result"]["validators"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("Invalid validators response"))?;
+    let validators: Vec<serde_json::Value> = resp.json().await?;
 
     let mut result = Vec::new();
     for v in validators {
