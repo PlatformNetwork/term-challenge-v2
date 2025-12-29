@@ -5,7 +5,7 @@ use crate::style::*;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sp_core::{sr25519, Pair};
+use sp_core::{crypto::Ss58Codec, sr25519, Pair};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -179,11 +179,11 @@ fn parse_key_and_derive_hotkey(key: &str) -> Result<(sr25519::Pair, String)> {
         ));
     }
 
-    // Get public key and convert to hex
+    // Get public key and convert to SS58 format (Bittensor standard)
     let public = pair.public();
-    let hotkey = hex::encode(public.0);
+    let hotkey_ss58 = public.to_ss58check();
 
-    Ok((pair, hotkey))
+    Ok((pair, hotkey_ss58))
 }
 
 async fn submit_agent(
@@ -197,19 +197,26 @@ async fn submit_agent(
 ) -> Result<(String, String)> {
     let client = reqwest::Client::new();
 
-    // Sign the source code
-    let signature = signing_key.sign(source.as_bytes());
-    let signature_hex = format!("0x{}", hex::encode(signature.0));
-
-    // Compute agent hash
+    // Compute source code hash
     let mut hasher = Sha256::new();
     hasher.update(source.as_bytes());
-    let agent_hash = hex::encode(&hasher.finalize()[..16]);
+    let source_hash = hex::encode(hasher.finalize());
+
+    // Create message to sign: "submit_agent:<sha256_of_source_code>"
+    // This proves the miner owns this hotkey and is submitting this specific code
+    let message = format!("submit_agent:{}", source_hash);
+
+    // Sign the message (not the source code directly)
+    let signature = signing_key.sign(message.as_bytes());
+    let signature_hex = hex::encode(signature.0);
+
+    // Compute agent hash (first 16 bytes of source hash)
+    let agent_hash = source_hash[..32].to_string();
 
     let request = SubmitRequest {
         source_code: source.to_string(),
-        miner_hotkey: miner_hotkey.to_string(),
-        signature: signature_hex,
+        miner_hotkey: miner_hotkey.to_string(), // SS58 format
+        signature: signature_hex,               // No 0x prefix
         name,
         api_key,
         api_provider: Some(provider.to_string()),

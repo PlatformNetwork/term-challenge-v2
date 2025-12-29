@@ -4,7 +4,7 @@ use anyhow::Result;
 use console::{style, Term};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
 use sha2::{Digest, Sha256};
-use sp_core::{sr25519, Pair};
+use sp_core::{crypto::Ss58Codec, sr25519, Pair};
 use std::path::PathBuf;
 use std::time::Duration;
 use term_challenge::{PythonWhitelist, WhitelistConfig};
@@ -203,8 +203,9 @@ fn enter_miner_key() -> Result<(sr25519::Pair, String)> {
                 let mut seed = [0u8; 32];
                 seed.copy_from_slice(&bytes);
                 let pair = sr25519::Pair::from_seed(&seed);
-                let hotkey = hex::encode(pair.public().0);
-                return Ok((pair, hotkey));
+                // Use SS58 format for hotkey (Bittensor standard)
+                let hotkey_ss58 = pair.public().to_ss58check();
+                return Ok((pair, hotkey_ss58));
             }
         }
     }
@@ -213,8 +214,9 @@ fn enter_miner_key() -> Result<(sr25519::Pair, String)> {
     if key.split_whitespace().count() >= 12 {
         let (pair, _) = sr25519::Pair::from_phrase(&key, None)
             .map_err(|e| anyhow::anyhow!("Invalid mnemonic: {:?}", e))?;
-        let hotkey = hex::encode(pair.public().0);
-        return Ok((pair, hotkey));
+        // Use SS58 format for hotkey (Bittensor standard)
+        let hotkey_ss58 = pair.public().to_ss58check();
+        return Ok((pair, hotkey_ss58));
     }
 
     Err(anyhow::anyhow!(
@@ -325,19 +327,26 @@ async fn submit_agent(
 
     let client = reqwest::Client::new();
 
-    // Sign the source code
-    let signature = signing_key.sign(source.as_bytes());
-    let signature_hex = format!("0x{}", hex::encode(signature.0));
-
-    // Compute hash
+    // Compute source code hash
     let mut hasher = Sha256::new();
     hasher.update(source.as_bytes());
-    let agent_hash = hex::encode(&hasher.finalize()[..16]);
+    let source_hash = hex::encode(hasher.finalize());
+
+    // Create message to sign: "submit_agent:<sha256_of_source_code>"
+    // This proves the miner owns this hotkey and is submitting this specific code
+    let message = format!("submit_agent:{}", source_hash);
+
+    // Sign the message (not the source code directly)
+    let signature = signing_key.sign(message.as_bytes());
+    let signature_hex = hex::encode(signature.0);
+
+    // Compute agent hash (first 16 bytes of source hash)
+    let agent_hash = source_hash[..32].to_string();
 
     let request = serde_json::json!({
         "source_code": source,
-        "miner_hotkey": miner_hotkey,
-        "signature": signature_hex,
+        "miner_hotkey": miner_hotkey,  // SS58 format
+        "signature": signature_hex,     // No 0x prefix
         "name": name,
         "api_key": api_key,
         "api_provider": provider,
