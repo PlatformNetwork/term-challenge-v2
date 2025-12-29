@@ -82,6 +82,12 @@ pub mod server;
 /// Chain storage adapter (uses central API)
 pub mod chain_storage;
 
+/// Authentication and authorization (SS58 validation, signature verification)
+pub mod auth;
+
+/// REST API endpoints (submissions, leaderboard, validators)
+pub mod api;
+
 // ============================================================================
 // RE-EXPORTS
 // ============================================================================
@@ -162,9 +168,17 @@ pub use validator_distribution::{
     CodePackage, DistributionConfig, ValidatorDistributor, ValidatorInfo,
 };
 
+pub use api::{
+    claim_job, complete_job, get_agent_details, get_leaderboard, get_my_agent_source, get_status,
+    list_my_agents, submit_agent, ApiState,
+};
+pub use auth::{
+    create_submit_message, is_timestamp_valid, is_valid_ss58_hotkey, verify_signature, AuthManager,
+};
 pub use evaluation_orchestrator::{
     AgentEvaluationResult, EvaluationOrchestrator, SourceCodeProvider,
 };
+pub use pg_storage::{Submission, SubmissionInfo};
 pub use subnet_control::{
     ControlError, ControlStatus, EvaluatingAgent, EvaluationQueueState, PendingAgent,
     SubnetControlState, SubnetController, MAX_CONCURRENT_AGENTS, MAX_CONCURRENT_TASKS,

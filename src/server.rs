@@ -15,6 +15,8 @@
 //! - Production: terminal-bench 2.0 (89 tasks)
 //! - Testing: hello-world (1 task)
 
+use crate::api::{self, ApiState};
+use crate::auth::AuthManager;
 use crate::bench::external_agent::ExternalAgent;
 use crate::bench::registry::{Dataset, RegistryClient, TaskSource};
 use crate::bench::runner::{TrialConfig, TrialRunner};
@@ -25,7 +27,7 @@ use crate::llm_review::{LlmConfig, LlmProvider, LlmReviewManager};
 use crate::pg_storage::PgStorage;
 use crate::python_whitelist::{PythonWhitelist, WhitelistConfig};
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -78,11 +80,13 @@ pub struct ChallengeServerState {
     /// PostgreSQL storage for server mode (subnet owner)
     /// None = validator mode (uses platform API), Some = server mode (local PostgreSQL)
     pub pg_storage: Option<PgStorage>,
+    /// Authentication manager for validator whitelist
+    pub auth_manager: AuthManager,
 }
 
 impl ChallengeServerState {
     pub fn new(config: ChallengeConfig, platform_url: &str, challenge_id: &str) -> Self {
-        Self::with_options(config, platform_url, challenge_id, false, None)
+        Self::with_options(config, platform_url, challenge_id, false, None, vec![])
     }
 
     pub fn with_mode(
@@ -91,7 +95,7 @@ impl ChallengeServerState {
         challenge_id: &str,
         test_mode: bool,
     ) -> Self {
-        Self::with_options(config, platform_url, challenge_id, test_mode, None)
+        Self::with_options(config, platform_url, challenge_id, test_mode, None, vec![])
     }
 
     pub fn with_options(
@@ -100,6 +104,7 @@ impl ChallengeServerState {
         challenge_id: &str,
         test_mode: bool,
         pg_storage: Option<PgStorage>,
+        validator_whitelist: Vec<String>,
     ) -> Self {
         let whitelist_config = WhitelistConfig {
             allowed_stdlib: config.module_whitelist.allowed_stdlib.clone(),
@@ -118,6 +123,7 @@ impl ChallengeServerState {
             cached_tasks: RwLock::new(HashMap::new()),
             test_mode,
             pg_storage,
+            auth_manager: AuthManager::with_whitelist(validator_whitelist),
         }
     }
 
@@ -846,12 +852,28 @@ pub async fn run_server_with_mode(
         None
     };
 
+    // Load validator whitelist from env (comma-separated SS58 hotkeys)
+    let validator_whitelist: Vec<String> = std::env::var("VALIDATOR_WHITELIST")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if !validator_whitelist.is_empty() {
+        info!(
+            "Loaded {} validators in whitelist",
+            validator_whitelist.len()
+        );
+    }
+
     let state = Arc::new(ChallengeServerState::with_options(
         config,
         platform_url,
         challenge_id,
         test_mode,
         pg_storage,
+        validator_whitelist,
     ));
 
     // Pre-download tasks at startup
@@ -872,16 +894,50 @@ pub async fn run_server_with_mode(
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
+    // Base routes (always available)
+    let mut app = Router::new()
         .route("/health", get(health_check))
         .route("/get_weights", get(get_weights))
         .route("/evaluate", post(evaluate_agent))
         .route("/validate", post(validate_source))
         .route("/config", get(get_config))
         .route("/leaderboard", get(get_leaderboard))
-        .layer(cors)
+        .layer(cors.clone())
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
+
+    // API v1 routes (only in server mode with PostgreSQL)
+    if let Some(ref pg) = state.pg_storage {
+        info!("Enabling submission API endpoints (server mode)");
+
+        // Clone storage for API state
+        let api_state = Arc::new(ApiState {
+            storage: pg.clone(),
+            auth: AuthManager::with_whitelist(state.auth_manager.get_whitelist().await),
+        });
+
+        let api_routes = Router::new()
+            .route("/submit", post(api::submit_agent))
+            .route("/leaderboard", get(api::get_leaderboard))
+            .route("/leaderboard/:agent_hash", get(api::get_agent_details))
+            .route("/my/agents", post(api::list_my_agents))
+            .route(
+                "/my/agents/:agent_hash/source",
+                post(api::get_my_agent_source),
+            )
+            .route("/validator/claim_job", post(api::claim_job))
+            .route("/validator/complete_job", post(api::complete_job))
+            .route("/status", get(api::get_status))
+            .layer(
+                CorsLayer::new()
+                    .allow_origin(Any)
+                    .allow_methods(Any)
+                    .allow_headers(Any),
+            )
+            .with_state(api_state);
+
+        app = app.nest("/api/v1", api_routes);
+    }
 
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -928,6 +984,18 @@ pub async fn run_server_with_mode(
     info!("║    POST /validate    - Whitelist validation                  ║");
     info!("║    GET  /config      - Challenge configuration               ║");
     info!("║    GET  /leaderboard - Challenge leaderboard                 ║");
+    if state.is_server_mode() {
+        info!("╠══════════════════════════════════════════════════════════════╣");
+        info!("║  API v1 (Server Mode):                                       ║");
+        info!("║    POST /api/v1/submit              - Submit agent           ║");
+        info!("║    GET  /api/v1/leaderboard         - Get leaderboard        ║");
+        info!("║    GET  /api/v1/leaderboard/:hash   - Get agent details      ║");
+        info!("║    POST /api/v1/my/agents           - List my agents         ║");
+        info!("║    POST /api/v1/my/agents/:h/source - Get my agent source    ║");
+        info!("║    POST /api/v1/validator/claim_job - Claim job (validator)  ║");
+        info!("║    POST /api/v1/validator/complete_job - Complete job        ║");
+        info!("║    GET  /api/v1/status              - Challenge status       ║");
+    }
     info!("╚══════════════════════════════════════════════════════════════╝");
 
     axum::serve(listener, app).await?;

@@ -222,7 +222,7 @@ async fn submit_agent(
         api_provider: Some(provider.to_string()),
     };
 
-    let url = format!("{}/api/v1/submissions", platform_url);
+    let url = format!("{}/api/v1/submit", platform_url);
 
     let response = client
         .post(&url)
