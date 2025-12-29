@@ -308,7 +308,7 @@ pub async fn evaluate_agent(
     // Step 2: LLM Code Review via centralized platform-server
     let mut total_cost_usd = 0.0;
     let platform_llm = crate::platform_llm::PlatformLlmClient::for_agent(
-        &state.platform_client.base_url(),
+        state.platform_client.base_url(),
         &req.agent_hash,
         &req.validator_hotkey,
     );
