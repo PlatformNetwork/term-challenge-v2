@@ -228,9 +228,14 @@ pub struct EvaluateRequest {
     pub submission_id: String,
     pub agent_hash: String,
     pub miner_hotkey: String,
+    pub validator_hotkey: String,
     pub name: Option<String>,
     pub source_code: String,
+    /// Deprecated: API key is now looked up from platform-server
+    #[serde(default)]
     pub api_key: Option<String>,
+    /// Deprecated: Provider is now looked up from platform-server
+    #[serde(default)]
     pub api_provider: Option<String>,
     pub epoch: u64,
 }
@@ -300,52 +305,68 @@ pub async fn evaluate_agent(
         }));
     }
 
-    // Step 2: LLM Code Review (if API key provided)
+    // Step 2: LLM Code Review via centralized platform-server
     let mut total_cost_usd = 0.0;
-    if let Some(api_key) = &req.api_key {
-        let provider = req.api_provider.as_deref().unwrap_or("openrouter");
-        let llm_manager = state.create_llm_manager(api_key, provider);
+    let platform_llm = crate::platform_llm::PlatformLlmClient::for_agent(
+        &state.platform_client.base_url(),
+        &req.agent_hash,
+        &req.validator_hotkey,
+    );
 
-        match llm_manager
-            .review_code_with_miner_key(&req.agent_hash, &req.source_code, api_key, provider)
-            .await
-        {
-            Ok(review_result) => {
-                total_cost_usd += estimate_review_cost(provider);
+    if let Ok(llm_client) = platform_llm {
+        // Create review prompt
+        let review_prompt = format!(
+            "Review this Python agent code for security and compliance. \
+             Check for: dangerous imports, network access, file system access, \
+             code injection, infinite loops, resource abuse. \
+             Respond with JSON: {{\"approved\": true/false, \"reason\": \"...\", \"violations\": []}}\n\n\
+             Code:\n```python\n{}\n```",
+            &req.source_code
+        );
 
-                if !review_result.approved {
-                    warn!(
-                        "Agent {} failed LLM review: {}",
-                        agent_hash_short, review_result.reason
-                    );
-                    return Ok(Json(EvaluateResponse {
-                        success: false,
-                        error: Some(format!("LLM Review rejected: {}", review_result.reason)),
-                        score: 0.0,
-                        tasks_passed: 0,
-                        tasks_total: 0,
-                        tasks_failed: 0,
-                        total_cost_usd,
-                        execution_time_ms: start.elapsed().as_millis() as i64,
-                        task_results: None,
-                        execution_log: Some(format!(
-                            "LLM Review: {}\nViolations: {:?}",
-                            review_result.reason, review_result.violations
-                        )),
-                    }));
+        let messages = vec![
+            crate::platform_llm::ChatMessage::system(
+                "You are a security reviewer for AI agent code. Be strict about security.",
+            ),
+            crate::platform_llm::ChatMessage::user(&review_prompt),
+        ];
+
+        match llm_client.chat_with_usage(messages).await {
+            Ok(response) => {
+                total_cost_usd += response.cost_usd.unwrap_or(0.0);
+
+                if let Some(content) = &response.content {
+                    // Parse review result
+                    if let Ok(review) = serde_json::from_str::<serde_json::Value>(content) {
+                        let approved = review["approved"].as_bool().unwrap_or(true);
+                        let reason = review["reason"].as_str().unwrap_or("Unknown");
+
+                        if !approved {
+                            warn!("Agent {} failed LLM review: {}", agent_hash_short, reason);
+                            return Ok(Json(EvaluateResponse {
+                                success: false,
+                                error: Some(format!("LLM Review rejected: {}", reason)),
+                                score: 0.0,
+                                tasks_passed: 0,
+                                tasks_total: 0,
+                                tasks_failed: 0,
+                                total_cost_usd,
+                                execution_time_ms: start.elapsed().as_millis() as i64,
+                                task_results: None,
+                                execution_log: Some(format!("LLM Review: {}", reason)),
+                            }));
+                        }
+                        info!("Agent {} passed LLM review", agent_hash_short);
+                    }
                 }
-                info!("Agent {} passed LLM review", agent_hash_short);
             }
             Err(e) => {
-                error!("LLM review failed: {}", e);
+                warn!("LLM review failed (continuing): {}", e);
                 // Continue without review on error (graceful degradation)
             }
         }
     } else {
-        warn!(
-            "No API key provided for agent {}, skipping LLM review",
-            agent_hash_short
-        );
+        warn!("Could not create platform LLM client, skipping review");
     }
 
     // Step 3: Download/cache tasks

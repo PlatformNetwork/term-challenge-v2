@@ -106,6 +106,11 @@ impl PlatformClient {
         }
     }
 
+    /// Get the base URL
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Get current network state (public endpoint)
     pub async fn get_network_state(&self) -> Result<NetworkState> {
         let resp = self
