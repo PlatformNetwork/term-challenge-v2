@@ -336,6 +336,7 @@ impl PgStorage {
         self.update_leaderboard(
             &eval.agent_hash,
             &eval.miner_hotkey,
+            None, // No name from evaluation record
             eval.score,
             eval.total_cost_usd,
         )
@@ -380,11 +381,12 @@ impl PgStorage {
     // LEADERBOARD
     // ========================================================================
 
-    /// Update leaderboard entry
-    async fn update_leaderboard(
+    /// Update leaderboard entry (public for auto-evaluation)
+    pub async fn update_leaderboard(
         &self,
         agent_hash: &str,
         miner_hotkey: &str,
+        name: Option<&str>,
         score: f64,
         cost: f64,
     ) -> Result<()> {
@@ -392,15 +394,16 @@ impl PgStorage {
 
         // Upsert leaderboard entry
         client.execute(
-            "INSERT INTO leaderboard (agent_hash, miner_hotkey, best_score, avg_score, evaluation_count, total_cost_usd)
-             VALUES ($1, $2, $3, $3, 1, $4)
+            "INSERT INTO leaderboard (agent_hash, miner_hotkey, name, best_score, avg_score, evaluation_count, total_cost_usd)
+             VALUES ($1, $2, $3, $4, $4, 1, $5)
              ON CONFLICT(agent_hash) DO UPDATE SET
+                name = COALESCE(EXCLUDED.name, leaderboard.name),
                 best_score = GREATEST(leaderboard.best_score, EXCLUDED.best_score),
                 avg_score = (leaderboard.avg_score * leaderboard.evaluation_count + EXCLUDED.avg_score) / (leaderboard.evaluation_count + 1),
                 evaluation_count = leaderboard.evaluation_count + 1,
                 total_cost_usd = leaderboard.total_cost_usd + EXCLUDED.total_cost_usd,
                 last_updated = NOW()",
-            &[&agent_hash, &miner_hotkey, &score, &cost],
+            &[&agent_hash, &miner_hotkey, &name, &score, &cost],
         ).await?;
 
         // Update ranks
@@ -410,6 +413,12 @@ impl PgStorage {
              WHERE leaderboard.agent_hash = subq.agent_hash",
             &[],
         ).await?;
+
+        info!(
+            "Updated leaderboard for agent {}: score={:.2}%",
+            &agent_hash[..16.min(agent_hash.len())],
+            score * 100.0
+        );
 
         Ok(())
     }
@@ -957,7 +966,7 @@ impl PgStorage {
             .await?;
 
         // Update leaderboard
-        self.update_leaderboard(agent_hash, &miner_hotkey, final_score, avg_cost)
+        self.update_leaderboard(agent_hash, &miner_hotkey, None, final_score, avg_cost)
             .await?;
 
         info!(

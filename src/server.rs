@@ -913,11 +913,15 @@ pub async fn run_server_with_mode(
         // Get platform URL for validator communication
         let platform_url = state.platform_client.base_url().to_string();
 
+        // Internal evaluation URL (same server)
+        let evaluate_url = format!("http://127.0.0.1:{}", port);
+
         // Clone storage for API state
         let api_state = Arc::new(ApiState {
             storage: pg.clone(),
             auth: AuthManager::with_whitelist(state.auth_manager.get_whitelist().await),
             platform_url,
+            evaluate_url: Some(evaluate_url),
         });
 
         let api_routes = Router::new()
