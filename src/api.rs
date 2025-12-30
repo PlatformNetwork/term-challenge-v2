@@ -189,7 +189,7 @@ pub async fn submit_agent(
     }))
 }
 
-/// Get active validator count from platform-server
+/// Get active validator count from platform-server with retry loop
 async fn get_active_validator_count(platform_url: &str) -> Option<i32> {
     let url = format!("{}/api/v1/validators", platform_url);
     let client = reqwest::Client::builder()
@@ -197,28 +197,45 @@ async fn get_active_validator_count(platform_url: &str) -> Option<i32> {
         .build()
         .ok()?;
 
-    let response = client.get(&url).send().await.ok()?;
-
-    if !response.status().is_success() {
-        warn!(
-            "Failed to get validators from platform-server: {}",
-            response.status()
-        );
-        return None;
-    }
-
     #[derive(serde::Deserialize)]
     struct ValidatorInfo {
         #[allow(dead_code)]
         hotkey: String,
     }
 
-    let validators: Vec<ValidatorInfo> = response.json().await.ok()?;
-    let count = validators.len() as i32;
+    // Retry loop - try up to 5 times with 30s delay
+    for attempt in 1..=5 {
+        match client.get(&url).send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    if let Ok(validators) = response.json::<Vec<ValidatorInfo>>().await {
+                        let count = validators.len() as i32;
+                        info!("Got {} active validators from platform-server", count);
+                        return Some(count.max(1));
+                    }
+                } else {
+                    warn!(
+                        "Failed to get validators from platform-server: {} (attempt {}/5)",
+                        response.status(),
+                        attempt
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Platform-server not reachable: {} (attempt {}/5, retrying in 30s)",
+                    e, attempt
+                );
+            }
+        }
 
-    info!("Got {} active validators from platform-server", count);
+        if attempt < 5 {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    }
 
-    Some(count.max(1)) // At least 1 validator
+    warn!("Failed to get validators after 5 attempts, using default of 3");
+    Some(3) // Default fallback
 }
 
 // ============================================================================

@@ -10,6 +10,26 @@ use tokio_postgres::NoTls;
 use tracing::{debug, info};
 
 const SCHEMA: &str = r#"
+-- ============================================================================
+-- MIGRATION: Drop old pending_evaluations table if it has old schema
+-- ============================================================================
+DO $$
+BEGIN
+    -- Check if pending_evaluations has old schema (claimed_by column)
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'pending_evaluations' AND column_name = 'claimed_by'
+    ) THEN
+        -- Drop old table and its indexes
+        DROP TABLE IF EXISTS pending_evaluations CASCADE;
+        RAISE NOTICE 'Dropped old pending_evaluations table (migration to new schema)';
+    END IF;
+END $$;
+
+-- ============================================================================
+-- SCHEMA
+-- ============================================================================
+
 -- Agent submissions (source code is SENSITIVE - only owner and validators can access)
 CREATE TABLE IF NOT EXISTS submissions (
     id TEXT PRIMARY KEY,
