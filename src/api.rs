@@ -32,6 +32,8 @@ pub struct ApiState {
     pub platform_url: String,
     /// URL for internal evaluation calls (e.g., http://localhost:8081)
     pub evaluate_url: Option<String>,
+    /// Challenge ID for event broadcasting
+    pub challenge_id: String,
 }
 
 // ============================================================================
@@ -158,105 +160,57 @@ pub async fn submit_agent(
         epoch
     );
 
-    // Trigger automatic evaluation in background
-    if let Some(evaluate_url) = &state.evaluate_url {
-        let eval_url = evaluate_url.clone();
-        let eval_submission_id = submission_id.clone();
-        let eval_agent_hash = agent_hash.clone();
-        let eval_miner_hotkey = req.miner_hotkey.clone();
-        let eval_source_code = submission.source_code.clone();
-        let eval_name = submission.name.clone();
-        let eval_epoch = epoch as u64;
-        let storage = state.storage.clone();
+    // Broadcast "new_submission" event to all validators via platform-server WebSocket
+    {
+        let platform_url = state.platform_url.clone();
+        let challenge_id = state.challenge_id.clone();
+        let broadcast_submission_id = submission_id.clone();
+        let broadcast_agent_hash = agent_hash.clone();
+        let broadcast_miner_hotkey = req.miner_hotkey.clone();
+        let broadcast_source_code = submission.source_code.clone();
+        let broadcast_name = submission.name.clone();
+        let broadcast_epoch = epoch;
 
         tokio::spawn(async move {
-            info!(
-                "Starting background evaluation for agent {}",
-                &eval_agent_hash[..16]
-            );
-
-            // Update status to evaluating
-            let _ = storage
-                .update_submission_status(&eval_agent_hash, "evaluating")
-                .await;
-
-            // Call /evaluate endpoint
             let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(3600))
+                .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_default();
 
-            let eval_request = serde_json::json!({
-                "submission_id": eval_submission_id,
-                "agent_hash": eval_agent_hash,
-                "miner_hotkey": eval_miner_hotkey,
-                "validator_hotkey": "internal",
-                "name": eval_name,
-                "source_code": eval_source_code,
-                "epoch": eval_epoch,
+            // Event payload contains everything validators need to evaluate
+            let event_payload = serde_json::json!({
+                "submission_id": broadcast_submission_id,
+                "agent_hash": broadcast_agent_hash,
+                "miner_hotkey": broadcast_miner_hotkey,
+                "source_code": broadcast_source_code,
+                "name": broadcast_name,
+                "epoch": broadcast_epoch,
+            });
+
+            let broadcast_request = serde_json::json!({
+                "challenge_id": challenge_id,
+                "event_name": "new_submission",
+                "payload": event_payload,
             });
 
             match client
-                .post(format!("{}/evaluate", eval_url))
-                .json(&eval_request)
+                .post(format!("{}/api/v1/events/broadcast", platform_url))
+                .json(&broadcast_request)
                 .send()
                 .await
             {
                 Ok(response) => {
                     if response.status().is_success() {
-                        if let Ok(result) = response.json::<serde_json::Value>().await {
-                            let score = result["score"].as_f64().unwrap_or(0.0);
-                            let tasks_passed = result["tasks_passed"].as_i64().unwrap_or(0) as i32;
-                            let tasks_total = result["tasks_total"].as_i64().unwrap_or(0) as i32;
-                            let total_cost = result["total_cost_usd"].as_f64().unwrap_or(0.0);
-
-                            info!(
-                                "Evaluation complete for {}: score={:.2}%, passed={}/{}",
-                                &eval_agent_hash[..16],
-                                score * 100.0,
-                                tasks_passed,
-                                tasks_total
-                            );
-
-                            // Update leaderboard
-                            if let Err(e) = storage
-                                .update_leaderboard(
-                                    &eval_agent_hash,
-                                    &eval_miner_hotkey,
-                                    eval_name.as_deref(),
-                                    score,
-                                    total_cost,
-                                )
-                                .await
-                            {
-                                warn!("Failed to update leaderboard: {:?}", e);
-                            }
-
-                            // Update submission status
-                            let _ = storage
-                                .update_submission_status(&eval_agent_hash, "completed")
-                                .await;
-                        }
-                    } else {
-                        warn!(
-                            "Evaluation failed for {}: {}",
-                            &eval_agent_hash[..16],
-                            response.status()
+                        info!(
+                            "Broadcast new_submission event for agent {} to validators",
+                            &broadcast_agent_hash[..16]
                         );
-                        let _ = storage
-                            .update_submission_status(&eval_agent_hash, "failed")
-                            .await;
+                    } else {
+                        warn!("Failed to broadcast event: {}", response.status());
                     }
                 }
                 Err(e) => {
-                    warn!(
-                        "Evaluation request failed for {}: {}",
-                        &eval_agent_hash[..16],
-                        e
-                    );
-                    let _ = storage
-                        .update_submission_status(&eval_agent_hash, "failed")
-                        .await;
+                    warn!("Failed to broadcast event to platform-server: {}", e);
                 }
             }
         });

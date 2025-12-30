@@ -922,6 +922,7 @@ pub async fn run_server_with_mode(
             auth: AuthManager::with_whitelist(state.auth_manager.get_whitelist().await),
             platform_url,
             evaluate_url: Some(evaluate_url),
+            challenge_id: challenge_id.to_string(),
         });
 
         let api_routes = Router::new()
