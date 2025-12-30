@@ -222,7 +222,8 @@ async fn submit_agent(
         api_provider: Some(provider.to_string()),
     };
 
-    let url = format!("{}/api/v1/submit", platform_url);
+    // Use bridge route: /api/v1/bridge/{challenge}/submit
+    let url = format!("{}/api/v1/bridge/term-challenge/submit", platform_url);
 
     let response = client
         .post(&url)
