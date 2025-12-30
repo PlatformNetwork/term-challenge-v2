@@ -128,7 +128,15 @@ pub async fn submit_agent(
 
     // Store submission
     if let Err(e) = state.storage.create_submission(&submission).await {
-        warn!("Failed to create submission: {}", e);
+        warn!("Failed to create submission: {:?}", e);
+        tracing::error!(
+            "Submission error details - id: {}, agent_hash: {}, miner: {}, epoch: {}, error: {:?}",
+            submission.id,
+            submission.agent_hash,
+            submission.miner_hotkey,
+            submission.epoch,
+            e
+        );
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(SubmitAgentResponse {

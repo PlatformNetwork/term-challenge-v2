@@ -357,7 +357,17 @@ impl PgStorage {
 
     /// Create a new submission
     pub async fn create_submission(&self, submission: &Submission) -> Result<()> {
-        let client = self.pool.get().await?;
+        debug!(
+            "Creating submission: id={}, agent_hash={}, miner={}",
+            submission.id, submission.agent_hash, submission.miner_hotkey
+        );
+
+        let client = self.pool.get().await.map_err(|e| {
+            tracing::error!("Failed to get DB connection: {:?}", e);
+            anyhow::anyhow!("db connection error: {}", e)
+        })?;
+
+        debug!("Inserting into submissions table...");
         client.execute(
             "INSERT INTO submissions (id, agent_hash, miner_hotkey, source_code, source_hash, name, epoch, status)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -371,7 +381,12 @@ impl PgStorage {
                 &submission.source_code, &submission.source_hash, &submission.name,
                 &submission.epoch, &submission.status,
             ],
-        ).await?;
+        ).await.map_err(|e| {
+            tracing::error!("Failed to insert submission: {:?}", e);
+            anyhow::anyhow!("db insert error: {}", e)
+        })?;
+
+        debug!("Submission inserted, queueing evaluation...");
 
         // Also queue for evaluation
         let pending = PendingEvaluation {
@@ -383,9 +398,12 @@ impl PgStorage {
             claimed_by: None,
             claimed_at: None,
         };
-        self.queue_evaluation(&pending).await?;
+        self.queue_evaluation(&pending).await.map_err(|e| {
+            tracing::error!("Failed to queue evaluation: {:?}", e);
+            anyhow::anyhow!("db queue error: {}", e)
+        })?;
 
-        debug!(
+        info!(
             "Created submission {} for agent {}",
             submission.id, submission.agent_hash
         );
