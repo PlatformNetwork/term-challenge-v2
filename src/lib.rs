@@ -169,8 +169,8 @@ pub use validator_distribution::{
 };
 
 pub use api::{
-    claim_job, complete_job, get_agent_details, get_leaderboard, get_my_agent_source, get_status,
-    list_my_agents, submit_agent, ApiState,
+    claim_jobs, get_agent_details, get_agent_eval_status, get_leaderboard, get_my_agent_source,
+    get_my_jobs, get_status, list_my_agents, submit_agent, submit_result, ApiState,
 };
 pub use auth::{
     create_submit_message, is_timestamp_valid, is_valid_ss58_hotkey, verify_signature, AuthManager,

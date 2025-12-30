@@ -65,20 +65,66 @@ CREATE TABLE IF NOT EXISTS leaderboard (
 CREATE INDEX IF NOT EXISTS idx_leaderboard_rank ON leaderboard(rank);
 CREATE INDEX IF NOT EXISTS idx_leaderboard_score ON leaderboard(best_score DESC);
 
--- Pending evaluations (queued for processing by validators)
+-- Pending evaluations (queued for processing by ALL validators)
+-- Each agent needs evaluation by ALL active validators
 CREATE TABLE IF NOT EXISTS pending_evaluations (
     id TEXT PRIMARY KEY,
     submission_id TEXT NOT NULL,
-    agent_hash TEXT NOT NULL,
+    agent_hash TEXT NOT NULL UNIQUE,
     miner_hotkey TEXT NOT NULL,
+    epoch BIGINT NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'pending',
-    claimed_by TEXT,
-    claimed_at TIMESTAMPTZ,
+    validators_completed INTEGER NOT NULL DEFAULT 0,
+    total_validators INTEGER NOT NULL DEFAULT 0,
+    window_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    window_expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '6 hours'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_evaluations(status);
-CREATE INDEX IF NOT EXISTS idx_pending_claimed ON pending_evaluations(claimed_by);
+CREATE INDEX IF NOT EXISTS idx_pending_agent ON pending_evaluations(agent_hash);
+CREATE INDEX IF NOT EXISTS idx_pending_window ON pending_evaluations(window_expires_at);
+
+-- Validator evaluations: ONE evaluation per validator per agent
+-- ALL validators must evaluate each agent (except late ones after 6h)
+CREATE TABLE IF NOT EXISTS validator_evaluations (
+    id TEXT PRIMARY KEY,
+    agent_hash TEXT NOT NULL,
+    validator_hotkey TEXT NOT NULL,
+    submission_id TEXT NOT NULL,
+    miner_hotkey TEXT NOT NULL,
+    score REAL NOT NULL,
+    tasks_passed INTEGER NOT NULL,
+    tasks_total INTEGER NOT NULL,
+    tasks_failed INTEGER NOT NULL,
+    total_cost_usd REAL NOT NULL DEFAULT 0.0,
+    execution_time_ms BIGINT,
+    task_results JSONB,
+    epoch BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    -- UNIQUE: 1 evaluation per validator per agent
+    UNIQUE(agent_hash, validator_hotkey)
+);
+
+CREATE INDEX IF NOT EXISTS idx_val_evals_agent ON validator_evaluations(agent_hash);
+CREATE INDEX IF NOT EXISTS idx_val_evals_validator ON validator_evaluations(validator_hotkey);
+CREATE INDEX IF NOT EXISTS idx_val_evals_epoch ON validator_evaluations(epoch);
+
+-- Track which validators have claimed which agents (in progress)
+CREATE TABLE IF NOT EXISTS validator_claims (
+    id TEXT PRIMARY KEY,
+    agent_hash TEXT NOT NULL,
+    validator_hotkey TEXT NOT NULL,
+    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status TEXT NOT NULL DEFAULT 'claimed',
+    
+    -- UNIQUE: 1 active claim per validator per agent
+    UNIQUE(agent_hash, validator_hotkey)
+);
+
+CREATE INDEX IF NOT EXISTS idx_claims_agent ON validator_claims(agent_hash);
+CREATE INDEX IF NOT EXISTS idx_claims_validator ON validator_claims(validator_hotkey);
 
 -- Config cache
 CREATE TABLE IF NOT EXISTS config (
@@ -155,15 +201,60 @@ pub struct LeaderboardEntry {
     pub rank: Option<i32>,
 }
 
+/// Pending evaluation - one per agent, ALL validators must evaluate
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingEvaluation {
     pub id: String,
     pub submission_id: String,
     pub agent_hash: String,
     pub miner_hotkey: String,
+    pub epoch: i64,
     pub status: String,
-    pub claimed_by: Option<String>,
-    pub claimed_at: Option<i64>,
+    pub validators_completed: i32,
+    pub total_validators: i32,
+    pub window_started_at: i64,
+    pub window_expires_at: i64,
+    pub created_at: i64,
+}
+
+/// Validator's evaluation result for one agent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidatorEvaluation {
+    pub id: String,
+    pub agent_hash: String,
+    pub validator_hotkey: String,
+    pub submission_id: String,
+    pub miner_hotkey: String,
+    pub score: f64,
+    pub tasks_passed: i32,
+    pub tasks_total: i32,
+    pub tasks_failed: i32,
+    pub total_cost_usd: f64,
+    pub execution_time_ms: Option<i64>,
+    pub task_results: Option<serde_json::Value>,
+    pub epoch: i64,
+    pub created_at: i64,
+}
+
+/// Active claim - validator is working on this agent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidatorClaim {
+    pub id: String,
+    pub agent_hash: String,
+    pub validator_hotkey: String,
+    pub claimed_at: i64,
+    pub status: String,
+}
+
+/// Job info returned when claiming
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimableJob {
+    pub pending_id: String,
+    pub submission_id: String,
+    pub agent_hash: String,
+    pub miner_hotkey: String,
+    pub source_code: String,
+    pub window_expires_at: i64,
 }
 
 #[derive(Clone)]
@@ -386,26 +477,26 @@ impl PgStorage {
             anyhow::anyhow!("db insert error: {}", e)
         })?;
 
-        debug!("Submission inserted, queueing evaluation...");
+        debug!("Submission inserted, queueing for all validators...");
 
-        // Also queue for evaluation
-        let pending = PendingEvaluation {
-            id: uuid::Uuid::new_v4().to_string(),
-            submission_id: submission.id.clone(),
-            agent_hash: submission.agent_hash.clone(),
-            miner_hotkey: submission.miner_hotkey.clone(),
-            status: "pending".to_string(),
-            claimed_by: None,
-            claimed_at: None,
-        };
-        self.queue_evaluation(&pending).await.map_err(|e| {
+        // Queue for evaluation by ALL validators
+        // TODO: Get actual validator count from whitelist
+        let total_validators = 3; // Default: require 3 validators
+        self.queue_for_all_validators(
+            &submission.id,
+            &submission.agent_hash,
+            &submission.miner_hotkey,
+            total_validators,
+        )
+        .await
+        .map_err(|e| {
             tracing::error!("Failed to queue evaluation: {:?}", e);
             anyhow::anyhow!("db queue error: {}", e)
         })?;
 
         info!(
-            "Created submission {} for agent {}",
-            submission.id, submission.agent_hash
+            "Created submission {} for agent {} (queued for {} validators)",
+            submission.id, submission.agent_hash, total_validators
         );
         Ok(())
     }
@@ -500,31 +591,536 @@ impl PgStorage {
     }
 
     // ========================================================================
-    // PENDING EVALUATIONS (for validators to claim)
+    // DISTRIBUTED EVALUATION SYSTEM
+    // All validators must evaluate each agent. 6h window for late validators.
     // ========================================================================
 
-    /// Queue an evaluation
-    pub async fn queue_evaluation(&self, eval: &PendingEvaluation) -> Result<()> {
+    /// Queue an agent for evaluation by ALL validators
+    pub async fn queue_for_all_validators(
+        &self,
+        submission_id: &str,
+        agent_hash: &str,
+        miner_hotkey: &str,
+        total_validators: i32,
+    ) -> Result<String> {
         let client = self.pool.get().await?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let epoch = self.get_current_epoch().await.unwrap_or(0);
+
         client.execute(
-            "INSERT INTO pending_evaluations (id, submission_id, agent_hash, miner_hotkey, status)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO pending_evaluations 
+             (id, submission_id, agent_hash, miner_hotkey, epoch, status, total_validators, validators_completed)
+             VALUES ($1, $2, $3, $4, $5, 'pending', $6, 0)
+             ON CONFLICT(agent_hash) DO UPDATE SET
+                total_validators = EXCLUDED.total_validators,
+                status = CASE WHEN pending_evaluations.status = 'completed' THEN pending_evaluations.status ELSE 'pending' END",
+            &[&id, &submission_id, &agent_hash, &miner_hotkey, &epoch, &total_validators],
+        ).await?;
+
+        info!(
+            "Queued agent {} for evaluation by {} validators",
+            agent_hash, total_validators
+        );
+        Ok(id)
+    }
+
+    /// Get jobs available for a specific validator
+    /// Returns jobs that:
+    /// 1. Are in 'pending' or 'evaluating' status
+    /// 2. Have NOT been evaluated by this validator yet
+    /// 3. Are within the 6h window (not expired)
+    pub async fn get_jobs_for_validator(
+        &self,
+        validator_hotkey: &str,
+        limit: i64,
+    ) -> Result<Vec<ClaimableJob>> {
+        let client = self.pool.get().await?;
+
+        let rows = client
+            .query(
+                "SELECT p.id, p.submission_id, p.agent_hash, p.miner_hotkey, s.source_code,
+                    EXTRACT(EPOCH FROM p.window_expires_at)::BIGINT
+             FROM pending_evaluations p
+             JOIN submissions s ON s.agent_hash = p.agent_hash
+             WHERE p.status IN ('pending', 'evaluating')
+               AND p.window_expires_at > NOW()
+               AND NOT EXISTS (
+                   SELECT 1 FROM validator_evaluations ve 
+                   WHERE ve.agent_hash = p.agent_hash 
+                   AND ve.validator_hotkey = $1
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM validator_claims vc
+                   WHERE vc.agent_hash = p.agent_hash
+                   AND vc.validator_hotkey = $1
+                   AND vc.status = 'claimed'
+               )
+             ORDER BY p.created_at ASC
+             LIMIT $2",
+                &[&validator_hotkey, &limit],
+            )
+            .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| ClaimableJob {
+                pending_id: r.get(0),
+                submission_id: r.get(1),
+                agent_hash: r.get(2),
+                miner_hotkey: r.get(3),
+                source_code: r.get(4),
+                window_expires_at: r.get(5),
+            })
+            .collect())
+    }
+
+    /// Claim jobs for a validator (mark as in-progress)
+    pub async fn claim_jobs(
+        &self,
+        validator_hotkey: &str,
+        agent_hashes: &[String],
+    ) -> Result<usize> {
+        let client = self.pool.get().await?;
+        let mut claimed = 0;
+
+        for agent_hash in agent_hashes {
+            let id = uuid::Uuid::new_v4().to_string();
+            let result = client
+                .execute(
+                    "INSERT INTO validator_claims (id, agent_hash, validator_hotkey, status)
+                 VALUES ($1, $2, $3, 'claimed')
+                 ON CONFLICT(agent_hash, validator_hotkey) DO NOTHING",
+                    &[&id, &agent_hash, &validator_hotkey],
+                )
+                .await?;
+
+            if result > 0 {
+                claimed += 1;
+                debug!(
+                    "Validator {} claimed agent {}",
+                    validator_hotkey, agent_hash
+                );
+            }
+        }
+
+        Ok(claimed)
+    }
+
+    /// Check if validator has already evaluated an agent
+    pub async fn has_validator_evaluated(
+        &self,
+        agent_hash: &str,
+        validator_hotkey: &str,
+    ) -> Result<bool> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT 1 FROM validator_evaluations 
+             WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?;
+        Ok(row.is_some())
+    }
+
+    /// Check if evaluation window has expired (6h rule)
+    pub async fn is_window_expired(&self, agent_hash: &str) -> Result<bool> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT 1 FROM pending_evaluations 
+             WHERE agent_hash = $1 AND window_expires_at < NOW()",
+                &[&agent_hash],
+            )
+            .await?;
+        Ok(row.is_some())
+    }
+
+    /// Submit a validator's evaluation result
+    /// Returns (is_late, consensus_reached, final_score)
+    pub async fn submit_validator_evaluation(
+        &self,
+        eval: &ValidatorEvaluation,
+    ) -> Result<(bool, bool, Option<f64>)> {
+        let client = self.pool.get().await?;
+
+        // Check if window expired
+        let window_row = client.query_opt(
+            "SELECT window_expires_at < NOW() as expired, validators_completed, total_validators
+             FROM pending_evaluations WHERE agent_hash = $1",
+            &[&eval.agent_hash],
+        ).await?;
+
+        let (is_expired, validators_completed, total_validators) = match window_row {
+            Some(r) => {
+                let expired: bool = r.get(0);
+                let completed: i32 = r.get(1);
+                let total: i32 = r.get(2);
+                (expired, completed, total)
+            }
+            None => return Err(anyhow::anyhow!("Agent not found in pending evaluations")),
+        };
+
+        if is_expired {
+            info!(
+                "Validator {} is LATE for agent {} (window expired)",
+                &eval.validator_hotkey[..16.min(eval.validator_hotkey.len())],
+                &eval.agent_hash[..16]
+            );
+            // Remove the claim since they're late
+            client
+                .execute(
+                    "DELETE FROM validator_claims WHERE agent_hash = $1 AND validator_hotkey = $2",
+                    &[&eval.agent_hash, &eval.validator_hotkey],
+                )
+                .await?;
+            return Ok((true, false, None));
+        }
+
+        // Insert the evaluation (UNIQUE constraint ensures 1 per validator per agent)
+        let insert_result = client.execute(
+            "INSERT INTO validator_evaluations 
+             (id, agent_hash, validator_hotkey, submission_id, miner_hotkey, score, 
+              tasks_passed, tasks_total, tasks_failed, total_cost_usd, execution_time_ms, task_results, epoch)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             ON CONFLICT(agent_hash, validator_hotkey) DO UPDATE SET
+                score = EXCLUDED.score,
+                tasks_passed = EXCLUDED.tasks_passed,
+                tasks_total = EXCLUDED.tasks_total,
+                tasks_failed = EXCLUDED.tasks_failed,
+                total_cost_usd = EXCLUDED.total_cost_usd,
+                execution_time_ms = EXCLUDED.execution_time_ms,
+                task_results = EXCLUDED.task_results",
             &[
-                &eval.id, &eval.submission_id, &eval.agent_hash, &eval.miner_hotkey, &eval.status,
+                &eval.id, &eval.agent_hash, &eval.validator_hotkey, &eval.submission_id,
+                &eval.miner_hotkey, &eval.score, &eval.tasks_passed, &eval.tasks_total,
+                &eval.tasks_failed, &eval.total_cost_usd, &eval.execution_time_ms,
+                &eval.task_results, &eval.epoch,
             ],
         ).await?;
+
+        if insert_result > 0 {
+            // Update claim status
+            client
+                .execute(
+                    "UPDATE validator_claims SET status = 'completed' 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2",
+                    &[&eval.agent_hash, &eval.validator_hotkey],
+                )
+                .await?;
+
+            // Increment validators_completed counter
+            client
+                .execute(
+                    "UPDATE pending_evaluations SET validators_completed = validators_completed + 1
+                 WHERE agent_hash = $1",
+                    &[&eval.agent_hash],
+                )
+                .await?;
+        }
+
+        // Check if all validators have completed
+        let new_completed = validators_completed + 1;
+        let all_done = new_completed >= total_validators;
+
+        if all_done {
+            // Calculate consensus score and finalize
+            let final_score = self.calculate_and_store_consensus(&eval.agent_hash).await?;
+            return Ok((false, true, Some(final_score)));
+        }
+
+        info!(
+            "Validator {} submitted evaluation for {} ({}/{} validators done)",
+            &eval.validator_hotkey[..16.min(eval.validator_hotkey.len())],
+            &eval.agent_hash[..16],
+            new_completed,
+            total_validators
+        );
+
+        Ok((false, false, None))
+    }
+
+    /// Calculate consensus score from all validator evaluations
+    /// Currently uses simple average (can be extended to stake-weighted)
+    async fn calculate_and_store_consensus(&self, agent_hash: &str) -> Result<f64> {
+        let client = self.pool.get().await?;
+
+        // Get all evaluations for this agent
+        let rows = client
+            .query(
+                "SELECT score, tasks_passed, tasks_total, tasks_failed, total_cost_usd, 
+                    execution_time_ms, submission_id, miner_hotkey
+             FROM validator_evaluations WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        if rows.is_empty() {
+            return Err(anyhow::anyhow!("No evaluations found for agent"));
+        }
+
+        // Calculate averages
+        let mut total_score = 0.0;
+        let mut total_tasks_passed = 0;
+        let mut total_tasks_total = 0;
+        let mut total_tasks_failed = 0;
+        let mut total_cost = 0.0;
+        let mut total_time: i64 = 0;
+        let count = rows.len() as f64;
+
+        let mut submission_id = String::new();
+        let mut miner_hotkey = String::new();
+
+        for row in &rows {
+            let score: f64 = row.get(0);
+            let passed: i32 = row.get(1);
+            let total: i32 = row.get(2);
+            let failed: i32 = row.get(3);
+            let cost: f64 = row.get(4);
+            let time: Option<i64> = row.get(5);
+
+            total_score += score;
+            total_tasks_passed += passed;
+            total_tasks_total += total;
+            total_tasks_failed += failed;
+            total_cost += cost;
+            total_time += time.unwrap_or(0);
+
+            if submission_id.is_empty() {
+                submission_id = row.get(6);
+                miner_hotkey = row.get(7);
+            }
+        }
+
+        let final_score = total_score / count;
+        let avg_passed = (total_tasks_passed as f64 / count).round() as i32;
+        let avg_total = (total_tasks_total as f64 / count).round() as i32;
+        let avg_failed = (total_tasks_failed as f64 / count).round() as i32;
+        let avg_cost = total_cost / count;
+        let avg_time = (total_time as f64 / count).round() as i64;
+
+        // Store final consensus result
+        let eval_id = uuid::Uuid::new_v4().to_string();
+        client
+            .execute(
+                "INSERT INTO evaluations 
+             (id, submission_id, agent_hash, miner_hotkey, score, tasks_passed, tasks_total, 
+              tasks_failed, total_cost_usd, execution_time_ms)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT(id) DO NOTHING",
+                &[
+                    &eval_id,
+                    &submission_id,
+                    &agent_hash,
+                    &miner_hotkey,
+                    &final_score,
+                    &avg_passed,
+                    &avg_total,
+                    &avg_failed,
+                    &avg_cost,
+                    &avg_time,
+                ],
+            )
+            .await?;
+
+        // Update pending_evaluations status
+        client
+            .execute(
+                "UPDATE pending_evaluations SET status = 'completed' WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // Update leaderboard
+        self.update_leaderboard(agent_hash, &miner_hotkey, final_score, avg_cost)
+            .await?;
+
+        info!(
+            "Consensus reached for agent {}: score={:.4} from {} validators",
+            &agent_hash[..16],
+            final_score,
+            rows.len()
+        );
+
+        Ok(final_score)
+    }
+
+    /// Get all validator evaluations for an agent
+    pub async fn get_validator_evaluations(
+        &self,
+        agent_hash: &str,
+    ) -> Result<Vec<ValidatorEvaluation>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                "SELECT id, agent_hash, validator_hotkey, submission_id, miner_hotkey,
+                    score, tasks_passed, tasks_total, tasks_failed, total_cost_usd,
+                    execution_time_ms, task_results, epoch, 
+                    EXTRACT(EPOCH FROM created_at)::BIGINT
+             FROM validator_evaluations WHERE agent_hash = $1
+             ORDER BY created_at ASC",
+                &[&agent_hash],
+            )
+            .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| ValidatorEvaluation {
+                id: r.get(0),
+                agent_hash: r.get(1),
+                validator_hotkey: r.get(2),
+                submission_id: r.get(3),
+                miner_hotkey: r.get(4),
+                score: r.get(5),
+                tasks_passed: r.get(6),
+                tasks_total: r.get(7),
+                tasks_failed: r.get(8),
+                total_cost_usd: r.get(9),
+                execution_time_ms: r.get(10),
+                task_results: r.get(11),
+                epoch: r.get(12),
+                created_at: r.get(13),
+            })
+            .collect())
+    }
+
+    /// Get pending evaluation status for an agent
+    pub async fn get_pending_status(&self, agent_hash: &str) -> Result<Option<PendingEvaluation>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT id, submission_id, agent_hash, miner_hotkey, epoch, status,
+                    validators_completed, total_validators,
+                    EXTRACT(EPOCH FROM window_started_at)::BIGINT,
+                    EXTRACT(EPOCH FROM window_expires_at)::BIGINT,
+                    EXTRACT(EPOCH FROM created_at)::BIGINT
+             FROM pending_evaluations WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        Ok(row.map(|r| PendingEvaluation {
+            id: r.get(0),
+            submission_id: r.get(1),
+            agent_hash: r.get(2),
+            miner_hotkey: r.get(3),
+            epoch: r.get(4),
+            status: r.get(5),
+            validators_completed: r.get(6),
+            total_validators: r.get(7),
+            window_started_at: r.get(8),
+            window_expires_at: r.get(9),
+            created_at: r.get(10),
+        }))
+    }
+
+    /// Expire old evaluation windows and calculate consensus for partial results
+    pub async fn expire_old_windows(&self) -> Result<u64> {
+        let client = self.pool.get().await?;
+
+        // Get agents with expired windows that haven't been completed
+        let rows = client
+            .query(
+                "SELECT agent_hash FROM pending_evaluations 
+             WHERE status != 'completed' AND window_expires_at < NOW()",
+                &[],
+            )
+            .await?;
+
+        let mut expired_count = 0u64;
+        for row in rows {
+            let agent_hash: String = row.get(0);
+
+            // Calculate consensus with whatever evaluations we have
+            match self.calculate_and_store_consensus(&agent_hash).await {
+                Ok(score) => {
+                    info!(
+                        "Expired window for agent {} - consensus score: {:.4}",
+                        &agent_hash[..16],
+                        score
+                    );
+                    expired_count += 1;
+                }
+                Err(e) => {
+                    // No evaluations yet - mark as failed
+                    debug!(
+                        "No evaluations for expired agent {}: {}",
+                        &agent_hash[..16],
+                        e
+                    );
+                    client.execute(
+                        "UPDATE pending_evaluations SET status = 'expired' WHERE agent_hash = $1",
+                        &[&agent_hash],
+                    ).await?;
+                    expired_count += 1;
+                }
+            }
+        }
+
+        if expired_count > 0 {
+            info!("Expired {} evaluation windows", expired_count);
+        }
+
+        Ok(expired_count)
+    }
+
+    /// Get validator's active claims
+    pub async fn get_validator_claims(
+        &self,
+        validator_hotkey: &str,
+    ) -> Result<Vec<ValidatorClaim>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                "SELECT id, agent_hash, validator_hotkey, 
+                    EXTRACT(EPOCH FROM claimed_at)::BIGINT, status
+             FROM validator_claims 
+             WHERE validator_hotkey = $1 AND status = 'claimed'
+             ORDER BY claimed_at ASC",
+                &[&validator_hotkey],
+            )
+            .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| ValidatorClaim {
+                id: r.get(0),
+                agent_hash: r.get(1),
+                validator_hotkey: r.get(2),
+                claimed_at: r.get(3),
+                status: r.get(4),
+            })
+            .collect())
+    }
+
+    /// Release a claim (validator giving up)
+    pub async fn release_claim(&self, agent_hash: &str, validator_hotkey: &str) -> Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute(
+                "DELETE FROM validator_claims WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?;
         Ok(())
     }
 
-    /// Get pending evaluations (unclaimed)
-    pub async fn get_pending_evaluations(&self, limit: i64) -> Result<Vec<PendingEvaluation>> {
+    /// Get all pending evaluations (for status endpoint)
+    pub async fn get_all_pending(&self) -> Result<Vec<PendingEvaluation>> {
         let client = self.pool.get().await?;
-        let rows = client.query(
-            "SELECT id, submission_id, agent_hash, miner_hotkey, status, claimed_by, EXTRACT(EPOCH FROM claimed_at)::BIGINT
-             FROM pending_evaluations WHERE status = 'pending' AND claimed_by IS NULL ORDER BY created_at ASC LIMIT $1",
-            &[&limit],
-        ).await?;
+        let rows = client
+            .query(
+                "SELECT id, submission_id, agent_hash, miner_hotkey, epoch, status,
+                    validators_completed, total_validators,
+                    EXTRACT(EPOCH FROM window_started_at)::BIGINT,
+                    EXTRACT(EPOCH FROM window_expires_at)::BIGINT,
+                    EXTRACT(EPOCH FROM created_at)::BIGINT
+             FROM pending_evaluations 
+             WHERE status IN ('pending', 'evaluating')
+             ORDER BY created_at ASC",
+                &[],
+            )
+            .await?;
 
         Ok(rows
             .iter()
@@ -533,82 +1129,15 @@ impl PgStorage {
                 submission_id: r.get(1),
                 agent_hash: r.get(2),
                 miner_hotkey: r.get(3),
-                status: r.get(4),
-                claimed_by: r.get(5),
-                claimed_at: r.get(6),
+                epoch: r.get(4),
+                status: r.get(5),
+                validators_completed: r.get(6),
+                total_validators: r.get(7),
+                window_started_at: r.get(8),
+                window_expires_at: r.get(9),
+                created_at: r.get(10),
             })
             .collect())
-    }
-
-    /// Claim an evaluation for a validator
-    /// Returns the evaluation with source code if successful
-    pub async fn claim_evaluation(
-        &self,
-        validator_hotkey: &str,
-    ) -> Result<Option<(PendingEvaluation, String)>> {
-        let client = self.pool.get().await?;
-
-        // Try to claim the oldest unclaimed evaluation
-        let row = client.query_opt(
-            "UPDATE pending_evaluations SET claimed_by = $1, claimed_at = NOW(), status = 'evaluating'
-             WHERE id = (SELECT id FROM pending_evaluations WHERE status = 'pending' AND claimed_by IS NULL ORDER BY created_at ASC LIMIT 1)
-             RETURNING id, submission_id, agent_hash, miner_hotkey, status",
-            &[&validator_hotkey],
-        ).await?;
-
-        if let Some(r) = row {
-            let eval = PendingEvaluation {
-                id: r.get(0),
-                submission_id: r.get(1),
-                agent_hash: r.get(2),
-                miner_hotkey: r.get(3),
-                status: r.get(4),
-                claimed_by: Some(validator_hotkey.to_string()),
-                claimed_at: Some(chrono::Utc::now().timestamp()),
-            };
-
-            // Get source code from submissions table
-            if let Some(submission) = self.get_submission(&eval.agent_hash).await? {
-                return Ok(Some((eval, submission.source_code)));
-            }
-        }
-
-        Ok(None)
-    }
-
-    /// Complete an evaluation
-    pub async fn complete_evaluation(&self, id: &str, success: bool) -> Result<()> {
-        let status = if success { "completed" } else { "failed" };
-        let client = self.pool.get().await?;
-        client
-            .execute(
-                "UPDATE pending_evaluations SET status = $1 WHERE id = $2",
-                &[&status, &id],
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// Release a claimed evaluation (validator gave up)
-    pub async fn release_evaluation(&self, id: &str) -> Result<()> {
-        let client = self.pool.get().await?;
-        client.execute(
-            "UPDATE pending_evaluations SET claimed_by = NULL, claimed_at = NULL, status = 'pending' WHERE id = $1",
-            &[&id],
-        ).await?;
-        Ok(())
-    }
-
-    /// Delete completed evaluations
-    pub async fn cleanup_completed(&self) -> Result<u64> {
-        let client = self.pool.get().await?;
-        let count = client
-            .execute(
-                "DELETE FROM pending_evaluations WHERE status IN ('completed', 'failed')",
-                &[],
-            )
-            .await?;
-        Ok(count)
     }
 
     // ========================================================================

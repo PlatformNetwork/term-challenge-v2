@@ -365,46 +365,52 @@ pub async fn get_my_agent_source(
 
 // ============================================================================
 // VALIDATOR ENDPOINTS (Whitelisted validators only)
+// ALL validators must evaluate each agent. 6h window for late validators.
 // ============================================================================
 
 #[derive(Debug, Deserialize)]
-pub struct ClaimJobRequest {
+pub struct ClaimJobsRequest {
     pub validator_hotkey: String,
     pub signature: String,
     pub timestamp: i64,
+    pub count: Option<usize>, // Max jobs to claim (default: 5, max: 10)
 }
 
 #[derive(Debug, Serialize)]
-pub struct ClaimJobResponse {
+pub struct ClaimJobsResponse {
     pub success: bool,
-    pub job: Option<JobInfo>,
+    pub jobs: Vec<JobInfo>,
+    pub total_available: usize,
     pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct JobInfo {
-    pub job_id: String,
+    pub pending_id: String,
     pub submission_id: String,
     pub agent_hash: String,
     pub miner_hotkey: String,
     pub source_code: String,
+    pub window_expires_at: i64,
 }
 
-/// POST /api/v1/validator/claim_job - Claim a pending evaluation job
+/// POST /api/v1/validator/claim_jobs - Claim pending evaluation jobs
 ///
-/// Requires validator to be in whitelist.
-/// Returns source code ONLY to whitelisted validators.
-pub async fn claim_job(
+/// Each validator must evaluate ALL pending agents.
+/// Returns jobs that this validator hasn't evaluated yet.
+/// Window expires after 6h - late validators are exempt.
+pub async fn claim_jobs(
     State(state): State<Arc<ApiState>>,
-    Json(req): Json<ClaimJobRequest>,
-) -> Result<Json<ClaimJobResponse>, (StatusCode, Json<ClaimJobResponse>)> {
+    Json(req): Json<ClaimJobsRequest>,
+) -> Result<Json<ClaimJobsResponse>, (StatusCode, Json<ClaimJobsResponse>)> {
     // Validate hotkey
     if !is_valid_ss58_hotkey(&req.validator_hotkey) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ClaimJobResponse {
+            Json(ClaimJobsResponse {
                 success: false,
-                job: None,
+                jobs: vec![],
+                total_available: 0,
                 error: Some("Invalid hotkey format".to_string()),
             }),
         ));
@@ -414,22 +420,24 @@ pub async fn claim_job(
     if !is_timestamp_valid(req.timestamp) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ClaimJobResponse {
+            Json(ClaimJobsResponse {
                 success: false,
-                job: None,
+                jobs: vec![],
+                total_available: 0,
                 error: Some("Timestamp expired".to_string()),
             }),
         ));
     }
 
     // Verify signature
-    let message = format!("claim_job:{}", req.timestamp);
+    let message = format!("claim_jobs:{}", req.timestamp);
     if !verify_signature(&req.validator_hotkey, &message, &req.signature) {
         return Err((
             StatusCode::UNAUTHORIZED,
-            Json(ClaimJobResponse {
+            Json(ClaimJobsResponse {
                 success: false,
-                job: None,
+                jobs: vec![],
+                total_available: 0,
                 error: Some("Invalid signature".to_string()),
             }),
         ));
@@ -447,89 +455,336 @@ pub async fn claim_job(
         );
         return Err((
             StatusCode::FORBIDDEN,
-            Json(ClaimJobResponse {
+            Json(ClaimJobsResponse {
                 success: false,
-                job: None,
+                jobs: vec![],
+                total_available: 0,
                 error: Some("Validator not in whitelist".to_string()),
             }),
         ));
     }
 
-    // Claim evaluation
-    let result = state
+    let count = req.count.unwrap_or(5).min(10);
+
+    // Get jobs available for this validator
+    let available_jobs = state
         .storage
-        .claim_evaluation(&req.validator_hotkey)
+        .get_jobs_for_validator(&req.validator_hotkey, count as i64)
         .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ClaimJobResponse {
+                Json(ClaimJobsResponse {
                     success: false,
-                    job: None,
+                    jobs: vec![],
+                    total_available: 0,
                     error: Some(e.to_string()),
                 }),
             )
         })?;
 
-    match result {
-        Some((eval, source_code)) => {
-            info!(
-                "Validator {} claimed job {} for agent {}",
-                &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
-                &eval.id[..8],
-                &eval.agent_hash[..16]
-            );
-            Ok(Json(ClaimJobResponse {
-                success: true,
-                job: Some(JobInfo {
-                    job_id: eval.id,
-                    submission_id: eval.submission_id,
-                    agent_hash: eval.agent_hash,
-                    miner_hotkey: eval.miner_hotkey,
-                    source_code,
-                }),
-                error: None,
-            }))
-        }
-        None => Ok(Json(ClaimJobResponse {
+    let total_available = available_jobs.len();
+
+    if available_jobs.is_empty() {
+        return Ok(Json(ClaimJobsResponse {
             success: true,
-            job: None,
-            error: Some("No pending jobs available".to_string()),
-        })),
+            jobs: vec![],
+            total_available: 0,
+            error: Some("No pending jobs for this validator".to_string()),
+        }));
     }
+
+    // Claim the jobs
+    let agent_hashes: Vec<String> = available_jobs
+        .iter()
+        .map(|j| j.agent_hash.clone())
+        .collect();
+    let _ = state
+        .storage
+        .claim_jobs(&req.validator_hotkey, &agent_hashes)
+        .await;
+
+    let jobs: Vec<JobInfo> = available_jobs
+        .into_iter()
+        .map(|j| JobInfo {
+            pending_id: j.pending_id,
+            submission_id: j.submission_id,
+            agent_hash: j.agent_hash,
+            miner_hotkey: j.miner_hotkey,
+            source_code: j.source_code,
+            window_expires_at: j.window_expires_at,
+        })
+        .collect();
+
+    info!(
+        "Validator {} claimed {} jobs",
+        &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
+        jobs.len()
+    );
+
+    Ok(Json(ClaimJobsResponse {
+        success: true,
+        jobs,
+        total_available,
+        error: None,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
-pub struct CompleteJobRequest {
+pub struct SubmitResultRequest {
     pub validator_hotkey: String,
     pub signature: String,
     pub timestamp: i64,
-    pub job_id: String,
+    pub agent_hash: String,
     pub score: f64,
     pub tasks_passed: i32,
     pub tasks_total: i32,
-    pub success: bool,
+    pub tasks_failed: i32,
+    pub total_cost_usd: f64,
+    pub execution_time_ms: Option<i64>,
+    pub task_results: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct CompleteJobResponse {
+pub struct SubmitResultResponse {
     pub success: bool,
+    pub is_late: bool,
+    pub consensus_reached: bool,
+    pub final_score: Option<f64>,
+    pub validators_completed: i32,
+    pub total_validators: i32,
     pub error: Option<String>,
 }
 
-/// POST /api/v1/validator/complete_job - Complete an evaluation job
+/// POST /api/v1/validator/submit_result - Submit evaluation result
 ///
-/// Requires validator to be in whitelist.
-pub async fn complete_job(
+/// Each validator submits ONE evaluation per agent.
+/// When ALL validators complete (or window expires), consensus is calculated.
+pub async fn submit_result(
     State(state): State<Arc<ApiState>>,
-    Json(req): Json<CompleteJobRequest>,
-) -> Result<Json<CompleteJobResponse>, (StatusCode, Json<CompleteJobResponse>)> {
+    Json(req): Json<SubmitResultRequest>,
+) -> Result<Json<SubmitResultResponse>, (StatusCode, Json<SubmitResultResponse>)> {
     // Validate hotkey
     if !is_valid_ss58_hotkey(&req.validator_hotkey) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(CompleteJobResponse {
+            Json(SubmitResultResponse {
                 success: false,
+                is_late: false,
+                consensus_reached: false,
+                final_score: None,
+                validators_completed: 0,
+                total_validators: 0,
+                error: Some("Invalid hotkey format".to_string()),
+            }),
+        ));
+    }
+
+    // Validate timestamp
+    if !is_timestamp_valid(req.timestamp) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(SubmitResultResponse {
+                success: false,
+                is_late: false,
+                consensus_reached: false,
+                final_score: None,
+                validators_completed: 0,
+                total_validators: 0,
+                error: Some("Timestamp expired".to_string()),
+            }),
+        ));
+    }
+
+    // Verify signature
+    let message = format!("submit_result:{}:{}", req.agent_hash, req.timestamp);
+    if !verify_signature(&req.validator_hotkey, &message, &req.signature) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(SubmitResultResponse {
+                success: false,
+                is_late: false,
+                consensus_reached: false,
+                final_score: None,
+                validators_completed: 0,
+                total_validators: 0,
+                error: Some("Invalid signature".to_string()),
+            }),
+        ));
+    }
+
+    // Check if validator is whitelisted
+    if !state
+        .auth
+        .is_whitelisted_validator(&req.validator_hotkey)
+        .await
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(SubmitResultResponse {
+                success: false,
+                is_late: false,
+                consensus_reached: false,
+                final_score: None,
+                validators_completed: 0,
+                total_validators: 0,
+                error: Some("Validator not in whitelist".to_string()),
+            }),
+        ));
+    }
+
+    // Get pending status for context
+    let pending = state
+        .storage
+        .get_pending_status(&req.agent_hash)
+        .await
+        .ok()
+        .flatten();
+    let (total_validators, current_completed) = pending
+        .as_ref()
+        .map(|p| (p.total_validators, p.validators_completed))
+        .unwrap_or((0, 0));
+
+    // Get submission info
+    let submission = state
+        .storage
+        .get_submission_info(&req.agent_hash)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SubmitResultResponse {
+                    success: false,
+                    is_late: false,
+                    consensus_reached: false,
+                    final_score: None,
+                    validators_completed: current_completed,
+                    total_validators,
+                    error: Some(format!("Failed to get submission: {}", e)),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(SubmitResultResponse {
+                    success: false,
+                    is_late: false,
+                    consensus_reached: false,
+                    final_score: None,
+                    validators_completed: current_completed,
+                    total_validators,
+                    error: Some("Agent not found".to_string()),
+                }),
+            )
+        })?;
+
+    // Create evaluation record
+    let eval = crate::pg_storage::ValidatorEvaluation {
+        id: uuid::Uuid::new_v4().to_string(),
+        agent_hash: req.agent_hash.clone(),
+        validator_hotkey: req.validator_hotkey.clone(),
+        submission_id: submission.id,
+        miner_hotkey: submission.miner_hotkey,
+        score: req.score,
+        tasks_passed: req.tasks_passed,
+        tasks_total: req.tasks_total,
+        tasks_failed: req.tasks_failed,
+        total_cost_usd: req.total_cost_usd,
+        execution_time_ms: req.execution_time_ms,
+        task_results: req.task_results,
+        epoch: submission.epoch,
+        created_at: chrono::Utc::now().timestamp(),
+    };
+
+    // Submit evaluation
+    let (is_late, consensus_reached, final_score) = state
+        .storage
+        .submit_validator_evaluation(&eval)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SubmitResultResponse {
+                    success: false,
+                    is_late: false,
+                    consensus_reached: false,
+                    final_score: None,
+                    validators_completed: current_completed,
+                    total_validators,
+                    error: Some(e.to_string()),
+                }),
+            )
+        })?;
+
+    if is_late {
+        info!(
+            "Validator {} is LATE for agent {} - evaluation ignored",
+            &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
+            &req.agent_hash[..16]
+        );
+    } else if consensus_reached {
+        info!(
+            "Consensus reached for agent {} - final score: {:.4}",
+            &req.agent_hash[..16],
+            final_score.unwrap_or(0.0)
+        );
+    }
+
+    Ok(Json(SubmitResultResponse {
+        success: !is_late,
+        is_late,
+        consensus_reached,
+        final_score,
+        validators_completed: if is_late {
+            current_completed
+        } else {
+            current_completed + 1
+        },
+        total_validators,
+        error: if is_late {
+            Some("Window expired - too late".to_string())
+        } else {
+            None
+        },
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetMyJobsRequest {
+    pub validator_hotkey: String,
+    pub signature: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetMyJobsResponse {
+    pub success: bool,
+    pub pending_jobs: Vec<PendingJobInfo>,
+    pub completed_count: usize,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PendingJobInfo {
+    pub agent_hash: String,
+    pub miner_hotkey: String,
+    pub window_expires_at: i64,
+}
+
+/// POST /api/v1/validator/my_jobs - Get validator's pending jobs
+pub async fn get_my_jobs(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<GetMyJobsRequest>,
+) -> Result<Json<GetMyJobsResponse>, (StatusCode, Json<GetMyJobsResponse>)> {
+    // Validate hotkey
+    if !is_valid_ss58_hotkey(&req.validator_hotkey) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(GetMyJobsResponse {
+                success: false,
+                pending_jobs: vec![],
+                completed_count: 0,
                 error: Some("Invalid hotkey format".to_string()),
             }),
         ));
@@ -543,40 +798,113 @@ pub async fn complete_job(
     {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(CompleteJobResponse {
+            Json(GetMyJobsResponse {
                 success: false,
+                pending_jobs: vec![],
+                completed_count: 0,
                 error: Some("Validator not in whitelist".to_string()),
             }),
         ));
     }
 
-    // Complete the job
-    state
+    // Get pending jobs for this validator (jobs they haven't evaluated yet)
+    let jobs = state
         .storage
-        .complete_evaluation(&req.job_id, req.success)
+        .get_jobs_for_validator(&req.validator_hotkey, 100)
         .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(CompleteJobResponse {
+                Json(GetMyJobsResponse {
                     success: false,
+                    pending_jobs: vec![],
+                    completed_count: 0,
                     error: Some(e.to_string()),
                 }),
             )
         })?;
 
-    info!(
-        "Validator {} completed job {} (success: {}, score: {:.2})",
-        &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
-        &req.job_id[..8],
-        req.success,
-        req.score
-    );
+    // Get claims (jobs in progress)
+    let claims = state
+        .storage
+        .get_validator_claims(&req.validator_hotkey)
+        .await
+        .unwrap_or_default();
 
-    Ok(Json(CompleteJobResponse {
+    let pending_jobs: Vec<PendingJobInfo> = jobs
+        .into_iter()
+        .map(|j| PendingJobInfo {
+            agent_hash: j.agent_hash,
+            miner_hotkey: j.miner_hotkey,
+            window_expires_at: j.window_expires_at,
+        })
+        .collect();
+
+    Ok(Json(GetMyJobsResponse {
         success: true,
+        pending_jobs,
+        completed_count: claims.iter().filter(|c| c.status == "completed").count(),
         error: None,
     }))
+}
+
+/// GET /api/v1/validator/agent_status/:agent_hash - Check if agent has been evaluated
+pub async fn get_agent_eval_status(
+    State(state): State<Arc<ApiState>>,
+    Path(agent_hash): Path<String>,
+) -> Result<Json<AgentEvalStatusResponse>, (StatusCode, String)> {
+    let pending = state
+        .storage
+        .get_pending_status(&agent_hash)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let evaluations = state
+        .storage
+        .get_validator_evaluations(&agent_hash)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(AgentEvalStatusResponse {
+        agent_hash,
+        status: pending
+            .as_ref()
+            .map(|p| p.status.clone())
+            .unwrap_or_else(|| "not_found".to_string()),
+        validators_completed: pending
+            .as_ref()
+            .map(|p| p.validators_completed)
+            .unwrap_or(0),
+        total_validators: pending.as_ref().map(|p| p.total_validators).unwrap_or(0),
+        window_expires_at: pending.as_ref().map(|p| p.window_expires_at),
+        evaluations: evaluations
+            .into_iter()
+            .map(|e| ValidatorEvalInfo {
+                validator_hotkey: e.validator_hotkey,
+                score: e.score,
+                tasks_passed: e.tasks_passed,
+                tasks_total: e.tasks_total,
+            })
+            .collect(),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentEvalStatusResponse {
+    pub agent_hash: String,
+    pub status: String,
+    pub validators_completed: i32,
+    pub total_validators: i32,
+    pub window_expires_at: Option<i64>,
+    pub evaluations: Vec<ValidatorEvalInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ValidatorEvalInfo {
+    pub validator_hotkey: String,
+    pub score: f64,
+    pub tasks_passed: i32,
+    pub tasks_total: i32,
 }
 
 // ============================================================================
@@ -602,7 +930,7 @@ pub async fn get_status(
 
     let pending = state
         .storage
-        .get_pending_evaluations(1000)
+        .get_all_pending()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 

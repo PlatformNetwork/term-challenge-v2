@@ -925,8 +925,13 @@ pub async fn run_server_with_mode(
                 "/my/agents/:agent_hash/source",
                 post(api::get_my_agent_source),
             )
-            .route("/validator/claim_job", post(api::claim_job))
-            .route("/validator/complete_job", post(api::complete_job))
+            .route("/validator/claim_jobs", post(api::claim_jobs))
+            .route("/validator/submit_result", post(api::submit_result))
+            .route("/validator/my_jobs", post(api::get_my_jobs))
+            .route(
+                "/validator/agent_status/:agent_hash",
+                get(api::get_agent_eval_status),
+            )
             .route("/status", get(api::get_status))
             .layer(
                 CorsLayer::new()
@@ -992,8 +997,10 @@ pub async fn run_server_with_mode(
         info!("║    GET  /api/v1/leaderboard/:hash   - Get agent details      ║");
         info!("║    POST /api/v1/my/agents           - List my agents         ║");
         info!("║    POST /api/v1/my/agents/:h/source - Get my agent source    ║");
-        info!("║    POST /api/v1/validator/claim_job - Claim job (validator)  ║");
-        info!("║    POST /api/v1/validator/complete_job - Complete job        ║");
+        info!("║    POST /api/v1/validator/claim_jobs - Claim jobs (batch)     ║");
+        info!("║    POST /api/v1/validator/submit_result - Submit evaluation  ║");
+        info!("║    POST /api/v1/validator/my_jobs - Get my pending jobs      ║");
+        info!("║    GET  /api/v1/validator/agent_status/:h - Agent eval status║");
         info!("║    GET  /api/v1/status              - Challenge status       ║");
     }
     info!("╚══════════════════════════════════════════════════════════════╝");
