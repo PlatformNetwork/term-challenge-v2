@@ -477,28 +477,33 @@ impl PgStorage {
             anyhow::anyhow!("db insert error: {}", e)
         })?;
 
-        debug!("Submission inserted, queueing for all validators...");
-
-        // Queue for evaluation by ALL validators
-        // TODO: Get actual validator count from whitelist
-        let total_validators = 3; // Default: require 3 validators
-        self.queue_for_all_validators(
-            &submission.id,
-            &submission.agent_hash,
-            &submission.miner_hotkey,
-            total_validators,
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to queue evaluation: {:?}", e);
-            anyhow::anyhow!("db queue error: {}", e)
-        })?;
-
         info!(
-            "Created submission {} for agent {} (queued for {} validators)",
-            submission.id, submission.agent_hash, total_validators
+            "Created submission {} for agent {}",
+            submission.id, submission.agent_hash
         );
         Ok(())
+    }
+
+    /// Queue a submission for evaluation by all validators
+    /// Call this after creating submission, with validator count from platform-server
+    pub async fn queue_submission_for_evaluation(
+        &self,
+        submission_id: &str,
+        agent_hash: &str,
+        miner_hotkey: &str,
+        total_validators: i32,
+    ) -> Result<String> {
+        debug!(
+            "Queueing submission {} for {} validators",
+            agent_hash, total_validators
+        );
+
+        self.queue_for_all_validators(submission_id, agent_hash, miner_hotkey, total_validators)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to queue evaluation: {:?}", e);
+                anyhow::anyhow!("db queue error: {}", e)
+            })
     }
 
     /// Get submission by agent hash (includes source code - SENSITIVE)

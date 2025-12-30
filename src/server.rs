@@ -910,10 +910,14 @@ pub async fn run_server_with_mode(
     if let Some(ref pg) = state.pg_storage {
         info!("Enabling submission API endpoints (server mode)");
 
+        // Get platform URL for validator communication
+        let platform_url = state.platform_client.base_url().to_string();
+
         // Clone storage for API state
         let api_state = Arc::new(ApiState {
             storage: pg.clone(),
             auth: AuthManager::with_whitelist(state.auth_manager.get_whitelist().await),
+            platform_url,
         });
 
         let api_routes = Router::new()

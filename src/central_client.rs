@@ -189,7 +189,7 @@ impl PlatformClient {
             .json(&serde_json::json!({
                 "task_id": task_id,
                 "validator_hotkey": validator_hotkey,
-                "signature": "placeholder", // TODO: Real signature
+                "signature": "internal", // Platform-server handles auth for internal calls
                 "ttl_seconds": ttl_seconds,
             }))
             .send()
@@ -212,7 +212,7 @@ impl PlatformClient {
             ))
             .json(&serde_json::json!({
                 "validator_hotkey": validator_hotkey,
-                "signature": "placeholder",
+                "signature": "internal", // Platform-server handles auth for internal calls
             }))
             .send()
             .await?;

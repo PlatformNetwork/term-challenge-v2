@@ -29,6 +29,7 @@ use tracing::{info, warn};
 pub struct ApiState {
     pub storage: PgStorage,
     pub auth: AuthManager,
+    pub platform_url: String,
 }
 
 // ============================================================================
@@ -148,6 +149,31 @@ pub async fn submit_agent(
         ));
     }
 
+    // Get validator count from platform-server and queue for evaluation
+    let validator_count = get_active_validator_count(&state.platform_url)
+        .await
+        .unwrap_or(3);
+    if validator_count > 0 {
+        if let Err(e) = state
+            .storage
+            .queue_submission_for_evaluation(
+                &submission_id,
+                &agent_hash,
+                &req.miner_hotkey,
+                validator_count,
+            )
+            .await
+        {
+            warn!("Failed to queue submission for evaluation: {:?}", e);
+        } else {
+            info!(
+                "Queued agent {} for evaluation by {} validators",
+                &agent_hash[..16],
+                validator_count
+            );
+        }
+    }
+
     info!(
         "Agent submitted: {} from {} (epoch {})",
         &agent_hash[..16],
@@ -161,6 +187,38 @@ pub async fn submit_agent(
         agent_hash: Some(agent_hash),
         error: None,
     }))
+}
+
+/// Get active validator count from platform-server
+async fn get_active_validator_count(platform_url: &str) -> Option<i32> {
+    let url = format!("{}/api/v1/validators", platform_url);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    let response = client.get(&url).send().await.ok()?;
+
+    if !response.status().is_success() {
+        warn!(
+            "Failed to get validators from platform-server: {}",
+            response.status()
+        );
+        return None;
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ValidatorInfo {
+        #[allow(dead_code)]
+        hotkey: String,
+    }
+
+    let validators: Vec<ValidatorInfo> = response.json().await.ok()?;
+    let count = validators.len() as i32;
+
+    info!("Got {} active validators from platform-server", count);
+
+    Some(count.max(1)) // At least 1 validator
 }
 
 // ============================================================================

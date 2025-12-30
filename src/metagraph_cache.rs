@@ -13,11 +13,13 @@ use tracing::{debug, info, warn};
 /// Cache refresh interval (1 minute)
 const CACHE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
-#[derive(Debug, Deserialize)]
-struct ValidatorInfo {
-    hotkey: String,
+#[derive(Debug, Clone, Deserialize)]
+pub struct ValidatorInfo {
+    pub hotkey: String,
     #[serde(default)]
-    stake: u64,
+    pub stake: u64,
+    #[serde(default)]
+    pub is_active: bool,
 }
 
 /// Metagraph cache for registered hotkeys
@@ -26,6 +28,8 @@ pub struct MetagraphCache {
     platform_url: String,
     /// Cached hotkeys (hex format)
     hotkeys: Arc<RwLock<HashSet<String>>>,
+    /// Full validator info list
+    validators: Arc<RwLock<Vec<ValidatorInfo>>>,
     /// Last refresh time
     last_refresh: Arc<RwLock<Option<Instant>>>,
     /// Whether cache is initialized
@@ -38,6 +42,7 @@ impl MetagraphCache {
         Self {
             platform_url,
             hotkeys: Arc::new(RwLock::new(HashSet::new())),
+            validators: Arc::new(RwLock::new(Vec::new())),
             last_refresh: Arc::new(RwLock::new(None)),
             initialized: Arc::new(RwLock::new(false)),
         }
@@ -65,6 +70,25 @@ impl MetagraphCache {
     /// Get the number of registered hotkeys
     pub fn count(&self) -> usize {
         self.hotkeys.read().len()
+    }
+
+    /// Get the number of active validators
+    pub fn active_validator_count(&self) -> usize {
+        self.validators.read().len()
+    }
+
+    /// Get all active validators
+    pub fn get_validators(&self) -> Vec<ValidatorInfo> {
+        self.validators.read().clone()
+    }
+
+    /// Get validator hotkeys
+    pub fn get_validator_hotkeys(&self) -> Vec<String> {
+        self.validators
+            .read()
+            .iter()
+            .map(|v| v.hotkey.clone())
+            .collect()
     }
 
     /// Check if cache needs refresh
@@ -115,12 +139,16 @@ impl MetagraphCache {
             new_hotkeys.insert(normalized);
         }
 
-        let count = new_hotkeys.len();
+        let count = validators.len();
 
-        // Update cache
+        // Update caches
         {
             let mut hotkeys = self.hotkeys.write();
             *hotkeys = new_hotkeys;
+        }
+        {
+            let mut cached_validators = self.validators.write();
+            *cached_validators = validators;
         }
         {
             let mut last = self.last_refresh.write();
