@@ -170,156 +170,53 @@ async fn fetch_status(platform_url: &str, hash: &str) -> Result<AgentStatus> {
         .timeout(Duration::from_secs(10))
         .build()?;
 
-    // Use bridge route to term-challenge
-    // First try to get agent details directly by hash
+    // Use bridge route to term-challenge - get agent details
     let agent_url = format!(
         "{}/api/v1/bridge/term-challenge/leaderboard/{}",
         platform_url, hash
     );
 
-    if let Ok(resp) = client.get(&agent_url).send().await {
-        if resp.status().is_success() {
-            if let Ok(agent) = resp.json::<serde_json::Value>().await {
-                // Found agent directly
-                let evaluations: Vec<EvaluationInfo> = agent["evaluations"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .map(|e| EvaluationInfo {
-                                validator_hotkey: e["validator_hotkey"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .to_string(),
-                                score: e["score"].as_f64().unwrap_or(0.0),
-                                tasks_passed: e["tasks_passed"].as_u64().unwrap_or(0) as u32,
-                                tasks_total: e["tasks_total"].as_u64().unwrap_or(0) as u32,
-                                total_cost_usd: e["total_cost_usd"].as_f64().unwrap_or(0.0),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+    let resp = client.get(&agent_url).send().await?;
 
-                let avg_score = if !evaluations.is_empty() {
-                    Some(
-                        evaluations.iter().map(|e| e.score).sum::<f64>() / evaluations.len() as f64,
-                    )
-                } else {
-                    agent["best_score"].as_f64()
-                };
-
-                let tasks_info = if !evaluations.is_empty() {
-                    let total_passed: u32 = evaluations.iter().map(|e| e.tasks_passed).sum();
-                    let total_tasks: u32 = evaluations.iter().map(|e| e.tasks_total).sum();
-                    Some(format!("{}/{}", total_passed, total_tasks))
-                } else {
-                    None
-                };
-
-                return Ok(AgentStatus {
-                    name: agent["name"].as_str().unwrap_or("unnamed").to_string(),
-                    status: agent["status"].as_str().unwrap_or("completed").to_string(),
-                    score: avg_score,
-                    tasks_info,
-                    submitted_at: agent["first_seen"].as_str().unwrap_or("").to_string(),
-                    evaluated_at: agent["last_updated"].as_str().map(String::from),
-                    evaluations,
-                });
-            }
-        }
-    }
-
-    // Fallback: Try leaderboard to find agent by partial hash
-    let leaderboard_url = format!("{}/api/v1/bridge/term-challenge/leaderboard", platform_url);
-
-    let leaderboard: serde_json::Value = client
-        .get(&leaderboard_url)
-        .send()
-        .await?
-        .json()
-        .await
-        .unwrap_or_default();
-
-    // Find matching entry
-    let entries = leaderboard["entries"].as_array();
-    let submission = entries.and_then(|arr| {
-        arr.iter().find(|s| {
-            s["agent_hash"]
-                .as_str()
-                .map(|h| h.starts_with(hash) || hash.starts_with(&h[..hash.len().min(h.len())]))
-                .unwrap_or(false)
-        })
-    });
-
-    if let Some(sub) = submission {
-        let agent_hash = sub["agent_hash"].as_str().unwrap_or(hash);
-
-        // Fetch detailed info for this agent
-        let detail_url = format!(
-            "{}/api/v1/bridge/term-challenge/leaderboard/{}",
-            platform_url, agent_hash
-        );
-        let evals: Vec<serde_json::Value> = client
-            .get(&detail_url)
-            .send()
-            .await
-            .ok()
-            .and_then(|r| {
-                if r.status().is_success() {
-                    Some(r)
-                } else {
-                    None
-                }
-            })
-            .and_then(|r| futures::executor::block_on(r.json::<serde_json::Value>()).ok())
-            .and_then(|v| v["evaluations"].as_array().cloned())
-            .unwrap_or_default();
-
-        let evaluations: Vec<EvaluationInfo> = evals
-            .iter()
-            .map(|e| EvaluationInfo {
-                validator_hotkey: e["validator_hotkey"].as_str().unwrap_or("").to_string(),
-                score: e["score"].as_f64().unwrap_or(0.0),
-                tasks_passed: e["tasks_passed"].as_u64().unwrap_or(0) as u32,
-                tasks_total: e["tasks_total"].as_u64().unwrap_or(0) as u32,
-                total_cost_usd: e["total_cost_usd"].as_f64().unwrap_or(0.0),
-            })
-            .collect();
-
-        // Compute aggregate score
-        let avg_score = if !evaluations.is_empty() {
-            Some(evaluations.iter().map(|e| e.score).sum::<f64>() / evaluations.len() as f64)
-        } else {
-            None
-        };
-
-        let status = sub["status"].as_str().unwrap_or("pending").to_string();
-        let tasks_info = if !evaluations.is_empty() {
-            let total_passed: u32 = evaluations.iter().map(|e| e.tasks_passed).sum();
-            let total_tasks: u32 = evaluations.iter().map(|e| e.tasks_total).sum();
-            Some(format!("{}/{}", total_passed, total_tasks))
-        } else {
-            None
-        };
-
-        return Ok(AgentStatus {
-            name: sub["name"].as_str().unwrap_or("unnamed").to_string(),
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(anyhow::anyhow!(
+            "Agent not found. Check the hash or submit an agent first.\n\
+             Searched for: {}\n\
+             Status: {}\n\
+             Response: {}",
+            hash,
             status,
-            score: avg_score,
-            tasks_info,
-            submitted_at: sub["created_at"].as_str().unwrap_or("").to_string(),
-            evaluated_at: None,
-            evaluations,
-        });
+            text
+        ));
     }
 
-    // Not found
-    Err(anyhow::anyhow!(
-        "Agent not found. Check the hash or submit an agent first.\n\
-         Searched for: {}\n\
-         API: {}/api/v1/bridge/term-challenge/leaderboard",
-        hash,
-        platform_url
-    ))
+    let agent: serde_json::Value = resp.json().await?;
+
+    // Build status from response
+    let status = agent["status"].as_str().unwrap_or("pending").to_string();
+    let validators_completed = agent["validators_completed"].as_i64().unwrap_or(0) as i32;
+    let total_validators = agent["total_validators"].as_i64().unwrap_or(0) as i32;
+
+    let tasks_info = if validators_completed > 0 && total_validators > 0 {
+        Some(format!(
+            "{}/{} validators",
+            validators_completed, total_validators
+        ))
+    } else {
+        None
+    };
+
+    Ok(AgentStatus {
+        name: agent["name"].as_str().unwrap_or("unnamed").to_string(),
+        status,
+        score: agent["best_score"].as_f64(),
+        tasks_info,
+        submitted_at: agent["submitted_at"].as_str().unwrap_or("").to_string(),
+        evaluated_at: None,
+        evaluations: vec![],
+    })
 }
 
 use crate::style::colors;

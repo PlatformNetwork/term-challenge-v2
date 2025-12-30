@@ -290,28 +290,84 @@ pub async fn get_leaderboard(
     }))
 }
 
+/// Agent status response including pending agents
+#[derive(Debug, Serialize)]
+pub struct AgentStatusResponse {
+    pub agent_hash: String,
+    pub miner_hotkey: String,
+    pub name: Option<String>,
+    pub status: String,
+    pub rank: Option<i32>,
+    pub best_score: Option<f64>,
+    pub evaluation_count: i32,
+    pub validators_completed: i32,
+    pub total_validators: i32,
+    pub submitted_at: Option<String>,
+}
+
 /// GET /api/v1/leaderboard/:agent_hash - Get agent details
 ///
 /// No authentication required. Does NOT include source code.
+/// Returns both evaluated agents (from leaderboard) and pending agents (from submissions).
 pub async fn get_agent_details(
     State(state): State<Arc<ApiState>>,
     Path(agent_hash): Path<String>,
-) -> Result<Json<LeaderboardEntryResponse>, (StatusCode, String)> {
-    let entry = state
-        .storage
-        .get_leaderboard_entry(&agent_hash)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
+) -> Result<Json<AgentStatusResponse>, (StatusCode, String)> {
+    // First try leaderboard (evaluated agents)
+    if let Ok(Some(entry)) = state.storage.get_leaderboard_entry(&agent_hash).await {
+        return Ok(Json(AgentStatusResponse {
+            agent_hash: entry.agent_hash,
+            miner_hotkey: entry.miner_hotkey,
+            name: entry.name,
+            status: "completed".to_string(),
+            rank: entry.rank,
+            best_score: Some(entry.best_score),
+            evaluation_count: entry.evaluation_count,
+            validators_completed: entry.evaluation_count,
+            total_validators: entry.evaluation_count,
+            submitted_at: None,
+        }));
+    }
 
-    Ok(Json(LeaderboardEntryResponse {
-        rank: entry.rank.unwrap_or(0),
-        agent_hash: entry.agent_hash,
-        miner_hotkey: entry.miner_hotkey,
-        name: entry.name,
-        best_score: entry.best_score,
-        evaluation_count: entry.evaluation_count,
-    }))
+    // Try pending_evaluations (agents waiting for evaluation)
+    if let Ok(Some(pending)) = state.storage.get_pending_status(&agent_hash).await {
+        let submitted_at = chrono::DateTime::from_timestamp(pending.created_at, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        return Ok(Json(AgentStatusResponse {
+            agent_hash: pending.agent_hash,
+            miner_hotkey: pending.miner_hotkey,
+            name: None,
+            status: pending.status,
+            rank: None,
+            best_score: None,
+            evaluation_count: 0,
+            validators_completed: pending.validators_completed,
+            total_validators: pending.total_validators,
+            submitted_at: Some(submitted_at),
+        }));
+    }
+
+    // Try submissions (recently submitted but not yet queued)
+    if let Ok(Some(sub)) = state.storage.get_submission_info(&agent_hash).await {
+        let submitted_at = chrono::DateTime::from_timestamp(sub.created_at, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        return Ok(Json(AgentStatusResponse {
+            agent_hash: sub.agent_hash,
+            miner_hotkey: sub.miner_hotkey,
+            name: sub.name,
+            status: sub.status,
+            rank: None,
+            best_score: None,
+            evaluation_count: 0,
+            validators_completed: 0,
+            total_validators: 0,
+            submitted_at: Some(submitted_at),
+        }));
+    }
+
+    Err((StatusCode::NOT_FOUND, "Agent not found".to_string()))
 }
 
 // ============================================================================
