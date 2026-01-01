@@ -40,6 +40,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -804,11 +805,98 @@ pub async fn get_leaderboard(
 }
 
 // ============================================================================
+// FALLBACK/ERROR HANDLERS
+// ============================================================================
+
+/// Global fallback handler for unmatched routes (404)
+pub async fn fallback_handler(uri: axum::http::Uri) -> (StatusCode, Json<serde_json::Value>) {
+    warn!("404 Not Found: {}", uri);
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "error": "Not Found",
+            "message": format!("No route matches '{}'", uri.path()),
+            "status": 404
+        })),
+    )
+}
+
+// ============================================================================
 // /health ENDPOINT
 // ============================================================================
 
+/// Simple health check for load balancers
 pub async fn health_check() -> &'static str {
     "OK"
+}
+
+/// Detailed health check response
+#[derive(Debug, Serialize)]
+pub struct HealthStatus {
+    pub status: String,
+    pub database: Option<String>,
+    pub docker: Option<String>,
+    pub uptime_secs: u64,
+}
+
+/// Static start time for uptime calculation
+static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// GET /health/detailed - Detailed health check with dependency verification
+pub async fn health_check_detailed(
+    State(state): State<Arc<ChallengeServerState>>,
+) -> Result<Json<HealthStatus>, (StatusCode, Json<HealthStatus>)> {
+    let start = START_TIME.get_or_init(std::time::Instant::now);
+    let uptime_secs = start.elapsed().as_secs();
+
+    let mut status = HealthStatus {
+        status: "ok".to_string(),
+        database: None,
+        docker: None,
+        uptime_secs,
+    };
+
+    let mut all_healthy = true;
+
+    // Check database connectivity
+    if let Some(ref pg) = state.pg_storage {
+        match pg.get_current_epoch().await {
+            Ok(_) => {
+                status.database = Some("healthy".to_string());
+            }
+            Err(e) => {
+                status.database = Some(format!("unhealthy: {}", e));
+                all_healthy = false;
+            }
+        }
+    } else {
+        status.database = Some("not_configured".to_string());
+    }
+
+    // Check Docker connectivity
+    match bollard::Docker::connect_with_local_defaults() {
+        Ok(docker) => match docker.ping().await {
+            Ok(_) => {
+                status.docker = Some("healthy".to_string());
+            }
+            Err(e) => {
+                status.docker = Some(format!("unhealthy: {}", e));
+                all_healthy = false;
+            }
+        },
+        Err(e) => {
+            status.docker = Some(format!("connection_failed: {}", e));
+            all_healthy = false;
+        }
+    }
+
+    if all_healthy {
+        status.status = "ok".to_string();
+        Ok(Json(status))
+    } else {
+        status.status = "degraded".to_string();
+        Err((StatusCode::SERVICE_UNAVAILABLE, Json(status)))
+    }
 }
 
 // ============================================================================
@@ -839,6 +927,12 @@ pub async fn run_server_with_mode(
         match PgStorage::new(&database_url).await {
             Ok(pg) => {
                 info!("PostgreSQL storage initialized successfully");
+
+                // Run recovery tasks (stale claims, expired evaluations)
+                if let Err(e) = pg.run_recovery().await {
+                    warn!("Recovery tasks failed (non-fatal): {}", e);
+                }
+
                 Some(pg)
             }
             Err(e) => {
@@ -889,20 +983,39 @@ pub async fn run_server_with_mode(
         ),
     }
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // SECURITY: Configure CORS with specific origins instead of Any
+    // In production, set ALLOWED_ORIGINS env var to comma-separated list of allowed origins
+    let allowed_origins = std::env::var("ALLOWED_ORIGINS")
+        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:8080".to_string());
+
+    let cors = if allowed_origins == "*" {
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    } else {
+        use tower_http::cors::AllowOrigin;
+        let origins: Vec<_> = allowed_origins
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(origins))
+            .allow_methods(Any)
+            .allow_headers(Any)
+    };
 
     // Base routes (always available)
     let mut app = Router::new()
         .route("/health", get(health_check))
+        .route("/health/detailed", get(health_check_detailed))
         .route("/get_weights", get(get_weights))
         .route("/evaluate", post(evaluate_agent))
         .route("/validate", post(validate_source))
         .route("/config", get(get_config))
         .route("/leaderboard", get(get_leaderboard))
         .layer(cors.clone())
+        .layer(RequestBodyLimitLayer::new(10 * 1024 * 1024)) // 10MB limit
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
 
@@ -935,6 +1048,7 @@ pub async fn run_server_with_mode(
                 post(api::get_my_agent_source),
             )
             .route("/validator/claim_jobs", post(api::claim_jobs))
+            .route("/validator/log_task", post(api::log_task))
             .route("/validator/submit_result", post(api::submit_result))
             .route("/validator/my_jobs", post(api::get_my_jobs))
             .route(
@@ -942,16 +1056,14 @@ pub async fn run_server_with_mode(
                 get(api::get_agent_eval_status),
             )
             .route("/status", get(api::get_status))
-            .layer(
-                CorsLayer::new()
-                    .allow_origin(Any)
-                    .allow_methods(Any)
-                    .allow_headers(Any),
-            )
+            .layer(cors.clone()) // Use same CORS config as main routes
             .with_state(api_state);
 
         app = app.nest("/api/v1", api_routes);
     }
+
+    // Add global fallback handler for 404
+    app = app.fallback(fallback_handler);
 
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -1007,6 +1119,7 @@ pub async fn run_server_with_mode(
         info!("║    POST /api/v1/my/agents           - List my agents         ║");
         info!("║    POST /api/v1/my/agents/:h/source - Get my agent source    ║");
         info!("║    POST /api/v1/validator/claim_jobs - Claim jobs (batch)     ║");
+        info!("║    POST /api/v1/validator/log_task - Log task (realtime)     ║");
         info!("║    POST /api/v1/validator/submit_result - Submit evaluation  ║");
         info!("║    POST /api/v1/validator/my_jobs - Get my pending jobs      ║");
         info!("║    GET  /api/v1/validator/agent_status/:h - Agent eval status║");
@@ -1014,6 +1127,47 @@ pub async fn run_server_with_mode(
     }
     info!("╚══════════════════════════════════════════════════════════════╝");
 
-    axum::serve(listener, app).await?;
+    // Setup graceful shutdown
+    let shutdown_state = state.clone();
+    let shutdown_signal = async move {
+        let ctrl_c = async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install Ctrl+C handler");
+        };
+
+        #[cfg(unix)]
+        let terminate = async {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("Failed to install SIGTERM handler")
+                .recv()
+                .await;
+        };
+
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = terminate => {},
+        }
+
+        info!("Shutdown signal received, starting graceful shutdown...");
+
+        // Run maintenance tasks before shutdown
+        if let Some(ref pg) = shutdown_state.pg_storage {
+            info!("Running final maintenance tasks...");
+            if let Err(e) = pg.run_maintenance().await {
+                warn!("Maintenance task error during shutdown: {:?}", e);
+            }
+        }
+
+        info!("Graceful shutdown complete");
+    };
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await?;
+
     Ok(())
 }

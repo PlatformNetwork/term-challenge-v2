@@ -20,6 +20,8 @@ struct SubmitRequest {
     name: Option<String>,
     api_key: Option<String>,
     api_provider: Option<String>,
+    /// Cost limit per validator in USD (max 100$)
+    cost_limit_usd: Option<f64>,
 }
 
 /// Response from submission
@@ -29,8 +31,16 @@ struct SubmitResponse {
     success: bool,
     submission_id: Option<String>,
     agent_hash: Option<String>,
+    version: Option<i32>,
+    cost_limit_usd: Option<f64>,
     error: Option<String>,
 }
+
+/// Maximum cost limit allowed (USD)
+pub const MAX_COST_LIMIT_USD: f64 = 100.0;
+
+/// Default cost limit (USD)
+pub const DEFAULT_COST_LIMIT_USD: f64 = 10.0;
 
 pub async fn run(
     platform_url: &str,
@@ -39,6 +49,7 @@ pub async fn run(
     name: Option<String>,
     api_key: Option<String>,
     provider: String,
+    cost_limit: Option<f64>,
 ) -> Result<()> {
     print_banner();
     print_header("Submit Agent");
@@ -71,20 +82,29 @@ pub async fn run(
     print_key_value("Size", &format!("{} bytes", source.len()));
     print_key_value("Platform", platform_url);
     print_key_value("Provider", &provider);
+
+    // Validate and display cost limit
+    let final_cost_limit = cost_limit
+        .map(|c| c.clamp(0.0, MAX_COST_LIMIT_USD))
+        .unwrap_or(DEFAULT_COST_LIMIT_USD);
+    print_key_value(
+        "Cost Limit",
+        &format!("${:.2} per validator", final_cost_limit),
+    );
     println!();
 
     // Step 1: Validate locally
-    print_step(1, 4, "Validating agent...");
+    print_step(1, 5, "Validating agent...");
     validate_source(&source)?;
     print_success("Validation passed");
 
     // Step 2: Parse key and derive hotkey
-    print_step(2, 4, "Parsing secret key...");
+    print_step(2, 5, "Parsing secret key...");
     let (signing_key, miner_hotkey) = parse_key_and_derive_hotkey(&key)?;
     print_success(&format!("Key parsed (hotkey: {}...)", &miner_hotkey[..16]));
 
     // Step 3: Check API key
-    print_step(3, 4, "Checking API key...");
+    print_step(3, 5, "Checking API key...");
     if api_key.is_none() {
         return Err(anyhow!(
             "API key required for LLM verification.\n\
@@ -97,9 +117,86 @@ pub async fn run(
     }
     print_success("API key provided");
 
-    // Step 4: Sign and submit
-    print_step(4, 4, "Signing and submitting...");
-    let (submission_id, agent_hash) = submit_agent(
+    // Step 4: Cost limit warning
+    print_step(4, 5, "Verifying cost configuration...");
+    println!();
+    println!(
+        "  {}╔═══════════════════════════════════════════════════════════════╗{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║                    ⚠️  IMPORTANT WARNING  ⚠️                    ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}╠═══════════════════════════════════════════════════════════════╣{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║                                                               ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║  Your API key will be used to make LLM calls during          ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║  evaluation. Each agent is evaluated by up to 3 validators.  ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║                                                               ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║  Cost limit set: ${:<6.2} per validator                       ║{}",
+        YELLOW, final_cost_limit, RESET
+    );
+    println!(
+        "  {}║  Maximum total:  ${:<6.2} (3 validators x ${:<6.2})            ║{}",
+        YELLOW,
+        final_cost_limit * 3.0,
+        final_cost_limit,
+        RESET
+    );
+    println!(
+        "  {}║                                                               ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║  ▶ SET A CREDIT LIMIT ON YOUR API KEY PROVIDER! ◀            ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║                                                               ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║  We are NOT responsible for any additional costs incurred    ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║  if you do not set appropriate spending limits on your       ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║  API key provider account.                                   ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}║                                                               ║{}",
+        YELLOW, RESET
+    );
+    println!(
+        "  {}╚═══════════════════════════════════════════════════════════════╝{}",
+        YELLOW, RESET
+    );
+    println!();
+    print_success("Cost configuration verified");
+
+    // Step 5: Sign and submit
+    print_step(5, 5, "Signing and submitting...");
+    let (submission_id, agent_hash, version) = submit_agent(
         platform_url,
         &source,
         &miner_hotkey,
@@ -107,9 +204,10 @@ pub async fn run(
         name,
         api_key,
         &provider,
+        final_cost_limit,
     )
     .await?;
-    print_success("Submission complete");
+    print_success(&format!("Submission complete (version {})", version));
 
     println!();
 
@@ -186,6 +284,7 @@ fn parse_key_and_derive_hotkey(key: &str) -> Result<(sr25519::Pair, String)> {
     Ok((pair, hotkey_ss58))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn submit_agent(
     platform_url: &str,
     source: &str,
@@ -194,7 +293,8 @@ async fn submit_agent(
     name: Option<String>,
     api_key: Option<String>,
     provider: &str,
-) -> Result<(String, String)> {
+    cost_limit_usd: f64,
+) -> Result<(String, String, i32)> {
     let client = reqwest::Client::new();
 
     // Compute source code hash
@@ -220,6 +320,7 @@ async fn submit_agent(
         name,
         api_key,
         api_provider: Some(provider.to_string()),
+        cost_limit_usd: Some(cost_limit_usd),
     };
 
     // Use bridge route: /api/v1/bridge/{challenge}/submit
@@ -245,7 +346,8 @@ async fn submit_agent(
                         .submission_id
                         .unwrap_or_else(|| "unknown".to_string());
                     let hash = submit_resp.agent_hash.unwrap_or(agent_hash);
-                    Ok((submission_id, hash))
+                    let version = submit_resp.version.unwrap_or(1);
+                    Ok((submission_id, hash, version))
                 } else {
                     Err(anyhow!(
                         "Submission failed: {}",

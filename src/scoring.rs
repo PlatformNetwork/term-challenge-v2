@@ -48,8 +48,9 @@ impl ScoreCalculator {
                 failed += 1;
             }
 
-            // Track execution time
-            total_execution_time_ms += result.execution_time_ms;
+            // Track execution time with saturating add to prevent overflow
+            total_execution_time_ms =
+                total_execution_time_ms.saturating_add(result.execution_time_ms);
 
             // Track by difficulty (for statistics only)
             let stats = by_difficulty.entry(task.config.difficulty).or_default();

@@ -743,8 +743,15 @@ impl AgentProcess {
 
 impl Drop for ContainerRun {
     fn drop(&mut self) {
-        // Cleanup is async, so we can't do it in Drop
-        // The caller should call remove() explicitly
+        // WARNING: Cleanup is async, so we can't do it in Drop.
+        // The caller MUST call remove() explicitly to avoid container leaks.
+        // If this drop is called without prior remove(), log a warning.
+        // Consider wrapping ContainerRun in an async-aware RAII guard.
+        tracing::warn!(
+            "ContainerRun dropped without explicit cleanup for container: {}. \
+             Call remove() before dropping to prevent resource leaks.",
+            self.container_name
+        );
     }
 }
 

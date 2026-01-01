@@ -438,17 +438,21 @@ fn parse_keystrokes(input: &str) -> Vec<String> {
     keys
 }
 
-/// Simple agent that just sends commands
+/// Simple agent for testing - always returns task_complete
+/// This is NOT meant for production use - real agents use ExternalAgent
+#[cfg(test)]
 pub struct SimpleAgent {
     name: String,
 }
 
+#[cfg(test)]
 impl SimpleAgent {
     pub fn new(name: impl Into<String>) -> Self {
         Self { name: name.into() }
     }
 }
 
+#[cfg(test)]
 #[async_trait::async_trait]
 impl Agent for SimpleAgent {
     fn name(&self) -> &str {
@@ -456,8 +460,8 @@ impl Agent for SimpleAgent {
     }
 
     async fn step(&self, _instruction: &str, _screen: &str, _step: u32) -> Result<AgentResponse> {
-        // This is a placeholder - real agents would call an LLM here
-        Ok(AgentResponse::complete("Simple agent cannot solve tasks"))
+        // Test-only agent that immediately completes
+        Ok(AgentResponse::complete("Test agent - not for production"))
     }
 }
 

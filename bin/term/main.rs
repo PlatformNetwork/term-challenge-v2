@@ -76,6 +76,12 @@ enum Commands {
         /// LLM provider: openrouter, chutes, openai, anthropic
         #[arg(long, default_value = "openrouter")]
         provider: String,
+
+        /// Maximum cost limit per validator in USD (0-100, default: 10)
+        /// Your agent will be evaluated by up to 3 validators.
+        /// IMPORTANT: Set a credit limit on your API key provider!
+        #[arg(long, default_value = "10.0")]
+        cost_limit: f64,
     },
 
     /// Check agent status and results
@@ -286,7 +292,19 @@ async fn main() {
             name,
             api_key,
             provider,
-        } => commands::submit::run(&cli.rpc, agent, key, name, api_key, provider).await,
+            cost_limit,
+        } => {
+            commands::submit::run(
+                &cli.rpc,
+                agent,
+                key,
+                name,
+                api_key,
+                provider,
+                Some(cost_limit),
+            )
+            .await
+        }
         Commands::Status { hash, watch } => commands::status::run(&cli.rpc, hash, watch).await,
         Commands::Leaderboard { limit } => commands::leaderboard::run(&cli.rpc, limit).await,
         Commands::Validate { agent } => commands::validate::run(agent).await,

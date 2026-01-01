@@ -15,6 +15,27 @@ use base64::Engine;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
+/// Helper to log container cleanup errors instead of silently ignoring them
+async fn cleanup_container(container: &ContainerRun, action: &str) {
+    if let Err(e) = container.stop().await {
+        warn!("Failed to stop container during {}: {:?}", action, e);
+    }
+    if let Err(e) = container.remove().await {
+        warn!("Failed to remove container during {}: {:?}", action, e);
+    }
+}
+
+/// Helper to log single container operation errors
+async fn log_container_op<F, Fut>(op: F, op_name: &str)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    if let Err(e) = op().await {
+        warn!("Container operation '{}' failed: {:?}", op_name, e);
+    }
+}
+
 /// Base image for agent container (has term_sdk installed)
 const AGENT_BASE_IMAGE: &str = "ghcr.io/platformnetwork/term-challenge:latest";
 
@@ -139,7 +160,12 @@ impl TaskEvaluator {
         };
 
         if let Err(e) = task_container.start().await {
-            task_container.remove().await.ok();
+            if let Err(rm_err) = task_container.remove().await {
+                warn!(
+                    "Failed to remove task container after start failure: {:?}",
+                    rm_err
+                );
+            }
             return Ok(TaskResult::failure(
                 task.id().to_string(),
                 agent.hash.clone(),
@@ -178,8 +204,7 @@ impl TaskEvaluator {
             Ok(c) => c,
             Err(e) => {
                 error!("Failed to create agent container: {}", e);
-                task_container.stop().await.ok();
-                task_container.remove().await.ok();
+                cleanup_container(&task_container, "agent container creation failure").await;
                 return Ok(TaskResult::failure(
                     task.id().to_string(),
                     agent.hash.clone(),
@@ -192,9 +217,13 @@ impl TaskEvaluator {
         };
 
         if let Err(e) = agent_container.start().await {
-            agent_container.remove().await.ok();
-            task_container.stop().await.ok();
-            task_container.remove().await.ok();
+            if let Err(rm_err) = agent_container.remove().await {
+                warn!(
+                    "Failed to remove agent container after start failure: {:?}",
+                    rm_err
+                );
+            }
+            cleanup_container(&task_container, "agent container start failure").await;
             return Ok(TaskResult::failure(
                 task.id().to_string(),
                 agent.hash.clone(),
@@ -216,7 +245,9 @@ impl TaskEvaluator {
         // Copy test files to task container
         if !task.test_files.is_empty() {
             debug!("Copying {} test files to /tests", task.test_files.len());
-            task_container.exec(&["mkdir", "-p", "/tests"]).await.ok();
+            if let Err(e) = task_container.exec(&["mkdir", "-p", "/tests"]).await {
+                warn!("Failed to create /tests directory: {:?}", e);
+            }
 
             for (filename, content) in &task.test_files {
                 let file_path = format!("/tests/{}", filename);
@@ -231,10 +262,8 @@ impl TaskEvaluator {
         // Inject agent code into AGENT container (has term_sdk)
         info!("Injecting agent code ({} bytes, {})", code.len(), language);
         if let Err(e) = agent_container.inject_agent_code(&code, &language).await {
-            agent_container.stop().await.ok();
-            agent_container.remove().await.ok();
-            task_container.stop().await.ok();
-            task_container.remove().await.ok();
+            cleanup_container(&agent_container, "agent code injection failure").await;
+            cleanup_container(&task_container, "agent code injection failure").await;
             return Ok(TaskResult::failure(
                 task.id().to_string(),
                 agent.hash.clone(),

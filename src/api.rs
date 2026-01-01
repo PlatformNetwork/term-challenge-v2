@@ -10,7 +10,10 @@ use crate::auth::{
     create_get_source_message, create_list_agents_message, create_submit_message,
     is_timestamp_valid, is_valid_ss58_hotkey, verify_signature, AuthManager,
 };
-use crate::pg_storage::{LeaderboardEntry, PgStorage, Submission, SubmissionInfo};
+use crate::pg_storage::{
+    LeaderboardEntry, PgStorage, Submission, SubmissionInfo, TaskAssignment, TaskLog,
+    DEFAULT_COST_LIMIT_USD, EPOCHS_BETWEEN_SUBMISSIONS, MAX_COST_LIMIT_USD,
+};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -19,7 +22,57 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+
+/// Select validators for an agent deterministically based on agent_hash
+/// Uses hash-based selection for reproducibility across runs
+fn select_validators_for_agent(
+    agent_hash: &str,
+    validators: &[String],
+    count: usize,
+) -> Vec<String> {
+    if validators.is_empty() {
+        return vec![];
+    }
+
+    let count = count.min(validators.len());
+
+    // Sort validators for deterministic ordering
+    let mut sorted_validators: Vec<&String> = validators.iter().collect();
+    sorted_validators.sort();
+
+    // Use agent_hash to deterministically select starting index
+    let hash_bytes = hex::decode(agent_hash).unwrap_or_default();
+    let start_idx = if hash_bytes.is_empty() {
+        0
+    } else {
+        // Use first 8 bytes of hash as u64 for index
+        let mut idx_bytes = [0u8; 8];
+        for (i, b) in hash_bytes.iter().take(8).enumerate() {
+            idx_bytes[i] = *b;
+        }
+        u64::from_le_bytes(idx_bytes) as usize % sorted_validators.len()
+    };
+
+    // Select 'count' validators starting from start_idx (wrapping around)
+    let mut selected = Vec::with_capacity(count);
+    for i in 0..count {
+        let idx = (start_idx + i) % sorted_validators.len();
+        selected.push(sorted_validators[idx].clone());
+    }
+
+    debug!(
+        "Selected {} validators for agent {}: {:?}",
+        selected.len(),
+        &agent_hash[..16.min(agent_hash.len())],
+        selected
+            .iter()
+            .map(|v| &v[..16.min(v.len())])
+            .collect::<Vec<_>>()
+    );
+
+    selected
+}
 
 // ============================================================================
 // SHARED STATE
@@ -46,6 +99,12 @@ pub struct SubmitAgentRequest {
     pub miner_hotkey: String,
     pub signature: String,
     pub name: Option<String>,
+    /// User's API key for LLM inferences (optional, serves as bridge for agent requests)
+    pub api_key: Option<String>,
+    /// API provider: openrouter, chutes, openai, anthropic, grok (default: openrouter)
+    pub api_provider: Option<String>,
+    /// Cost limit per validator in USD (0-100, default: 10)
+    pub cost_limit_usd: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,6 +112,8 @@ pub struct SubmitAgentResponse {
     pub success: bool,
     pub submission_id: Option<String>,
     pub agent_hash: Option<String>,
+    pub version: Option<i32>,
+    pub cost_limit_usd: Option<f64>,
     pub error: Option<String>,
 }
 
@@ -61,10 +122,22 @@ pub struct SubmitAgentResponse {
 /// Requires:
 /// - Valid SS58 miner_hotkey
 /// - Valid signature of "submit_agent:<sha256_of_source_code>"
+/// - Rate limit: 1 agent per 3 epochs per miner
+/// - Unique agent name (or auto-version if same miner reuses name)
 pub async fn submit_agent(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<SubmitAgentRequest>,
 ) -> Result<Json<SubmitAgentResponse>, (StatusCode, Json<SubmitAgentResponse>)> {
+    // Helper to create error response
+    let err_response = |msg: String| SubmitAgentResponse {
+        success: false,
+        submission_id: None,
+        agent_hash: None,
+        version: None,
+        cost_limit_usd: None,
+        error: Some(msg),
+    };
+
     // Validate miner_hotkey is a valid SS58 address
     if !is_valid_ss58_hotkey(&req.miner_hotkey) {
         warn!(
@@ -73,38 +146,111 @@ pub async fn submit_agent(
         );
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(SubmitAgentResponse {
-                success: false,
-                submission_id: None,
-                agent_hash: None,
-                error: Some(format!(
-                    "Invalid miner_hotkey: must be a valid SS58 address. Received: {}",
-                    &req.miner_hotkey[..32.min(req.miner_hotkey.len())]
-                )),
-            }),
+            Json(err_response(format!(
+                "Invalid miner_hotkey: must be a valid SS58 address. Received: {}",
+                &req.miner_hotkey[..32.min(req.miner_hotkey.len())]
+            ))),
         ));
     }
 
     // Verify signature
     let expected_message = create_submit_message(&req.source_code);
-    if !verify_signature(&req.miner_hotkey, &expected_message, &req.signature) {
+    // Skip signature verification in test mode (SKIP_AUTH=1)
+    let skip_auth = std::env::var("SKIP_AUTH")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if !skip_auth && !verify_signature(&req.miner_hotkey, &expected_message, &req.signature) {
         warn!(
             "Invalid signature for submission from {}",
             &req.miner_hotkey[..16.min(req.miner_hotkey.len())]
         );
         return Err((
             StatusCode::UNAUTHORIZED,
-            Json(SubmitAgentResponse {
-                success: false,
-                submission_id: None,
-                agent_hash: None,
-                error: Some(format!(
-                    "Invalid signature. Message to sign: '{}'. Use sr25519 signature.",
-                    expected_message
-                )),
-            }),
+            Json(err_response(format!(
+                "Invalid signature. Message to sign: '{}'. Use sr25519 signature.",
+                expected_message
+            ))),
         ));
     }
+
+    // Get current epoch
+    let epoch = state.storage.get_current_epoch().await.unwrap_or(0);
+
+    // Check rate limit: 1 agent per 3 epochs (skip in test mode)
+    if !skip_auth {
+        match state
+            .storage
+            .can_miner_submit(&req.miner_hotkey, epoch)
+            .await
+        {
+            Ok((can_submit, reason)) => {
+                if !can_submit {
+                    warn!(
+                        "Rate limit exceeded for miner {}: {:?}",
+                        &req.miner_hotkey[..16.min(req.miner_hotkey.len())],
+                        reason
+                    );
+                    return Err((
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(err_response(reason.unwrap_or_else(|| {
+                            format!(
+                                "Rate limit: 1 submission per {} epochs",
+                                EPOCHS_BETWEEN_SUBMISSIONS
+                            )
+                        }))),
+                    ));
+                }
+            }
+            Err(e) => {
+                warn!("Failed to check rate limit: {:?}", e);
+                // SECURITY: Fail closed - reject submission if rate limit check fails
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(err_response(
+                        "Rate limit check unavailable. Please retry later.".to_string(),
+                    )),
+                ));
+            }
+        }
+    }
+
+    // Check agent name uniqueness (must not be taken by another miner)
+    if let Some(ref name) = req.name {
+        match state
+            .storage
+            .is_name_taken_by_other(name, &req.miner_hotkey)
+            .await
+        {
+            Ok(taken) => {
+                if taken {
+                    warn!("Agent name '{}' already taken by another miner", name);
+                    return Err((
+                        StatusCode::CONFLICT,
+                        Json(err_response(format!(
+                            "Agent name '{}' is already taken by another miner. Choose a different name.",
+                            name
+                        ))),
+                    ));
+                }
+            }
+            Err(e) => {
+                warn!("Failed to check name uniqueness: {:?}", e);
+            }
+        }
+    }
+
+    // Get next version for this agent name
+    let version = state
+        .storage
+        .get_next_version(&req.miner_hotkey, req.name.as_deref())
+        .await
+        .unwrap_or(1);
+
+    // Validate and clamp cost limit
+    let cost_limit = req
+        .cost_limit_usd
+        .unwrap_or(DEFAULT_COST_LIMIT_USD)
+        .clamp(0.0, MAX_COST_LIMIT_USD);
 
     // Compute hashes
     let source_hash = hex::encode(Sha256::digest(req.source_code.as_bytes()));
@@ -113,9 +259,6 @@ pub async fn submit_agent(
         &hex::encode(Sha256::digest(req.miner_hotkey.as_bytes()))[..16],
         &source_hash[..16]
     );
-
-    // Get current epoch
-    let epoch = state.storage.get_current_epoch().await.unwrap_or(0);
 
     // Create submission
     let submission_id = uuid::Uuid::new_v4().to_string();
@@ -126,8 +269,13 @@ pub async fn submit_agent(
         source_code: req.source_code,
         source_hash,
         name: req.name,
+        version,
         epoch,
         status: "pending".to_string(),
+        api_key: req.api_key,
+        api_provider: req.api_provider,
+        cost_limit_usd: cost_limit,
+        total_cost_usd: 0.0,
         created_at: chrono::Utc::now().timestamp(),
     };
 
@@ -135,29 +283,87 @@ pub async fn submit_agent(
     if let Err(e) = state.storage.create_submission(&submission).await {
         warn!("Failed to create submission: {:?}", e);
         tracing::error!(
-            "Submission error details - id: {}, agent_hash: {}, miner: {}, epoch: {}, error: {:?}",
+            "Submission error details - id: {}, agent_hash: {}, miner: {}, epoch: {}, version: {}, error: {:?}",
             submission.id,
             submission.agent_hash,
             submission.miner_hotkey,
             submission.epoch,
+            submission.version,
             e
         );
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(SubmitAgentResponse {
-                success: false,
-                submission_id: None,
-                agent_hash: None,
-                error: Some(format!("Failed to store submission: {}", e)),
-            }),
+            Json(err_response(format!("Failed to store submission: {}", e))),
         ));
     }
 
+    // Queue submission for evaluation by validators
+    // In test mode, add default test validators to whitelist
+    if skip_auth {
+        let test_validators = [
+            "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty", // Bob
+            "5FLSigC9HGRKVhB9FiEo4Y3koPsNmBmLJbpXg2mp1hXcS59Y", // Charlie
+            "5DAAnrj7VHTznn2AWBemMuyBwZWs6FNFjdyVXUeYum3PTXFy", // Dave
+            "5HGjWAeFDfFCWPsjFQdVV2Msvz2XtMktvgocEZcCj68kUMaw", // Eve
+        ];
+        for v in test_validators {
+            state.auth.add_validator(v).await;
+        }
+    }
+
+    // Select 3 validators from whitelist (deterministic based on agent_hash for reproducibility)
+    let all_validators = state.auth.get_all_validators().await;
+    let selected_validators = select_validators_for_agent(&agent_hash, &all_validators, 3);
+    let validator_count = selected_validators.len() as i32;
+
+    if let Err(e) = state
+        .storage
+        .queue_submission_for_evaluation(
+            &submission_id,
+            &agent_hash,
+            &req.miner_hotkey,
+            validator_count,
+        )
+        .await
+    {
+        warn!("Failed to queue submission for evaluation: {:?}", e);
+    }
+
+    // Assign selected validators to this agent
+    if !selected_validators.is_empty() {
+        if let Err(e) = state
+            .storage
+            .assign_validators_to_agent(&agent_hash, &selected_validators)
+            .await
+        {
+            warn!("Failed to assign validators: {:?}", e);
+        }
+    }
+
+    // Assign default tasks to this agent (30 tasks for term-challenge)
+    let default_tasks: Vec<TaskAssignment> = (1..=30)
+        .map(|i| TaskAssignment {
+            task_id: format!("task_{:02}", i),
+            task_name: format!("Task {}", i),
+        })
+        .collect();
+
+    if let Err(e) = state
+        .storage
+        .assign_tasks_to_agent(&agent_hash, &default_tasks)
+        .await
+    {
+        warn!("Failed to assign tasks: {:?}", e);
+    }
+
     info!(
-        "Agent submitted: {} from {} (epoch {})",
+        "Agent submitted: {} v{} from {} (epoch {}, cost_limit: ${:.2}, validators: {})",
         &agent_hash[..16],
-        &req.miner_hotkey[..16.min(req.miner_hotkey.len())],
-        epoch
+        version,
+        &submission.miner_hotkey[..16.min(submission.miner_hotkey.len())],
+        epoch,
+        cost_limit,
+        validator_count
     );
 
     // Broadcast "new_submission" event to all validators via platform-server WebSocket
@@ -220,11 +426,16 @@ pub async fn submit_agent(
         success: true,
         submission_id: Some(submission_id),
         agent_hash: Some(agent_hash),
+        version: Some(version),
+        cost_limit_usd: Some(cost_limit),
         error: None,
     }))
 }
 
-/// Get active validator count from platform-server with infinite retry loop
+/// Get active validator count from platform-server with limited retries
+const MAX_VALIDATOR_FETCH_RETRIES: u64 = 10;
+const DEFAULT_VALIDATOR_COUNT: i32 = 3;
+
 async fn get_active_validator_count(platform_url: &str) -> i32 {
     let url = format!("{}/api/v1/validators", platform_url);
     let client = reqwest::Client::builder()
@@ -238,9 +449,7 @@ async fn get_active_validator_count(platform_url: &str) -> i32 {
         hotkey: String,
     }
 
-    let mut attempt = 0u64;
-    loop {
-        attempt += 1;
+    for attempt in 1..=MAX_VALIDATOR_FETCH_RETRIES {
         match client.get(&url).send().await {
             Ok(response) => {
                 if response.status().is_success() {
@@ -251,22 +460,31 @@ async fn get_active_validator_count(platform_url: &str) -> i32 {
                     }
                 } else {
                     warn!(
-                        "Failed to get validators from platform-server: {} (attempt {}, retrying in 30s)",
+                        "Failed to get validators from platform-server: {} (attempt {}/{})",
                         response.status(),
-                        attempt
+                        attempt,
+                        MAX_VALIDATOR_FETCH_RETRIES
                     );
                 }
             }
             Err(e) => {
                 warn!(
-                    "Platform-server not reachable: {} (attempt {}, retrying in 30s)",
-                    e, attempt
+                    "Platform-server not reachable: {} (attempt {}/{})",
+                    e, attempt, MAX_VALIDATOR_FETCH_RETRIES
                 );
             }
         }
 
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        if attempt < MAX_VALIDATOR_FETCH_RETRIES {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
     }
+
+    warn!(
+        "Failed to get validator count after {} attempts, using default: {}",
+        MAX_VALIDATOR_FETCH_RETRIES, DEFAULT_VALIDATOR_COUNT
+    );
+    DEFAULT_VALIDATOR_COUNT
 }
 
 // ============================================================================
@@ -554,6 +772,7 @@ pub struct JobInfo {
     pub miner_hotkey: String,
     pub source_code: String,
     pub window_expires_at: i64,
+    pub tasks: Vec<TaskAssignment>,
 }
 
 /// POST /api/v1/validator/claim_jobs - Claim pending evaluation jobs
@@ -591,9 +810,12 @@ pub async fn claim_jobs(
         ));
     }
 
-    // Verify signature
+    // Verify signature (skip in test mode)
     let message = format!("claim_jobs:{}", req.timestamp);
-    if !verify_signature(&req.validator_hotkey, &message, &req.signature) {
+    let skip_auth = std::env::var("SKIP_AUTH")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if !skip_auth && !verify_signature(&req.validator_hotkey, &message, &req.signature) {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(ClaimJobsResponse {
@@ -605,25 +827,30 @@ pub async fn claim_jobs(
         ));
     }
 
-    // Check if validator is whitelisted
-    if !state
-        .auth
-        .is_whitelisted_validator(&req.validator_hotkey)
-        .await
-    {
-        warn!(
-            "Unauthorized validator claim attempt: {}",
-            &req.validator_hotkey[..16.min(req.validator_hotkey.len())]
-        );
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ClaimJobsResponse {
-                success: false,
-                jobs: vec![],
-                total_available: 0,
-                error: Some("Validator not in whitelist".to_string()),
-            }),
-        ));
+    // Check if validator is whitelisted (skip in test mode, auto-add to whitelist)
+    if !skip_auth {
+        if !state
+            .auth
+            .is_whitelisted_validator(&req.validator_hotkey)
+            .await
+        {
+            warn!(
+                "Unauthorized validator claim attempt: {}",
+                &req.validator_hotkey[..16.min(req.validator_hotkey.len())]
+            );
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(ClaimJobsResponse {
+                    success: false,
+                    jobs: vec![],
+                    total_available: 0,
+                    error: Some("Validator not in whitelist".to_string()),
+                }),
+            ));
+        }
+    } else {
+        // Auto-add to whitelist in test mode
+        state.auth.add_validator(&req.validator_hotkey).await;
     }
 
     let count = req.count.unwrap_or(5).min(10);
@@ -675,6 +902,7 @@ pub async fn claim_jobs(
             miner_hotkey: j.miner_hotkey,
             source_code: j.source_code,
             window_expires_at: j.window_expires_at,
+            tasks: j.tasks,
         })
         .collect();
 
@@ -692,6 +920,192 @@ pub async fn claim_jobs(
     }))
 }
 
+// ============================================================================
+// LOG TASK (Real-time task logging)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct LogTaskRequest {
+    pub validator_hotkey: String,
+    pub signature: String,
+    pub timestamp: i64,
+    pub agent_hash: String,
+    pub task_id: String,
+    pub task_name: String,
+    pub passed: bool,
+    pub score: f64,
+    pub execution_time_ms: i64,
+    pub steps: i32,
+    pub cost_usd: f64,
+    pub error: Option<String>,
+    pub execution_log: Option<String>,
+    pub trajectory: Option<serde_json::Value>,
+    pub started_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LogTaskResponse {
+    pub success: bool,
+    pub tasks_logged: i32,
+    pub tasks_total: i32,
+    pub error: Option<String>,
+}
+
+/// POST /api/v1/validator/log_task - Log individual task result (real-time)
+///
+/// Validators call this endpoint after completing each task.
+/// This allows real-time tracking and ensures all task data is saved.
+pub async fn log_task(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<LogTaskRequest>,
+) -> Result<Json<LogTaskResponse>, (StatusCode, Json<LogTaskResponse>)> {
+    // Validate hotkey
+    if !is_valid_ss58_hotkey(&req.validator_hotkey) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(LogTaskResponse {
+                success: false,
+                tasks_logged: 0,
+                tasks_total: 0,
+                error: Some("Invalid hotkey format".to_string()),
+            }),
+        ));
+    }
+
+    // Validate timestamp
+    if !is_timestamp_valid(req.timestamp) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(LogTaskResponse {
+                success: false,
+                tasks_logged: 0,
+                tasks_total: 0,
+                error: Some("Timestamp expired".to_string()),
+            }),
+        ));
+    }
+
+    // Verify signature (skip in test mode)
+    let message = format!(
+        "log_task:{}:{}:{}",
+        req.agent_hash, req.task_id, req.timestamp
+    );
+    let skip_auth = std::env::var("SKIP_AUTH")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if !skip_auth && !verify_signature(&req.validator_hotkey, &message, &req.signature) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(LogTaskResponse {
+                success: false,
+                tasks_logged: 0,
+                tasks_total: 0,
+                error: Some("Invalid signature".to_string()),
+            }),
+        ));
+    }
+
+    // Check if validator is whitelisted
+    if !skip_auth
+        && !state
+            .auth
+            .is_whitelisted_validator(&req.validator_hotkey)
+            .await
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(LogTaskResponse {
+                success: false,
+                tasks_logged: 0,
+                tasks_total: 0,
+                error: Some("Validator not in whitelist".to_string()),
+            }),
+        ));
+    }
+
+    // Check if validator is assigned to this agent (skip in test mode)
+    let is_assigned = if skip_auth {
+        true // In test mode, allow any validator
+    } else {
+        state
+            .storage
+            .is_validator_assigned(&req.agent_hash, &req.validator_hotkey)
+            .await
+            .unwrap_or(false)
+    };
+
+    if !is_assigned {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(LogTaskResponse {
+                success: false,
+                tasks_logged: 0,
+                tasks_total: 0,
+                error: Some("Validator not assigned to this agent".to_string()),
+            }),
+        ));
+    }
+
+    // Create task log
+    let task_log = TaskLog {
+        id: uuid::Uuid::new_v4().to_string(),
+        agent_hash: req.agent_hash.clone(),
+        validator_hotkey: req.validator_hotkey.clone(),
+        task_id: req.task_id.clone(),
+        task_name: req.task_name.clone(),
+        passed: req.passed,
+        score: req.score,
+        execution_time_ms: req.execution_time_ms,
+        steps: req.steps,
+        cost_usd: req.cost_usd,
+        error: req.error,
+        execution_log: req.execution_log,
+        trajectory: req.trajectory,
+        started_at: req.started_at,
+        completed_at: chrono::Utc::now().timestamp(),
+    };
+
+    // Store task log
+    if let Err(e) = state.storage.store_task_log(&task_log).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(LogTaskResponse {
+                success: false,
+                tasks_logged: 0,
+                tasks_total: 0,
+                error: Some(format!("Failed to store task log: {}", e)),
+            }),
+        ));
+    }
+
+    // Get current progress
+    let summary = state
+        .storage
+        .get_task_log_summary(&req.agent_hash, &req.validator_hotkey)
+        .await
+        .unwrap_or_default();
+
+    info!(
+        "Task logged: {} {} task={} ({}/{} complete)",
+        &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
+        &req.agent_hash[..16.min(req.agent_hash.len())],
+        req.task_name,
+        summary.completed_tasks,
+        summary.total_tasks
+    );
+
+    Ok(Json(LogTaskResponse {
+        success: true,
+        tasks_logged: summary.completed_tasks,
+        tasks_total: summary.total_tasks,
+        error: None,
+    }))
+}
+
+// ============================================================================
+// SUBMIT RESULT (Final submission with verification)
+// ============================================================================
+
 #[derive(Debug, Deserialize)]
 pub struct SubmitResultRequest {
     pub validator_hotkey: String,
@@ -705,6 +1119,9 @@ pub struct SubmitResultRequest {
     pub total_cost_usd: f64,
     pub execution_time_ms: Option<i64>,
     pub task_results: Option<serde_json::Value>,
+    /// If true, skip task log verification (for backward compatibility)
+    #[serde(default)]
+    pub skip_verification: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -758,9 +1175,12 @@ pub async fn submit_result(
         ));
     }
 
-    // Verify signature
+    // Verify signature (skip in test mode)
     let message = format!("submit_result:{}:{}", req.agent_hash, req.timestamp);
-    if !verify_signature(&req.validator_hotkey, &message, &req.signature) {
+    let skip_auth = std::env::var("SKIP_AUTH")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if !skip_auth && !verify_signature(&req.validator_hotkey, &message, &req.signature) {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(SubmitResultResponse {
@@ -775,11 +1195,12 @@ pub async fn submit_result(
         ));
     }
 
-    // Check if validator is whitelisted
-    if !state
-        .auth
-        .is_whitelisted_validator(&req.validator_hotkey)
-        .await
+    // Check if validator is whitelisted (skip in test mode)
+    if !skip_auth
+        && !state
+            .auth
+            .is_whitelisted_validator(&req.validator_hotkey)
+            .await
     {
         return Err((
             StatusCode::FORBIDDEN,
@@ -793,6 +1214,63 @@ pub async fn submit_result(
                 error: Some("Validator not in whitelist".to_string()),
             }),
         ));
+    }
+
+    // Check if validator is assigned to this agent (skip in test mode)
+    let is_assigned = if skip_auth {
+        true
+    } else {
+        state
+            .storage
+            .is_validator_assigned(&req.agent_hash, &req.validator_hotkey)
+            .await
+            .unwrap_or(false)
+    };
+
+    if !is_assigned {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(SubmitResultResponse {
+                success: false,
+                is_late: false,
+                consensus_reached: false,
+                final_score: None,
+                validators_completed: 0,
+                total_validators: 0,
+                error: Some("Validator not assigned to this agent".to_string()),
+            }),
+        ));
+    }
+
+    // Verify all task logs are present (unless skip_verification is set)
+    if !req.skip_verification {
+        let (logs_complete, logs_message) = state
+            .storage
+            .verify_task_logs_complete(&req.agent_hash, &req.validator_hotkey)
+            .await
+            .unwrap_or((false, "Failed to verify task logs".to_string()));
+
+        if !logs_complete {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(SubmitResultResponse {
+                    success: false,
+                    is_late: false,
+                    consensus_reached: false,
+                    final_score: None,
+                    validators_completed: 0,
+                    total_validators: 0,
+                    error: Some(format!("Task logs incomplete: {}", logs_message)),
+                }),
+            ));
+        }
+
+        debug!(
+            "Task logs verified for {} {}: {}",
+            &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
+            &req.agent_hash[..16.min(req.agent_hash.len())],
+            logs_message
+        );
     }
 
     // Get pending status for context
@@ -948,6 +1426,36 @@ pub async fn get_my_jobs(
                 pending_jobs: vec![],
                 completed_count: 0,
                 error: Some("Invalid hotkey format".to_string()),
+            }),
+        ));
+    }
+
+    // Validate timestamp
+    if !is_timestamp_valid(req.timestamp) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(GetMyJobsResponse {
+                success: false,
+                pending_jobs: vec![],
+                completed_count: 0,
+                error: Some("Timestamp expired".to_string()),
+            }),
+        ));
+    }
+
+    // Verify signature (skip in test mode)
+    let message = format!("get_my_jobs:{}", req.timestamp);
+    let skip_auth = std::env::var("SKIP_AUTH")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if !skip_auth && !verify_signature(&req.validator_hotkey, &message, &req.signature) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(GetMyJobsResponse {
+                success: false,
+                pending_jobs: vec![],
+                completed_count: 0,
+                error: Some("Invalid signature".to_string()),
             }),
         ));
     }

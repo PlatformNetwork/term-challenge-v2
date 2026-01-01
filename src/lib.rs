@@ -88,6 +88,9 @@ pub mod auth;
 /// REST API endpoints (submissions, leaderboard, validators)
 pub mod api;
 
+/// Database migrations
+pub mod migrations;
+
 // ============================================================================
 // RE-EXPORTS
 // ============================================================================
@@ -178,7 +181,10 @@ pub use auth::{
 pub use evaluation_orchestrator::{
     AgentEvaluationResult, EvaluationOrchestrator, SourceCodeProvider,
 };
-pub use pg_storage::{Submission, SubmissionInfo};
+pub use pg_storage::{
+    MinerSubmissionHistory, Submission, SubmissionInfo, DEFAULT_COST_LIMIT_USD,
+    EPOCHS_BETWEEN_SUBMISSIONS, MAX_COST_LIMIT_USD, MAX_VALIDATORS_PER_AGENT,
+};
 pub use subnet_control::{
     ControlError, ControlStatus, EvaluatingAgent, EvaluationQueueState, PendingAgent,
     SubnetControlState, SubnetController, MAX_CONCURRENT_AGENTS, MAX_CONCURRENT_TASKS,

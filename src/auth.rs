@@ -161,6 +161,18 @@ impl AuthManager {
         whitelist.contains(hotkey)
     }
 
+    /// Get the number of whitelisted validators
+    pub async fn validator_count(&self) -> usize {
+        let whitelist = self.whitelist.read().await;
+        whitelist.len()
+    }
+
+    /// Get all whitelisted validators
+    pub async fn get_all_validators(&self) -> Vec<String> {
+        let whitelist = self.whitelist.read().await;
+        whitelist.iter().cloned().collect()
+    }
+
     /// Add a validator to the whitelist
     pub async fn add_validator(&self, hotkey: &str) -> bool {
         if !is_valid_ss58_hotkey(hotkey) {

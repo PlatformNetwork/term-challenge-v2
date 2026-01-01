@@ -108,12 +108,14 @@ pub fn decode_ss58(ss58: &str) -> Result<[u8; 32], ApiKeyError> {
 /// Encode raw 32-byte public key to SS58 address
 ///
 /// Uses Bittensor network prefix (42)
+/// This cannot fail since SS58_PREFIX (42) is always valid
 pub fn encode_ss58(pubkey: &[u8; 32]) -> String {
-    encode_ss58_with_prefix(pubkey, SS58_PREFIX)
+    encode_ss58_with_prefix(pubkey, SS58_PREFIX).expect("SS58_PREFIX (42) is always valid")
 }
 
 /// Encode raw 32-byte public key to SS58 address with custom prefix
-pub fn encode_ss58_with_prefix(pubkey: &[u8; 32], prefix: u16) -> String {
+/// Returns error if prefix is >= 16384
+pub fn encode_ss58_with_prefix(pubkey: &[u8; 32], prefix: u16) -> Result<String, ApiKeyError> {
     let mut data = Vec::with_capacity(35);
 
     // Add prefix (1 or 2 bytes)
@@ -123,7 +125,10 @@ pub fn encode_ss58_with_prefix(pubkey: &[u8; 32], prefix: u16) -> String {
         data.push(((prefix & 0x3f) | 0x40) as u8);
         data.push((prefix >> 6) as u8);
     } else {
-        panic!("SS58 prefix too large: {}", prefix);
+        return Err(ApiKeyError::InvalidHotkey(format!(
+            "SS58 prefix too large: {} (max 16383)",
+            prefix
+        )));
     }
 
     // Add public key
@@ -139,7 +144,7 @@ pub fn encode_ss58_with_prefix(pubkey: &[u8; 32], prefix: u16) -> String {
     data.push(hash[0]);
     data.push(hash[1]);
 
-    bs58::encode(data).into_string()
+    Ok(bs58::encode(data).into_string())
 }
 
 /// Parse hotkey - supports both SS58 and hex formats

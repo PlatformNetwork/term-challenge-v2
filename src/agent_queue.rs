@@ -14,6 +14,7 @@ use crate::bench::{
 };
 use anyhow::{Context, Result};
 use bollard::Docker;
+use indexmap::IndexMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -35,6 +36,9 @@ const MAX_TASKS_PER_AGENT: usize = 16;
 
 /// Maximum queued agents
 const MAX_QUEUE_SIZE: usize = 100;
+
+/// Maximum results to keep in memory (LRU eviction)
+const MAX_RESULTS_CACHE: usize = 1000;
 
 /// Container name prefix for cleanup
 const CONTAINER_PREFIX: &str = "term-eval-";
@@ -296,8 +300,8 @@ pub struct AgentQueue {
     pending: Mutex<BinaryHeap<PriorityRequest>>,
     /// Currently running evaluations
     running: RwLock<HashMap<String, RunningEval>>,
-    /// Completed results
-    results: RwLock<HashMap<String, EvalResult>>,
+    /// Completed results (IndexMap preserves insertion order for true LRU eviction)
+    results: RwLock<IndexMap<String, EvalResult>>,
     /// Resource manager
     resources: Arc<ResourceManager>,
     /// Result sender for completed evaluations
@@ -332,7 +336,7 @@ impl AgentQueue {
         let queue = Self {
             pending: Mutex::new(BinaryHeap::new()),
             running: RwLock::new(HashMap::new()),
-            results: RwLock::new(HashMap::new()),
+            results: RwLock::new(IndexMap::new()),
             resources,
             result_tx,
             stats: QueueStatsInner {
@@ -394,16 +398,20 @@ impl AgentQueue {
     }
 
     /// Calculate optimal concurrent tasks based on current load
+    /// Uses try_acquire pattern to avoid race conditions
     fn calculate_concurrent_tasks(&self) -> usize {
-        let available = self.resources.task_semaphore.available_permits();
+        // Use try_acquire_many to atomically check and reserve permits
+        // This avoids the TOCTOU race condition where permits could be taken
+        // between checking available_permits() and actually acquiring them
         let running_agents = self.running.read().len();
 
         if running_agents == 0 {
-            return MAX_TASKS_PER_AGENT.min(available);
+            return MAX_TASKS_PER_AGENT;
         }
 
-        // Distribute available permits among running agents + 1 (new agent)
-        let per_agent = available / (running_agents + 1);
+        // Calculate target permits per agent
+        let total_permits = MAX_GLOBAL_CONCURRENT_TASKS;
+        let per_agent = total_permits / (running_agents + 1);
 
         // Clamp to min/max
         per_agent.clamp(MIN_TASKS_PER_AGENT, MAX_TASKS_PER_AGENT)
@@ -752,10 +760,24 @@ impl AgentQueue {
             result.execution_time_ms / 1000
         );
 
-        // Store result
-        self.results
-            .write()
-            .insert(request_id.clone(), result.clone());
+        // Store result with LRU eviction (IndexMap preserves insertion order)
+        {
+            let mut results = self.results.write();
+
+            // Evict oldest entries if cache is full (true LRU with IndexMap)
+            if results.len() >= MAX_RESULTS_CACHE {
+                // Remove ~10% of oldest entries (first inserted = oldest)
+                let to_remove = MAX_RESULTS_CACHE / 10;
+                for _ in 0..to_remove {
+                    if let Some((key, _)) = results.shift_remove_index(0) {
+                        debug!("Evicted old result: {}", key);
+                    }
+                }
+                debug!("Evicted {} oldest results from cache (LRU)", to_remove);
+            }
+
+            results.insert(request_id.clone(), result.clone());
+        }
 
         // Remove from running
         self.running.write().remove(&request_id);

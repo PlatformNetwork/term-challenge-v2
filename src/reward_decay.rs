@@ -296,8 +296,9 @@ impl RewardDecayManager {
                         current_epoch.saturating_sub(top.last_improvement_epoch);
 
                     // Check if decay should start
+                    // Decay starts when epochs_without_improvement >= grace_epochs
                     if top.epochs_without_improvement >= state.config.grace_epochs {
-                        // First epoch after grace counts as stale_epochs = 1
+                        // Calculate stale epochs: how many epochs past the grace period (1-indexed)
                         let stale_epochs =
                             top.epochs_without_improvement - state.config.grace_epochs + 1;
                         let new_burn_percent = calculate_burn_percent(&state.config, stale_epochs);

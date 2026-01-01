@@ -74,6 +74,20 @@ pub async fn run_submit_wizard(platform_url: &str) -> Result<()> {
         style(&agent_name).cyan()
     );
 
+    // Step 1c: Check if this is a new version of existing agent
+    println!();
+    let is_new_version = check_existing_agent(&agent_name)?;
+    if is_new_version {
+        println!(
+            "  {} Creating new version of existing agent",
+            style("ℹ").blue()
+        );
+        println!(
+            "  {} Previous versions will keep their scores on the leaderboard",
+            style("ℹ").blue()
+        );
+    }
+
     // Step 2: Enter miner key
     println!();
     let (signing_key, miner_hotkey) = enter_miner_key()?;
@@ -93,9 +107,13 @@ pub async fn run_submit_wizard(platform_url: &str) -> Result<()> {
     println!();
     let (api_key, provider) = configure_api_key()?;
 
-    // Step 5: Review and confirm
+    // Step 5: Configure cost limit
     println!();
-    print_review(&agent_name, &miner_hotkey, &provider);
+    let cost_limit = configure_cost_limit()?;
+
+    // Step 6: Review and confirm
+    println!();
+    print_review(&agent_name, &miner_hotkey, &provider, cost_limit);
 
     let confirmed = Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("  Submit agent to network?")
@@ -108,9 +126,9 @@ pub async fn run_submit_wizard(platform_url: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Step 6: Submit
+    // Step 7: Submit
     println!();
-    let (submission_id, hash) = submit_agent(
+    let (submission_id, hash, version) = submit_agent(
         platform_url,
         &source,
         &signing_key,
@@ -118,6 +136,7 @@ pub async fn run_submit_wizard(platform_url: &str) -> Result<()> {
         &agent_name,
         &api_key,
         &provider,
+        cost_limit,
     )
     .await?;
 
@@ -131,6 +150,7 @@ pub async fn run_submit_wizard(platform_url: &str) -> Result<()> {
     println!();
     println!("  Submission ID: {}", style(&submission_id).cyan().bold());
     println!("  Agent Hash:    {}", style(&hash).cyan());
+    println!("  Version:       {}", style(version).cyan());
     println!();
     println!(
         "  Check status: {} status -H {}",
@@ -182,6 +202,60 @@ fn select_agent_file() -> Result<PathBuf> {
         .interact_text()?;
 
     Ok(PathBuf::from(path_str))
+}
+
+fn check_existing_agent(agent_name: &str) -> Result<bool> {
+    println!("  {}", style("Checking agent name...").dim());
+
+    let is_update = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!(
+            "  Is '{}' an update to an existing agent? (creates new version)",
+            style(agent_name).cyan()
+        ))
+        .default(false)
+        .interact()?;
+
+    if is_update {
+        println!();
+        println!(
+            "  {}",
+            style("╔═══════════════════════════════════════════════════════════════╗").blue()
+        );
+        println!(
+            "  {}",
+            style("║                     ℹ️  VERSION INFO  ℹ️                        ║").blue()
+        );
+        println!(
+            "  {}",
+            style("╠═══════════════════════════════════════════════════════════════╣").blue()
+        );
+        println!(
+            "  {}",
+            style("║                                                               ║").blue()
+        );
+        println!(
+            "  {}",
+            style("║  A new version will be created for this agent.                ║").blue()
+        );
+        println!(
+            "  {}",
+            style("║  Your previous version(s) will KEEP their scores.            ║").blue()
+        );
+        println!(
+            "  {}",
+            style("║  The version number is auto-assigned by the network.         ║").blue()
+        );
+        println!(
+            "  {}",
+            style("║                                                               ║").blue()
+        );
+        println!(
+            "  {}",
+            style("╚═══════════════════════════════════════════════════════════════╝").blue()
+        );
+    }
+
+    Ok(is_update)
 }
 
 fn enter_miner_key() -> Result<(sr25519::Pair, String)> {
@@ -305,15 +379,117 @@ fn configure_api_key() -> Result<(String, String)> {
     Ok((api_key, provider.to_string()))
 }
 
-fn print_review(agent_name: &str, miner_hotkey: &str, provider: &str) {
+/// Maximum cost limit allowed (USD)
+const MAX_COST_LIMIT_USD: f64 = 100.0;
+
+/// Default cost limit (USD)
+const DEFAULT_COST_LIMIT_USD: f64 = 10.0;
+
+fn configure_cost_limit() -> Result<f64> {
+    println!("  {}", style("Step 4: Configure Cost Limit").bold());
+    println!("  {}", style("Maximum cost per validator in USD").dim());
+    println!();
+
+    // Warning box
+    println!(
+        "  {}",
+        style("╔═══════════════════════════════════════════════════════════════╗").yellow()
+    );
+    println!(
+        "  {}",
+        style("║                    ⚠️  IMPORTANT WARNING  ⚠️                    ║").yellow()
+    );
+    println!(
+        "  {}",
+        style("╠═══════════════════════════════════════════════════════════════╣").yellow()
+    );
+    println!(
+        "  {}",
+        style("║                                                               ║").yellow()
+    );
+    println!(
+        "  {}",
+        style("║  Your API key will be used to make LLM calls during          ║").yellow()
+    );
+    println!(
+        "  {}",
+        style("║  evaluation. Each agent is evaluated by up to 3 validators.  ║").yellow()
+    );
+    println!(
+        "  {}",
+        style("║                                                               ║").yellow()
+    );
+    println!(
+        "  {}",
+        style("║  ▶ SET A CREDIT LIMIT ON YOUR API KEY PROVIDER! ◀            ║").yellow()
+    );
+    println!(
+        "  {}",
+        style("║                                                               ║").yellow()
+    );
+    println!(
+        "  {}",
+        style("║  We are NOT responsible for any additional costs incurred    ║").yellow()
+    );
+    println!(
+        "  {}",
+        style("║  if you do not set appropriate spending limits on your       ║").yellow()
+    );
+    println!(
+        "  {}",
+        style("║  API key provider account.                                   ║").yellow()
+    );
+    println!(
+        "  {}",
+        style("║                                                               ║").yellow()
+    );
+    println!(
+        "  {}",
+        style("╚═══════════════════════════════════════════════════════════════╝").yellow()
+    );
+    println!();
+
+    let cost_str: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("  Cost limit per validator (USD, max 100)")
+        .default(format!("{:.2}", DEFAULT_COST_LIMIT_USD))
+        .validate_with(|input: &String| -> Result<(), String> {
+            match input.parse::<f64>() {
+                Ok(v) if (0.0..=MAX_COST_LIMIT_USD).contains(&v) => Ok(()),
+                Ok(_) => Err(format!("Must be between 0 and {}", MAX_COST_LIMIT_USD)),
+                Err(_) => Err("Invalid number".to_string()),
+            }
+        })
+        .interact_text()?;
+
+    let cost_limit: f64 = cost_str.parse().unwrap_or(DEFAULT_COST_LIMIT_USD);
+    let total_max = cost_limit * 3.0;
+
+    println!();
+    println!(
+        "  {} Cost limit: ${:.2}/validator (max total: ${:.2} for 3 validators)",
+        style("✓").green(),
+        cost_limit,
+        total_max
+    );
+
+    Ok(cost_limit)
+}
+
+fn print_review(agent_name: &str, miner_hotkey: &str, provider: &str, cost_limit: f64) {
     println!("  {}", style("Review Submission").bold());
     println!();
-    println!("  Agent:    {}", style(agent_name).cyan());
-    println!("  Hotkey:   {}...", style(&miner_hotkey[..16]).cyan());
-    println!("  Provider: {}", style(provider).cyan());
+    println!("  Agent:      {}", style(agent_name).cyan());
+    println!("  Hotkey:     {}...", style(&miner_hotkey[..16]).cyan());
+    println!("  Provider:   {}", style(provider).cyan());
+    println!(
+        "  Cost Limit: {} per validator (max ${:.2} total)",
+        style(format!("${:.2}", cost_limit)).cyan(),
+        cost_limit * 3.0
+    );
     println!();
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn submit_agent(
     platform_url: &str,
     source: &str,
@@ -322,7 +498,8 @@ async fn submit_agent(
     name: &str,
     api_key: &str,
     provider: &str,
-) -> Result<(String, String)> {
+    cost_limit_usd: f64,
+) -> Result<(String, String, i32)> {
     println!("  {} Submitting to {}...", style("→").cyan(), platform_url);
 
     let client = reqwest::Client::new();
@@ -350,6 +527,7 @@ async fn submit_agent(
         "name": name,
         "api_key": api_key,
         "api_provider": provider,
+        "cost_limit_usd": cost_limit_usd,
     });
 
     // Use bridge route: /api/v1/bridge/{challenge}/submit
@@ -372,7 +550,8 @@ async fn submit_agent(
             .as_str()
             .map(|s| s.to_string())
             .unwrap_or(agent_hash);
-        Ok((submission_id, hash))
+        let version = resp["version"].as_i64().unwrap_or(1) as i32;
+        Ok((submission_id, hash, version))
     } else {
         let error = response.text().await?;
         Err(anyhow::anyhow!("Submission failed: {}", error))
