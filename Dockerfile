@@ -17,6 +17,7 @@ FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY bin ./bin
+COPY migrations ./migrations
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 3: Build Rust binaries
@@ -36,6 +37,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY bin ./bin
+COPY migrations ./migrations
 
 # Build release binaries (dependencies already cached above)
 RUN cargo build --release --bin term --bin term-server
