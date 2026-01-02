@@ -443,8 +443,12 @@ pub async fn submit_agent(
                 "payload": event_payload,
             });
 
+            // Get broadcast secret from environment
+            let broadcast_secret = std::env::var("BROADCAST_SECRET").unwrap_or_default();
+
             match client
                 .post(format!("{}/api/v1/events/broadcast", platform_url))
+                .header("X-Broadcast-Secret", broadcast_secret)
                 .json(&broadcast_request)
                 .send()
                 .await
