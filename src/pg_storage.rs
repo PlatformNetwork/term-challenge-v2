@@ -2616,3 +2616,164 @@ pub struct PublicAgentAssignments {
     pub created_at: i64,
     pub assignments: Vec<PublicAssignment>,
 }
+
+// =============================================================================
+// SUDO Operations
+// =============================================================================
+
+impl PgStorage {
+    /// Reset validator assignments for an agent (SUDO: relaunch evaluation)
+    pub async fn reset_agent_assignments(&self, agent_hash: &str) -> Result<()> {
+        let client = self.pool.get().await?;
+
+        // Delete existing assignments
+        client
+            .execute(
+                "DELETE FROM validator_assignments WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // Reset submission status to pending
+        client
+            .execute(
+                "UPDATE submissions SET status = 'pending' WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // Re-assign validators (get from default selection)
+        let validators = self.get_active_validators(3).await?;
+        for validator in validators {
+            client
+                .execute(
+                    "INSERT INTO validator_assignments (agent_hash, validator_hotkey, status, assigned_at)
+                     VALUES ($1, $2, 'pending', NOW())",
+                    &[&agent_hash, &validator],
+                )
+                .await?;
+        }
+
+        info!("Reset assignments for agent {}", agent_hash);
+        Ok(())
+    }
+
+    /// Approve a flagged agent (SUDO)
+    pub async fn sudo_approve_agent(&self, agent_hash: &str) -> Result<()> {
+        let client = self.pool.get().await?;
+
+        client
+            .execute(
+                "UPDATE submissions SET llm_approved = true, flagged = false, status = 'approved' 
+                 WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // Assign validators if not already assigned
+        let existing: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM validator_assignments WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?
+            .get(0);
+
+        if existing == 0 {
+            let validators = self.get_active_validators(3).await?;
+            for validator in validators {
+                client
+                    .execute(
+                        "INSERT INTO validator_assignments (agent_hash, validator_hotkey, status, assigned_at)
+                         VALUES ($1, $2, 'pending', NOW())",
+                        &[&agent_hash, &validator],
+                    )
+                    .await?;
+            }
+        }
+
+        info!("SUDO approved agent {}", agent_hash);
+        Ok(())
+    }
+
+    /// Reject an agent (SUDO)
+    pub async fn sudo_reject_agent(&self, agent_hash: &str) -> Result<()> {
+        let client = self.pool.get().await?;
+
+        client
+            .execute(
+                "UPDATE submissions SET status = 'rejected', flagged = true, flag_reason = 'Rejected by subnet owner'
+                 WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // Remove any pending assignments
+        client
+            .execute(
+                "DELETE FROM validator_assignments WHERE agent_hash = $1 AND status = 'pending'",
+                &[&agent_hash],
+            )
+            .await?;
+
+        info!("SUDO rejected agent {}", agent_hash);
+        Ok(())
+    }
+
+    /// Set agent status (SUDO)
+    pub async fn sudo_set_status(
+        &self,
+        agent_hash: &str,
+        status: &str,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        let client = self.pool.get().await?;
+
+        if let Some(reason) = reason {
+            client
+                .execute(
+                    "UPDATE submissions SET status = $1, flag_reason = $2 WHERE agent_hash = $3",
+                    &[&status, &reason, &agent_hash],
+                )
+                .await?;
+        } else {
+            client
+                .execute(
+                    "UPDATE submissions SET status = $1 WHERE agent_hash = $2",
+                    &[&status, &agent_hash],
+                )
+                .await?;
+        }
+
+        info!("SUDO set agent {} status to {}", agent_hash, status);
+        Ok(())
+    }
+
+    /// Get active validators (for assignment)
+    async fn get_active_validators(&self, count: usize) -> Result<Vec<String>> {
+        // In production, this would query metagraph for active validators
+        // For now, return validators from existing assignments or env
+        let validators_env = std::env::var("VALIDATOR_WHITELIST").unwrap_or_default();
+        let validators: Vec<String> = validators_env
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .take(count)
+            .collect();
+
+        if validators.is_empty() {
+            // Fallback: get from existing assignments
+            let client = self.pool.get().await?;
+            let rows = client
+                .query(
+                    "SELECT DISTINCT validator_hotkey FROM validator_assignments LIMIT $1",
+                    &[&(count as i64)],
+                )
+                .await?;
+
+            return Ok(rows.iter().map(|r| r.get(0)).collect());
+        }
+
+        Ok(validators)
+    }
+}

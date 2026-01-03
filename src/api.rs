@@ -2182,3 +2182,234 @@ async fn make_llm_request(
         cost_usd,
     })
 }
+
+// =============================================================================
+// SUDO Endpoints - Subnet Owner Only (signature verified)
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct SudoRequest {
+    /// Owner hotkey (must be the subnet owner)
+    pub owner_hotkey: String,
+    /// Signature of "sudo:<action>:<timestamp>:<agent_hash>"
+    pub signature: String,
+    /// Request timestamp (must be within 5 minutes)
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SudoResponse {
+    pub success: bool,
+    pub message: String,
+    pub error: Option<String>,
+}
+
+/// Verify sudo request is from subnet owner
+fn verify_sudo_request(
+    req: &SudoRequest,
+    action: &str,
+    agent_hash: &str,
+) -> Result<(), (StatusCode, Json<SudoResponse>)> {
+    let err = |msg: &str| {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(SudoResponse {
+                success: false,
+                message: String::new(),
+                error: Some(msg.to_string()),
+            }),
+        ))
+    };
+
+    // Validate owner hotkey format
+    if !is_valid_ss58_hotkey(&req.owner_hotkey) {
+        return err("Invalid owner hotkey format");
+    }
+
+    // Validate timestamp
+    if !is_timestamp_valid(req.timestamp) {
+        return err("Request timestamp expired");
+    }
+
+    // Get expected owner from environment
+    let expected_owner = std::env::var("SUBNET_OWNER_HOTKEY").unwrap_or_default();
+    if expected_owner.is_empty() {
+        return err("Subnet owner not configured");
+    }
+
+    // Verify owner matches
+    if req.owner_hotkey != expected_owner {
+        warn!(
+            "Sudo attempt by non-owner: {} (expected: {})",
+            &req.owner_hotkey[..16.min(req.owner_hotkey.len())],
+            &expected_owner[..16.min(expected_owner.len())]
+        );
+        return err("Not subnet owner");
+    }
+
+    // Verify signature (skip in test mode)
+    let message = format!("sudo:{}:{}:{}", action, req.timestamp, agent_hash);
+    let skip_auth = std::env::var("SKIP_AUTH")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
+    if !skip_auth && !verify_signature(&req.owner_hotkey, &message, &req.signature) {
+        return err("Invalid signature");
+    }
+
+    Ok(())
+}
+
+/// POST /api/v1/sudo/relaunch/:agent_hash - Relaunch evaluation for an agent
+///
+/// Resets validator assignments and allows re-evaluation.
+/// Use when evaluations failed or need to be redone.
+pub async fn sudo_relaunch_evaluation(
+    State(state): State<Arc<ApiState>>,
+    Path(agent_hash): Path<String>,
+    Json(req): Json<SudoRequest>,
+) -> Result<Json<SudoResponse>, (StatusCode, Json<SudoResponse>)> {
+    verify_sudo_request(&req, "relaunch", &agent_hash)?;
+
+    // Reset validator assignments for this agent
+    state
+        .storage
+        .reset_agent_assignments(&agent_hash)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SudoResponse {
+                    success: false,
+                    message: String::new(),
+                    error: Some(e.to_string()),
+                }),
+            )
+        })?;
+
+    info!("SUDO: Relaunched evaluation for agent {}", agent_hash);
+
+    Ok(Json(SudoResponse {
+        success: true,
+        message: format!("Evaluation relaunched for agent {}", agent_hash),
+        error: None,
+    }))
+}
+
+/// POST /api/v1/sudo/approve/:agent_hash - Manually approve a flagged agent
+///
+/// Approves an agent that was flagged by LLM review and assigns validators.
+pub async fn sudo_approve_agent(
+    State(state): State<Arc<ApiState>>,
+    Path(agent_hash): Path<String>,
+    Json(req): Json<SudoRequest>,
+) -> Result<Json<SudoResponse>, (StatusCode, Json<SudoResponse>)> {
+    verify_sudo_request(&req, "approve", &agent_hash)?;
+
+    // Update agent to approved and assign validators
+    state
+        .storage
+        .sudo_approve_agent(&agent_hash)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SudoResponse {
+                    success: false,
+                    message: String::new(),
+                    error: Some(e.to_string()),
+                }),
+            )
+        })?;
+
+    info!("SUDO: Approved agent {}", agent_hash);
+
+    Ok(Json(SudoResponse {
+        success: true,
+        message: format!("Agent {} approved and validators assigned", agent_hash),
+        error: None,
+    }))
+}
+
+/// POST /api/v1/sudo/reject/:agent_hash - Reject an agent
+///
+/// Permanently rejects an agent submission.
+pub async fn sudo_reject_agent(
+    State(state): State<Arc<ApiState>>,
+    Path(agent_hash): Path<String>,
+    Json(req): Json<SudoRequest>,
+) -> Result<Json<SudoResponse>, (StatusCode, Json<SudoResponse>)> {
+    verify_sudo_request(&req, "reject", &agent_hash)?;
+
+    state
+        .storage
+        .sudo_reject_agent(&agent_hash)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SudoResponse {
+                    success: false,
+                    message: String::new(),
+                    error: Some(e.to_string()),
+                }),
+            )
+        })?;
+
+    info!("SUDO: Rejected agent {}", agent_hash);
+
+    Ok(Json(SudoResponse {
+        success: true,
+        message: format!("Agent {} rejected", agent_hash),
+        error: None,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SudoSetStatusRequest {
+    pub owner_hotkey: String,
+    pub signature: String,
+    pub timestamp: i64,
+    pub status: String,
+    pub reason: Option<String>,
+}
+
+/// POST /api/v1/sudo/set_status/:agent_hash - Set agent status
+///
+/// Set arbitrary status on an agent (pending, approved, rejected, etc.)
+pub async fn sudo_set_agent_status(
+    State(state): State<Arc<ApiState>>,
+    Path(agent_hash): Path<String>,
+    Json(req): Json<SudoSetStatusRequest>,
+) -> Result<Json<SudoResponse>, (StatusCode, Json<SudoResponse>)> {
+    // Create a SudoRequest for verification
+    let sudo_req = SudoRequest {
+        owner_hotkey: req.owner_hotkey.clone(),
+        signature: req.signature.clone(),
+        timestamp: req.timestamp,
+    };
+    verify_sudo_request(&sudo_req, "set_status", &agent_hash)?;
+
+    state
+        .storage
+        .sudo_set_status(&agent_hash, &req.status, req.reason.as_deref())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SudoResponse {
+                    success: false,
+                    message: String::new(),
+                    error: Some(e.to_string()),
+                }),
+            )
+        })?;
+
+    info!("SUDO: Set agent {} status to {}", agent_hash, req.status);
+
+    Ok(Json(SudoResponse {
+        success: true,
+        message: format!("Agent {} status set to {}", agent_hash, req.status),
+        error: None,
+    }))
+}

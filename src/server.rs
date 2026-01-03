@@ -800,6 +800,111 @@ pub async fn get_leaderboard(
 }
 
 // ============================================================================
+// LOCAL LLM PROXY (Validator Mode)
+// ============================================================================
+
+/// Request from agent inside task container
+#[derive(Debug, Deserialize)]
+pub struct LocalLlmProxyRequest {
+    pub agent_hash: String,
+    pub messages: Vec<serde_json::Value>,
+    pub model: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+}
+
+/// POST /llm/proxy - Local LLM proxy for validator mode
+///
+/// Flow: Agent in container -> Validator's term-challenge -> Central server
+/// The validator signs the request before forwarding to central.
+pub async fn llm_local_proxy(
+    State(state): State<Arc<ChallengeServerState>>,
+    Json(req): Json<LocalLlmProxyRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Get validator hotkey from environment
+    let validator_hotkey = std::env::var("VALIDATOR_HOTKEY").unwrap_or_default();
+    if validator_hotkey.is_empty() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "Validator hotkey not configured"
+            })),
+        ));
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // In production, sign the request. For now, use placeholder.
+    // TODO: Implement proper sr25519 signing with validator's keypair
+    let signature = "validator_signature_placeholder";
+
+    // Forward to central server
+    let central_url = state.platform_client.base_url();
+    let forward_url = format!("{}/api/v1/llm/chat", central_url);
+
+    let forward_payload = serde_json::json!({
+        "validator_hotkey": validator_hotkey,
+        "signature": signature,
+        "timestamp": timestamp,
+        "agent_hash": req.agent_hash,
+        "messages": req.messages,
+        "model": req.model,
+        "max_tokens": req.max_tokens,
+        "temperature": req.temperature,
+    });
+
+    info!(
+        "LLM local proxy: forwarding request for agent {} to {}",
+        &req.agent_hash[..12.min(req.agent_hash.len())],
+        central_url
+    );
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(&forward_url)
+        .header("Content-Type", "application/json")
+        .json(&forward_payload)
+        .send()
+        .await
+        .map_err(|e| {
+            error!("Failed to forward LLM request: {}", e);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("Failed to reach central server: {}", e)
+                })),
+            )
+        })?;
+
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({
+                "success": false,
+                "error": format!("Invalid response from central server: {}", e)
+            })),
+        )
+    })?;
+
+    if status.is_success() {
+        Ok(Json(body))
+    } else {
+        Err((
+            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+            Json(body),
+        ))
+    }
+}
+
+// ============================================================================
 // FALLBACK/ERROR HANDLERS
 // ============================================================================
 
@@ -1009,6 +1114,8 @@ pub async fn run_server_with_mode(
         .route("/validate", post(validate_source))
         .route("/config", get(get_config))
         .route("/leaderboard", get(get_leaderboard))
+        // Local LLM proxy for validator mode (agent -> validator -> central)
+        .route("/llm/proxy", post(llm_local_proxy))
         .layer(cors.clone())
         .layer(RequestBodyLimitLayer::new(10 * 1024 * 1024)) // 10MB limit
         .layer(TraceLayer::new_for_http())
@@ -1051,8 +1158,19 @@ pub async fn run_server_with_mode(
                 get(api::get_agent_eval_status),
             )
             .route("/status", get(api::get_status))
-            // LLM proxy endpoint (validator authenticated)
+            // LLM proxy endpoint (validator authenticated - central server)
             .route("/llm/chat", post(api::llm_chat_proxy))
+            // Sudo endpoints (subnet owner only)
+            .route(
+                "/sudo/relaunch/:agent_hash",
+                post(api::sudo_relaunch_evaluation),
+            )
+            .route("/sudo/approve/:agent_hash", post(api::sudo_approve_agent))
+            .route("/sudo/reject/:agent_hash", post(api::sudo_reject_agent))
+            .route(
+                "/sudo/set_status/:agent_hash",
+                post(api::sudo_set_agent_status),
+            )
             // Public endpoints (no authentication required)
             .route("/pending", get(api::get_pending_submissions))
             .route("/assignments", get(api::get_all_assignments))

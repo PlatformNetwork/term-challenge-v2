@@ -254,15 +254,23 @@ class LLM:
         self._is_anthropic = config.get("is_anthropic", False)
         
         # Platform bridge configuration (for term-challenge evaluation)
+        # Flow: Agent -> Validator local proxy -> Central server
         self._agent_hash = os.environ.get("TERM_AGENT_HASH", "")
         self._validator_hotkey = os.environ.get("TERM_VALIDATOR_HOTKEY", "")
         self._platform_url = os.environ.get("TERM_PLATFORM_URL", "")
-        self._use_platform_bridge = bool(self._platform_url and self._agent_hash)
+        # LLM_PROXY_URL is the local validator's proxy (e.g., http://localhost:8080)
+        self._llm_proxy_url = os.environ.get("LLM_PROXY_URL", "")
+        self._use_platform_bridge = bool(self._agent_hash and (self._llm_proxy_url or self._platform_url))
         
         if self._use_platform_bridge:
-            _log(f"Using platform bridge: {self._platform_url}")
-            # Override API URL to use platform bridge
-            self._api_url = f"{self._platform_url}/api/v1/llm/chat"
+            if self._llm_proxy_url:
+                # Use local validator proxy (preferred)
+                self._api_url = f"{self._llm_proxy_url}/llm/proxy"
+                _log(f"Using validator local proxy: {self._llm_proxy_url}")
+            else:
+                # Fallback: direct to central (for testing)
+                self._api_url = f"{self._platform_url}/api/v1/llm/chat"
+                _log(f"Using platform bridge direct: {self._platform_url}")
         
         # Set default model (user > provider default)
         self.default_model = default_model or DEFAULT_MODELS.get(provider)
