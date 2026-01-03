@@ -12,6 +12,7 @@ This script:
 
 import hashlib
 import json
+import os
 import time
 import requests
 import sys
@@ -19,7 +20,7 @@ from datetime import datetime
 
 # Test configuration
 CENTRAL_SERVER = "http://localhost:8081"
-API_KEY = ""
+API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
 # Simple test agent that solves hello-world task
 TEST_AGENT_CODE = '''
