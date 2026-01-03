@@ -1865,3 +1865,320 @@ pub async fn get_all_assignments(
 
     Ok(Json(AllAssignmentsResponse { agents, total }))
 }
+
+// =============================================================================
+// LLM Proxy Endpoint - Routes agent LLM calls through validator to central server
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct LlmProxyRequest {
+    /// Validator hotkey making the request (must be whitelisted)
+    pub validator_hotkey: String,
+    /// Signature of "llm_chat:<timestamp>:<agent_hash>"
+    pub signature: String,
+    /// Request timestamp (must be within 5 minutes)
+    pub timestamp: i64,
+    /// Agent hash (to lookup API key from submission)
+    pub agent_hash: String,
+    /// LLM messages
+    pub messages: Vec<LlmMessage>,
+    /// Model to use (optional, defaults to agent's provider default)
+    pub model: Option<String>,
+    /// Max tokens (optional)
+    pub max_tokens: Option<u32>,
+    /// Temperature (optional)
+    pub temperature: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LlmProxyResponse {
+    pub success: bool,
+    pub content: Option<String>,
+    pub model: Option<String>,
+    pub usage: Option<LlmUsage>,
+    pub cost_usd: Option<f64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LlmUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
+/// POST /api/v1/llm/chat - LLM proxy for agent requests
+///
+/// Flow:
+/// 1. Agent in container calls term-sdk LLM
+/// 2. term-sdk routes to validator's term-challenge container
+/// 3. Validator container forwards to this central endpoint
+/// 4. Central server verifies validator is whitelisted
+/// 5. Looks up agent's API key from submission
+/// 6. Makes LLM call and returns response
+///
+/// Authentication: Validator must be whitelisted and sign the request
+pub async fn llm_chat_proxy(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<LlmProxyRequest>,
+) -> Result<Json<LlmProxyResponse>, (StatusCode, Json<LlmProxyResponse>)> {
+    let err_response = |msg: String| LlmProxyResponse {
+        success: false,
+        content: None,
+        model: None,
+        usage: None,
+        cost_usd: None,
+        error: Some(msg),
+    };
+
+    // Validate validator hotkey
+    if !is_valid_ss58_hotkey(&req.validator_hotkey) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(err_response("Invalid validator hotkey format".to_string())),
+        ));
+    }
+
+    // Validate timestamp
+    if !is_timestamp_valid(req.timestamp) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(err_response("Request timestamp expired".to_string())),
+        ));
+    }
+
+    // Verify signature (skip in test mode)
+    let message = format!("llm_chat:{}:{}", req.timestamp, req.agent_hash);
+    let skip_auth = std::env::var("SKIP_AUTH")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
+    if !skip_auth && !verify_signature(&req.validator_hotkey, &message, &req.signature) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(err_response("Invalid signature".to_string())),
+        ));
+    }
+
+    // Verify validator is whitelisted
+    if !skip_auth
+        && !state
+            .auth
+            .is_whitelisted_validator(&req.validator_hotkey)
+            .await
+    {
+        warn!(
+            "LLM proxy: unauthorized validator {}",
+            &req.validator_hotkey[..16.min(req.validator_hotkey.len())]
+        );
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(err_response("Validator not whitelisted".to_string())),
+        ));
+    }
+
+    // Get agent's API key and provider from submission
+    let submission: Option<Submission> = state
+        .storage
+        .get_submission(&req.agent_hash)
+        .await
+        .map_err(|e| {
+            error!("LLM proxy: failed to get submission: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(err_response(format!("Failed to lookup agent: {}", e))),
+            )
+        })?;
+
+    let submission = match submission {
+        Some(s) => s,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(err_response(format!("Agent {} not found", req.agent_hash))),
+            ));
+        }
+    };
+
+    let api_key: String = match submission.api_key {
+        Some(key) if !key.is_empty() => key,
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(err_response("Agent has no API key configured".to_string())),
+            ));
+        }
+    };
+
+    let provider = submission
+        .api_provider
+        .unwrap_or_else(|| "openrouter".to_string());
+
+    info!(
+        "LLM proxy: validator {} requesting for agent {} (provider: {})",
+        &req.validator_hotkey[..12.min(req.validator_hotkey.len())],
+        &req.agent_hash[..12.min(req.agent_hash.len())],
+        provider
+    );
+
+    // Make LLM call
+    let llm_response = make_llm_request(
+        &api_key,
+        &provider,
+        &req.messages,
+        req.model.as_deref(),
+        req.max_tokens,
+        req.temperature,
+    )
+    .await;
+
+    match llm_response {
+        Ok(response) => {
+            // TODO: Track cost per agent for billing
+            info!(
+                "LLM proxy: success for agent {}, tokens: {}",
+                &req.agent_hash[..12.min(req.agent_hash.len())],
+                response.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0)
+            );
+
+            Ok(Json(LlmProxyResponse {
+                success: true,
+                content: response.content,
+                model: response.model,
+                usage: response.usage,
+                cost_usd: response.cost_usd,
+                error: None,
+            }))
+        }
+        Err(e) => {
+            error!(
+                "LLM proxy: failed for agent {}: {}",
+                &req.agent_hash[..12.min(req.agent_hash.len())],
+                e
+            );
+            Err((
+                StatusCode::BAD_GATEWAY,
+                Json(err_response(format!("LLM request failed: {}", e))),
+            ))
+        }
+    }
+}
+
+struct LlmCallResponse {
+    content: Option<String>,
+    model: Option<String>,
+    usage: Option<LlmUsage>,
+    cost_usd: Option<f64>,
+}
+
+/// Make actual LLM API call
+async fn make_llm_request(
+    api_key: &str,
+    provider: &str,
+    messages: &[LlmMessage],
+    model: Option<&str>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+) -> anyhow::Result<LlmCallResponse> {
+    let client = reqwest::Client::new();
+
+    // Determine endpoint and model based on provider
+    let (endpoint, default_model, auth_header) = match provider.to_lowercase().as_str() {
+        "openrouter" => (
+            "https://openrouter.ai/api/v1/chat/completions",
+            "anthropic/claude-3.5-sonnet",
+            format!("Bearer {}", api_key),
+        ),
+        "openai" => (
+            "https://api.openai.com/v1/chat/completions",
+            "gpt-4o",
+            format!("Bearer {}", api_key),
+        ),
+        "anthropic" => (
+            "https://api.anthropic.com/v1/messages",
+            "claude-3-5-sonnet-20241022",
+            api_key.to_string(), // Anthropic uses x-api-key header
+        ),
+        "chutes" => (
+            "https://llm.chutes.ai/v1/chat/completions",
+            "deepseek-ai/DeepSeek-V3",
+            format!("Bearer {}", api_key),
+        ),
+        _ => {
+            anyhow::bail!("Unsupported provider: {}", provider);
+        }
+    };
+
+    let model = model.unwrap_or(default_model);
+
+    // Build request body
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens.unwrap_or(4096),
+        "temperature": temperature.unwrap_or(0.7),
+    });
+
+    // Make request
+    let mut request = client
+        .post(endpoint)
+        .header("Content-Type", "application/json");
+
+    if provider == "anthropic" {
+        request = request
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01");
+    } else {
+        request = request.header("Authorization", &auth_header);
+    }
+
+    let response = request
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Request failed: {}", e))?;
+
+    let status = response.status();
+    let response_text = response.text().await?;
+
+    if !status.is_success() {
+        anyhow::bail!("LLM API error ({}): {}", status, response_text);
+    }
+
+    // Parse response
+    let json: serde_json::Value = serde_json::from_str(&response_text)
+        .map_err(|e| anyhow::anyhow!("Failed to parse response: {}", e))?;
+
+    // Extract content (OpenAI/OpenRouter format)
+    let content = json["choices"][0]["message"]["content"]
+        .as_str()
+        .map(|s| s.to_string());
+
+    let response_model = json["model"].as_str().map(|s| s.to_string());
+
+    let usage = json.get("usage").map(|usage_obj| LlmUsage {
+        prompt_tokens: usage_obj["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+        completion_tokens: usage_obj["completion_tokens"].as_u64().unwrap_or(0) as u32,
+        total_tokens: usage_obj["total_tokens"].as_u64().unwrap_or(0) as u32,
+    });
+
+    // Estimate cost (rough approximation)
+    let cost_usd = usage.as_ref().map(|u| {
+        let input_cost = (u.prompt_tokens as f64) * 0.000003; // $3/1M tokens
+        let output_cost = (u.completion_tokens as f64) * 0.000015; // $15/1M tokens
+        input_cost + output_cost
+    });
+
+    Ok(LlmCallResponse {
+        content,
+        model: response_model,
+        usage,
+        cost_usd,
+    })
+}

@@ -1051,6 +1051,8 @@ pub async fn run_server_with_mode(
                 get(api::get_agent_eval_status),
             )
             .route("/status", get(api::get_status))
+            // LLM proxy endpoint (validator authenticated)
+            .route("/llm/chat", post(api::llm_chat_proxy))
             // Public endpoints (no authentication required)
             .route("/pending", get(api::get_pending_submissions))
             .route("/assignments", get(api::get_all_assignments))

@@ -985,8 +985,8 @@ impl PgStorage {
             .query_opt(
                 "SELECT id, agent_hash, miner_hotkey, source_code, source_hash, name, 
                     COALESCE(version, 1), epoch, status, api_key, 
-                    COALESCE(api_provider, 'openrouter'), COALESCE(cost_limit_usd, 10.0), 
-                    COALESCE(total_cost_usd, 0.0), EXTRACT(EPOCH FROM created_at)::BIGINT
+                    COALESCE(api_provider, 'openrouter'), COALESCE(cost_limit_usd, 10.0)::FLOAT8, 
+                    COALESCE(total_cost_usd, 0.0)::FLOAT8, EXTRACT(EPOCH FROM created_at)::BIGINT
              FROM submissions WHERE agent_hash = $1",
                 &[&agent_hash],
             )
