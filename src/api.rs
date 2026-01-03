@@ -1766,3 +1766,102 @@ pub async fn get_status(
         pending_jobs: pending.len() as i64,
     }))
 }
+
+// ============================================================================
+// PUBLIC ENDPOINTS (No authentication required)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct PendingSubmissionsQuery {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PendingSubmissionsResponse {
+    pub submissions: Vec<crate::pg_storage::PublicSubmissionInfo>,
+    pub total: usize,
+}
+
+/// GET /api/v1/pending - Get all pending submissions (public)
+///
+/// No authentication required. Does NOT include source code, API keys, or binaries.
+/// Shows: agent_hash, miner_hotkey, name, version, epoch, status, compile_status,
+///        llm_approved, flagged, created_at, validators_completed, total_validators
+pub async fn get_pending_submissions(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<PendingSubmissionsQuery>,
+) -> Result<Json<PendingSubmissionsResponse>, (StatusCode, String)> {
+    let limit = query.limit.unwrap_or(100).min(500);
+
+    let submissions = state
+        .storage
+        .get_pending_submissions_public(limit)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total = submissions.len();
+
+    Ok(Json(PendingSubmissionsResponse { submissions, total }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentAssignmentsResponse {
+    pub agent_hash: String,
+    pub assignments: Vec<crate::pg_storage::PublicAssignment>,
+    pub total: usize,
+}
+
+/// GET /api/v1/assignments/:agent_hash - Get validator assignments for an agent (public)
+///
+/// No authentication required. Shows which validators are assigned to evaluate
+/// a specific agent, their status (pending/in_progress/completed), and scores.
+pub async fn get_agent_assignments(
+    State(state): State<Arc<ApiState>>,
+    Path(agent_hash): Path<String>,
+) -> Result<Json<AgentAssignmentsResponse>, (StatusCode, String)> {
+    let assignments = state
+        .storage
+        .get_agent_assignments_public(&agent_hash)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total = assignments.len();
+
+    Ok(Json(AgentAssignmentsResponse {
+        agent_hash,
+        assignments,
+        total,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AllAssignmentsQuery {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AllAssignmentsResponse {
+    pub agents: Vec<crate::pg_storage::PublicAgentAssignments>,
+    pub total: usize,
+}
+
+/// GET /api/v1/assignments - Get all pending agents with their validator assignments (public)
+///
+/// No authentication required. Dashboard view showing all pending agents
+/// and which validators are assigned to each, with their evaluation status.
+pub async fn get_all_assignments(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<AllAssignmentsQuery>,
+) -> Result<Json<AllAssignmentsResponse>, (StatusCode, String)> {
+    let limit = query.limit.unwrap_or(50).min(200);
+
+    let agents = state
+        .storage
+        .get_all_assignments_public(limit)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total = agents.len();
+
+    Ok(Json(AllAssignmentsResponse { agents, total }))
+}

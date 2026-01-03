@@ -2435,4 +2435,184 @@ impl PgStorage {
         );
         Ok(())
     }
+
+    // ========================================================================
+    // PUBLIC API METHODS (No sensitive data exposed)
+    // ========================================================================
+
+    /// Get all pending submissions (public view - no source code, no API key, no binary)
+    pub async fn get_pending_submissions_public(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<PublicSubmissionInfo>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                "SELECT s.agent_hash, s.miner_hotkey, s.name, s.version, s.epoch, s.status,
+                        s.compile_status, s.llm_approved, s.flagged,
+                        EXTRACT(EPOCH FROM s.created_at)::BIGINT,
+                        p.validators_completed, p.total_validators,
+                        EXTRACT(EPOCH FROM p.window_expires_at)::BIGINT
+                 FROM submissions s
+                 LEFT JOIN pending_evaluations p ON p.agent_hash = s.agent_hash
+                 WHERE s.status IN ('pending', 'evaluating') 
+                    OR p.status IN ('pending', 'evaluating')
+                 ORDER BY s.created_at DESC
+                 LIMIT $1",
+                &[&limit],
+            )
+            .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| PublicSubmissionInfo {
+                agent_hash: r.get(0),
+                miner_hotkey: r.get(1),
+                name: r.get(2),
+                version: r.get(3),
+                epoch: r.get(4),
+                status: r.get(5),
+                compile_status: r.get(6),
+                llm_approved: r.get(7),
+                flagged: r.get(8),
+                created_at: r.get(9),
+                validators_completed: r.get::<_, Option<i32>>(10).unwrap_or(0),
+                total_validators: r.get::<_, Option<i32>>(11).unwrap_or(0),
+                window_expires_at: r.get(12),
+            })
+            .collect())
+    }
+
+    /// Get validator assignments for an agent (public)
+    pub async fn get_agent_assignments_public(
+        &self,
+        agent_hash: &str,
+    ) -> Result<Vec<PublicAssignment>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                "SELECT va.validator_hotkey, 
+                        CASE WHEN ve.id IS NOT NULL THEN 'completed'
+                             WHEN vc.status = 'claimed' THEN 'in_progress'
+                             ELSE 'pending' END as eval_status,
+                        ve.score::FLOAT8,
+                        ve.tasks_passed,
+                        ve.tasks_total,
+                        EXTRACT(EPOCH FROM va.assigned_at)::BIGINT,
+                        EXTRACT(EPOCH FROM ve.created_at)::BIGINT
+                 FROM validator_assignments va
+                 LEFT JOIN validator_evaluations ve 
+                    ON ve.agent_hash = va.agent_hash AND ve.validator_hotkey = va.validator_hotkey
+                 LEFT JOIN validator_claims vc 
+                    ON vc.agent_hash = va.agent_hash AND vc.validator_hotkey = va.validator_hotkey
+                 WHERE va.agent_hash = $1
+                 ORDER BY va.assigned_at ASC",
+                &[&agent_hash],
+            )
+            .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| PublicAssignment {
+                validator_hotkey: r.get(0),
+                status: r.get(1),
+                score: r.get(2),
+                tasks_passed: r.get(3),
+                tasks_total: r.get(4),
+                assigned_at: r.get(5),
+                completed_at: r.get(6),
+            })
+            .collect())
+    }
+
+    /// Get all assignments across all pending agents (public dashboard view)
+    pub async fn get_all_assignments_public(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<PublicAgentAssignments>> {
+        let client = self.pool.get().await?;
+
+        // Get pending agents first
+        let pending = client
+            .query(
+                "SELECT p.agent_hash, p.miner_hotkey, s.name, p.status,
+                        p.validators_completed, p.total_validators,
+                        EXTRACT(EPOCH FROM p.window_expires_at)::BIGINT,
+                        EXTRACT(EPOCH FROM p.created_at)::BIGINT
+                 FROM pending_evaluations p
+                 JOIN submissions s ON s.agent_hash = p.agent_hash
+                 WHERE p.status IN ('pending', 'evaluating')
+                 ORDER BY p.created_at DESC
+                 LIMIT $1",
+                &[&limit],
+            )
+            .await?;
+
+        let mut results = Vec::new();
+        for row in pending {
+            let agent_hash: String = row.get(0);
+            let assignments = self
+                .get_agent_assignments_public(&agent_hash)
+                .await
+                .unwrap_or_default();
+
+            results.push(PublicAgentAssignments {
+                agent_hash,
+                miner_hotkey: row.get(1),
+                name: row.get(2),
+                status: row.get(3),
+                validators_completed: row.get(4),
+                total_validators: row.get(5),
+                window_expires_at: row.get(6),
+                created_at: row.get(7),
+                assignments,
+            });
+        }
+
+        Ok(results)
+    }
+}
+
+/// Public submission info (no sensitive data)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicSubmissionInfo {
+    pub agent_hash: String,
+    pub miner_hotkey: String,
+    pub name: Option<String>,
+    pub version: i32,
+    pub epoch: i64,
+    pub status: String,
+    pub compile_status: String,
+    pub llm_approved: bool,
+    pub flagged: bool,
+    pub created_at: i64,
+    pub validators_completed: i32,
+    pub total_validators: i32,
+    pub window_expires_at: Option<i64>,
+}
+
+/// Public assignment info (no sensitive data)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicAssignment {
+    pub validator_hotkey: String,
+    pub status: String,
+    pub score: Option<f64>,
+    pub tasks_passed: Option<i32>,
+    pub tasks_total: Option<i32>,
+    pub assigned_at: Option<i64>,
+    pub completed_at: Option<i64>,
+}
+
+/// Public agent with all assignments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicAgentAssignments {
+    pub agent_hash: String,
+    pub miner_hotkey: String,
+    pub name: Option<String>,
+    pub status: String,
+    pub validators_completed: i32,
+    pub total_validators: i32,
+    pub window_expires_at: Option<i64>,
+    pub created_at: i64,
+    pub assignments: Vec<PublicAssignment>,
 }

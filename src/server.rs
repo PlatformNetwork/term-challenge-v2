@@ -1051,6 +1051,10 @@ pub async fn run_server_with_mode(
                 get(api::get_agent_eval_status),
             )
             .route("/status", get(api::get_status))
+            // Public endpoints (no authentication required)
+            .route("/pending", get(api::get_pending_submissions))
+            .route("/assignments", get(api::get_all_assignments))
+            .route("/assignments/:agent_hash", get(api::get_agent_assignments))
             .layer(cors.clone()) // Use same CORS config as main routes
             .with_state(api_state);
 
@@ -1130,6 +1134,11 @@ pub async fn run_server_with_mode(
         info!("║    POST /api/v1/validator/my_jobs - Get my pending jobs      ║");
         info!("║    GET  /api/v1/validator/agent_status/:h - Agent eval status║");
         info!("║    GET  /api/v1/status              - Challenge status       ║");
+        info!("╠══════════════════════════════════════════════════════════════╣");
+        info!("║  Public API (no auth):                                       ║");
+        info!("║    GET  /api/v1/pending             - Pending submissions    ║");
+        info!("║    GET  /api/v1/assignments         - All agent assignments  ║");
+        info!("║    GET  /api/v1/assignments/:hash   - Agent's validators     ║");
     }
     info!("╚══════════════════════════════════════════════════════════════╝");
 
