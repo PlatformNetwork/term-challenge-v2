@@ -54,14 +54,20 @@ pub struct DockerExecutor {
 impl DockerExecutor {
     /// Create a new Docker executor
     pub async fn new() -> Result<Self> {
-        let docker = Docker::connect_with_local_defaults()
-            .map_err(|e| anyhow::anyhow!("Failed to connect to Docker: {}", e))?;
+        let docker = Docker::connect_with_local_defaults().map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to connect to Docker: {}. Ensure Docker socket is mounted at /var/run/docker.sock",
+                e
+            )
+        })?;
 
         // Verify connection
-        docker
-            .ping()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to ping Docker: {}", e))?;
+        docker.ping().await.map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to ping Docker daemon: {}. Check that Docker is running and the socket is accessible.",
+                e
+            )
+        })?;
 
         info!("Connected to Docker daemon");
         Ok(Self { docker })
@@ -181,7 +187,11 @@ impl DockerExecutor {
                     }
                 }
                 Err(e) => {
-                    return Err(anyhow::anyhow!("Failed to pull image: {}", e));
+                    return Err(anyhow::anyhow!(
+                        "Failed to pull image '{}': {}. Make sure Docker has access to pull from the registry.",
+                        image,
+                        e
+                    ));
                 }
             }
         }

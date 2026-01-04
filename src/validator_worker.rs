@@ -467,7 +467,8 @@ impl ValidatorWorker {
                     }
                 }
                 Err(e) => {
-                    warn!("Task {} error: {}", task_id, e);
+                    // Log full error chain with :? for debugging Docker issues
+                    warn!("Task {} error: {:?}", task_id, e);
                     tasks_failed += 1;
                 }
             }
@@ -516,6 +517,10 @@ impl ValidatorWorker {
         };
 
         // Start task container
+        debug!(
+            "Creating task container with image: {}",
+            task.config.docker_image
+        );
         let task_container = docker
             .run_agent(
                 &task.config.docker_image,
@@ -524,7 +529,12 @@ impl ValidatorWorker {
                 &task_config,
             )
             .await
-            .context("Failed to create task container")?;
+            .with_context(|| {
+                format!(
+                    "Failed to create task container (image: {}, task_path: {:?})",
+                    task.config.docker_image, task.path
+                )
+            })?;
 
         task_container
             .start()
