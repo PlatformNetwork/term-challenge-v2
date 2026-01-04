@@ -16,7 +16,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sp_core::{sr25519, Pair};
 
-const DEFAULT_SERVER: &str = "https://chain.platform.network";
+const DEFAULT_SERVER: &str = "https://chain.platform.network/api/v1/bridge/term-challenge";
 
 #[derive(Parser, Debug)]
 #[command(name = "term-sudo")]
@@ -202,7 +202,7 @@ impl TermClient {
     }
 
     async fn list_pending(&self) -> Result<Vec<PendingSubmission>> {
-        let url = format!("{}/api/v1/pending", self.base_url);
+        let url = format!("{}/pending", self.base_url);
         let resp: serde_json::Value = self.client.get(&url).send().await?.json().await?;
         let submissions: Vec<PendingSubmission> =
             serde_json::from_value(resp["submissions"].clone()).unwrap_or_default();
@@ -210,12 +210,12 @@ impl TermClient {
     }
 
     async fn list_assignments(&self, agent_hash: &str) -> Result<AgentAssignments> {
-        let url = format!("{}/api/v1/assignments/{}", self.base_url, agent_hash);
+        let url = format!("{}/assignments/{}", self.base_url, agent_hash);
         Ok(self.client.get(&url).send().await?.json().await?)
     }
 
     async fn list_leaderboard(&self) -> Result<Vec<LeaderboardEntry>> {
-        let url = format!("{}/api/v1/leaderboard", self.base_url);
+        let url = format!("{}/leaderboard", self.base_url);
         let resp: serde_json::Value = self.client.get(&url).send().await?.json().await?;
         let entries: Vec<LeaderboardEntry> =
             serde_json::from_value(resp["entries"].clone()).unwrap_or_default();
@@ -223,7 +223,7 @@ impl TermClient {
     }
 
     async fn sudo_approve(&self, agent_hash: &str) -> Result<SudoResponse> {
-        let url = format!("{}/api/v1/sudo/approve/{}", self.base_url, agent_hash);
+        let url = format!("{}/sudo/approve/{}", self.base_url, agent_hash);
         let timestamp = Self::timestamp();
         let message = format!("sudo:approve:{}:{}", timestamp, agent_hash);
 
@@ -238,7 +238,7 @@ impl TermClient {
     }
 
     async fn sudo_reject(&self, agent_hash: &str) -> Result<SudoResponse> {
-        let url = format!("{}/api/v1/sudo/reject/{}", self.base_url, agent_hash);
+        let url = format!("{}/sudo/reject/{}", self.base_url, agent_hash);
         let timestamp = Self::timestamp();
         let message = format!("sudo:reject:{}:{}", timestamp, agent_hash);
 
@@ -253,7 +253,7 @@ impl TermClient {
     }
 
     async fn sudo_relaunch(&self, agent_hash: &str) -> Result<SudoResponse> {
-        let url = format!("{}/api/v1/sudo/relaunch/{}", self.base_url, agent_hash);
+        let url = format!("{}/sudo/relaunch/{}", self.base_url, agent_hash);
         let timestamp = Self::timestamp();
         let message = format!("sudo:relaunch:{}:{}", timestamp, agent_hash);
 
@@ -273,7 +273,7 @@ impl TermClient {
         status: &str,
         reason: Option<&str>,
     ) -> Result<SudoResponse> {
-        let url = format!("{}/api/v1/sudo/set_status/{}", self.base_url, agent_hash);
+        let url = format!("{}/sudo/set_status/{}", self.base_url, agent_hash);
         let timestamp = Self::timestamp();
         let message = format!("sudo:set_status:{}:{}", timestamp, agent_hash);
 
