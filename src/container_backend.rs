@@ -1199,4 +1199,43 @@ mod tests {
         assert!(output.success());
         assert_eq!(output.combined(), "helloworld");
     }
+
+    #[test]
+    fn test_broker_request_serializes_lowercase() {
+        let container_config = ContainerConfig {
+            image: "test:latest".to_string(),
+            challenge_id: "ch1".to_string(),
+            owner_id: "own1".to_string(),
+            name: None,
+            cmd: None,
+            env: HashMap::new(),
+            working_dir: Some("/workspace".to_string()),
+            resources: ResourceLimits {
+                memory_bytes: 2147483648,
+                cpu_cores: 1.0,
+                pids_limit: 256,
+                disk_quota_bytes: 0,
+            },
+            network: NetworkConfig {
+                mode: BrokerNetworkMode::None,
+                ports: HashMap::new(),
+                allow_internet: false,
+            },
+            mounts: vec![],
+            labels: HashMap::new(),
+        };
+
+        let request = BrokerRequest::Create {
+            config: container_config,
+            request_id: "test-123".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        println!("Serialized JSON: {}", json);
+        assert!(
+            json.contains("\"type\":\"create\""),
+            "Expected lowercase 'create', got: {}",
+            json
+        );
+    }
 }
