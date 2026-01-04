@@ -495,7 +495,7 @@ enum BrokerRequest {
 
 /// Response from the secure broker
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 enum BrokerResponse {
     /// Auth success / ping response
     Pong {
