@@ -327,7 +327,7 @@ impl ValidatorWorker {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
 
-        let message = format!("my_jobs:{}", timestamp);
+        let message = format!("get_my_jobs:{}", timestamp);
         let signature = self.sign_message(&message);
 
         let response = self
