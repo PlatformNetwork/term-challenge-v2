@@ -564,9 +564,51 @@ struct BrokerContainerInfo {
     state: String,
 }
 
+/// Error from the secure broker - matches platform's ContainerError enum
 #[derive(Debug, Deserialize)]
-struct BrokerError {
-    message: String,
+#[serde(untagged)]
+enum BrokerError {
+    ImageNotWhitelisted { ImageNotWhitelisted: String },
+    PolicyViolation { PolicyViolation: String },
+    ContainerNotFound { ContainerNotFound: String },
+    ResourceLimitExceeded { ResourceLimitExceeded: String },
+    PermissionDenied { PermissionDenied: String },
+    InvalidConfig { InvalidConfig: String },
+    DockerError { DockerError: String },
+    InternalError { InternalError: String },
+    Unauthorized { Unauthorized: String },
+    InvalidRequest { InvalidRequest: String },
+}
+
+impl BrokerError {
+    fn message(&self) -> &str {
+        match self {
+            BrokerError::ImageNotWhitelisted {
+                ImageNotWhitelisted: s,
+            } => s,
+            BrokerError::PolicyViolation { PolicyViolation: s } => s,
+            BrokerError::ContainerNotFound {
+                ContainerNotFound: s,
+            } => s,
+            BrokerError::ResourceLimitExceeded {
+                ResourceLimitExceeded: s,
+            } => s,
+            BrokerError::PermissionDenied {
+                PermissionDenied: s,
+            } => s,
+            BrokerError::InvalidConfig { InvalidConfig: s } => s,
+            BrokerError::DockerError { DockerError: s } => s,
+            BrokerError::InternalError { InternalError: s } => s,
+            BrokerError::Unauthorized { Unauthorized: s } => s,
+            BrokerError::InvalidRequest { InvalidRequest: s } => s,
+        }
+    }
+}
+
+impl std::fmt::Display for BrokerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message())
+    }
 }
 
 /// Secure broker backend for production
@@ -643,7 +685,7 @@ impl ContainerBackend for SecureBrokerBackend {
                 }))
             }
             BrokerResponse::Error { error, .. } => {
-                bail!("Broker error: {}", error.message)
+                bail!("Broker error: {}", error)
             }
             _ => bail!("Unexpected broker response"),
         }
@@ -657,7 +699,7 @@ impl ContainerBackend for SecureBrokerBackend {
 
         match self.send_request(&request).await? {
             BrokerResponse::Pulled { .. } => Ok(()),
-            BrokerResponse::Error { error, .. } => bail!("Pull failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Pull failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -678,7 +720,7 @@ impl ContainerBackend for SecureBrokerBackend {
             BrokerResponse::ContainerList { containers, .. } => {
                 Ok(containers.into_iter().map(|c| c.id).collect())
             }
-            BrokerResponse::Error { error, .. } => bail!("List failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("List failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -747,7 +789,7 @@ impl ContainerHandle for BrokerContainerHandle {
 
         match self.send_request(&request).await? {
             BrokerResponse::Started { .. } => Ok(()),
-            BrokerResponse::Error { error, .. } => bail!("Start failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Start failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -762,7 +804,7 @@ impl ContainerHandle for BrokerContainerHandle {
         match self.send_request(&request).await? {
             BrokerResponse::Stopped { .. } => Ok(()),
             BrokerResponse::Error { error, .. } => {
-                warn!("Stop failed: {}", error.message);
+                warn!("Stop failed: {}", error);
                 Ok(())
             }
             _ => Ok(()),
@@ -778,7 +820,7 @@ impl ContainerHandle for BrokerContainerHandle {
 
         match self.send_request(&request).await? {
             BrokerResponse::Removed { .. } => Ok(()),
-            BrokerResponse::Error { error, .. } => bail!("Remove failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Remove failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -798,7 +840,7 @@ impl ContainerHandle for BrokerContainerHandle {
                 stderr: result.stderr,
                 exit_code: result.exit_code,
             }),
-            BrokerResponse::Error { error, .. } => bail!("Exec failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Exec failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -812,7 +854,7 @@ impl ContainerHandle for BrokerContainerHandle {
 
         match self.send_request(&request).await? {
             BrokerResponse::LogsResult { logs, .. } => Ok(logs),
-            BrokerResponse::Error { error, .. } => bail!("Logs failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Logs failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -899,7 +941,7 @@ impl WsBrokerBackend {
         if let Some(Ok(Message::Text(text))) = read.next().await {
             let response: BrokerResponse = serde_json::from_str(&text)?;
             if let BrokerResponse::Error { error, .. } = response {
-                bail!("Auth failed: {}", error.message);
+                bail!("Auth failed: {}", error);
             }
         }
 
@@ -943,7 +985,7 @@ impl ContainerBackend for WsBrokerBackend {
                 jwt_token: self.jwt_token.clone(),
                 container_id,
             })),
-            BrokerResponse::Error { error, .. } => bail!("Create failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Create failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -956,7 +998,7 @@ impl ContainerBackend for WsBrokerBackend {
 
         match self.send_request(&request).await? {
             BrokerResponse::Pulled { .. } => Ok(()),
-            BrokerResponse::Error { error, .. } => bail!("Pull failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Pull failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -976,7 +1018,7 @@ impl ContainerBackend for WsBrokerBackend {
             BrokerResponse::ContainerList { containers, .. } => {
                 Ok(containers.into_iter().map(|c| c.id).collect())
             }
-            BrokerResponse::Error { error, .. } => bail!("List failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("List failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -1054,7 +1096,7 @@ impl ContainerHandle for WsBrokerContainerHandle {
 
         match self.send_request(&request).await? {
             BrokerResponse::Started { .. } => Ok(()),
-            BrokerResponse::Error { error, .. } => bail!("Start failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Start failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -1068,7 +1110,7 @@ impl ContainerHandle for WsBrokerContainerHandle {
 
         match self.send_request(&request).await? {
             BrokerResponse::Stopped { .. } => Ok(()),
-            BrokerResponse::Error { error, .. } => bail!("Stop failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Stop failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -1082,7 +1124,7 @@ impl ContainerHandle for WsBrokerContainerHandle {
 
         match self.send_request(&request).await? {
             BrokerResponse::Removed { .. } => Ok(()),
-            BrokerResponse::Error { error, .. } => bail!("Remove failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Remove failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -1102,7 +1144,7 @@ impl ContainerHandle for WsBrokerContainerHandle {
                 stderr: result.stderr,
                 exit_code: result.exit_code,
             }),
-            BrokerResponse::Error { error, .. } => bail!("Exec failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Exec failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
@@ -1116,7 +1158,7 @@ impl ContainerHandle for WsBrokerContainerHandle {
 
         match self.send_request(&request).await? {
             BrokerResponse::LogsResult { logs, .. } => Ok(logs),
-            BrokerResponse::Error { error, .. } => bail!("Logs failed: {}", error.message),
+            BrokerResponse::Error { error, .. } => bail!("Logs failed: {}", error),
             _ => bail!("Unexpected response"),
         }
     }
