@@ -448,7 +448,7 @@ impl ValidatorWorker {
                 &instruction[..50.min(instruction.len())]
             );
 
-            let result = self.run_task_in_docker(&binary_path, &task).await;
+            let result = self.run_task_in_docker(&binary_path, task).await;
 
             match result {
                 Ok(passed) => {
@@ -548,7 +548,7 @@ impl ValidatorWorker {
         // Run the agent binary against this task
         let instruction = task.instruction();
         let passed = self
-            .run_agent_loop(&task_container, binary_path, &instruction, timeout_secs)
+            .run_agent_loop(&task_container, binary_path, instruction, timeout_secs)
             .await
             .unwrap_or(false);
 
