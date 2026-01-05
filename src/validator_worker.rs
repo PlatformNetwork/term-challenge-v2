@@ -637,7 +637,9 @@ impl ValidatorWorker {
                 &instruction[..50.min(instruction.len())]
             );
 
-            let result = self.run_task_in_docker(&binary_path, task).await;
+            let result = self
+                .run_task_in_docker(&binary_path, task, agent_hash)
+                .await;
 
             let task_result = match result {
                 Ok(tr) => {
@@ -701,7 +703,12 @@ impl ValidatorWorker {
     }
 
     /// Execute single task using the container backend (broker or Docker)
-    async fn run_task_in_docker(&self, binary_path: &str, task: &Task) -> Result<TaskResult> {
+    async fn run_task_in_docker(
+        &self,
+        binary_path: &str,
+        task: &Task,
+        agent_hash: &str,
+    ) -> Result<TaskResult> {
         use crate::container_backend::MountConfig;
         use std::time::Instant;
 
@@ -725,6 +732,19 @@ impl ValidatorWorker {
         }
         env.insert("TEST_DIR".to_string(), "/tests".to_string());
         env.insert("TERM".to_string(), "xterm-256color".to_string());
+
+        // LLM proxy configuration - agent reaches validator container via platform-network
+        // HOSTNAME is set to container name by Docker (e.g., challenge-term-bench-xxx)
+        let validator_hostname =
+            std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string());
+        let validator_port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+        env.insert(
+            "LLM_PROXY_URL".to_string(),
+            format!("http://{}:{}", validator_hostname, validator_port),
+        );
+        env.insert("TERM_AGENT_HASH".to_string(), agent_hash.to_string());
+        env.insert("TERM_TASK_ID".to_string(), task_id.to_string());
+        env.insert("EVALUATION_MODE".to_string(), "true".to_string());
 
         // Parse memory limit (e.g., "2g" -> bytes)
         let memory_bytes = parse_memory_string(&task.config.memory_limit);
@@ -750,7 +770,7 @@ impl ValidatorWorker {
             cpu_cores: task.config.cpu_limit,
             env,
             working_dir: "/app".to_string(),
-            network_mode: "bridge".to_string(),
+            network_mode: "isolated".to_string(), // Use platform-network for LLM proxy access
             mounts,
             cmd: Some(vec![
                 "tail".to_string(),

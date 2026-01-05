@@ -411,11 +411,11 @@ class LLM:
             # Platform bridge format
             payload: Dict[str, Any] = {
                 "agent_hash": self._agent_hash,
-                "validator_hotkey": self._validator_hotkey,
                 "messages": messages,
                 "model": model,
                 "max_tokens": tokens,
                 "temperature": temp,
+                "task_id": os.environ.get("TERM_TASK_ID"),
             }
             headers = {
                 "Content-Type": "application/json",
@@ -441,9 +441,32 @@ class LLM:
                 "Content-Type": "application/json",
             }
         
-        response = self._client.post(self._api_url, headers=headers, json=payload)
+        # Make HTTP request with graceful error handling for proxy mode
+        try:
+            response = self._client.post(self._api_url, headers=headers, json=payload)
+        except httpx.RequestError as e:
+            if self._use_platform_bridge:
+                # Graceful fallback - return error to agent, don't crash
+                raise LLMError(
+                    code="proxy_unavailable",
+                    message=f"LLM proxy request failed: {e}",
+                    details={"proxy_url": self._api_url}
+                )
+            raise
         
         if not response.is_success:
+            if self._use_platform_bridge:
+                # Parse proxy error response gracefully
+                try:
+                    data = response.json()
+                    error_msg = data.get("error", response.text)
+                except Exception:
+                    error_msg = response.text
+                raise LLMError(
+                    code="proxy_error",
+                    message=str(error_msg),
+                    details={"status_code": response.status_code, "proxy_url": self._api_url}
+                )
             self._handle_api_error(response, model)
         
         data = response.json()
@@ -562,6 +585,11 @@ class LLM:
         temp = temperature if temperature is not None else self.temperature
         tokens = max_tokens if max_tokens is not None else self.max_tokens
         
+        # Platform bridge streaming mode
+        if self._use_platform_bridge:
+            yield from self._chat_stream_proxy(messages, model, temp, tokens)
+            return
+        
         payload = {
             "model": model,
             "messages": messages,
@@ -591,6 +619,65 @@ class LLM:
                             yield content
                     except json.JSONDecodeError:
                         pass
+    
+    def _chat_stream_proxy(
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> Iterator[str]:
+        """Stream chat response through platform proxy."""
+        # Use streaming proxy endpoint
+        stream_url = self._api_url + "/stream"  # /llm/proxy/stream
+        
+        payload = {
+            "agent_hash": self._agent_hash,
+            "messages": messages,
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "task_id": os.environ.get("TERM_TASK_ID"),
+        }
+        
+        headers = {
+            "Content-Type": "application/json",
+        }
+        
+        try:
+            with self._client.stream("POST", stream_url, headers=headers, json=payload) as response:
+                if not response.is_success:
+                    try:
+                        error_text = response.read().decode()
+                        error_data = json.loads(error_text)
+                        error_msg = error_data.get("error", error_text)
+                    except Exception:
+                        error_msg = f"HTTP {response.status_code}"
+                    raise LLMError(
+                        code="proxy_error",
+                        message=str(error_msg),
+                        details={"status_code": response.status_code, "proxy_url": stream_url}
+                    )
+                
+                for line in response.iter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                yield content
+                        except json.JSONDecodeError:
+                            pass
+        except httpx.RequestError as e:
+            raise LLMError(
+                code="proxy_unavailable",
+                message=f"LLM proxy stream request failed: {e}",
+                details={"proxy_url": stream_url}
+            )
     
     def chat_stream_full(
         self,

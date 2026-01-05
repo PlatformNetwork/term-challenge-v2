@@ -100,10 +100,10 @@ RUN cd /opt/term-sdk/python && \
     echo "SDK installed with HTTP server fix"
 
 # Copy default data and tasks
-COPY data /app/data
+COPY ${TERM_REPO_PATH}/data /app/data
 
 # Copy agent runner script
-COPY docker/agent_runner.py /opt/term-sdk/agent_runner.py
+COPY ${TERM_REPO_PATH}/docker/agent_runner.py /opt/term-sdk/agent_runner.py
 RUN chmod +x /opt/term-sdk/agent_runner.py
 
 # Create directories

@@ -27,6 +27,24 @@ pub const DEFAULT_COST_LIMIT_USD: f64 = 10.0;
 /// Maximum number of validators per agent evaluation
 pub const MAX_VALIDATORS_PER_AGENT: i32 = 3;
 
+/// Maximum log size per field (1 MB)
+const MAX_LOG_SIZE: usize = 1024 * 1024;
+
+/// Truncate log string to maximum size
+fn truncate_log(log: Option<String>) -> Option<String> {
+    log.map(|s| {
+        if s.len() > MAX_LOG_SIZE {
+            format!(
+                "{}...[TRUNCATED, {} bytes total]",
+                &s[..MAX_LOG_SIZE],
+                s.len()
+            )
+        } else {
+            s
+        }
+    })
+}
+
 // Legacy schema kept for reference - migrations are now in migrations/ directory
 #[allow(dead_code)]
 const LEGACY_SCHEMA: &str = r#"
@@ -419,6 +437,33 @@ pub struct EvaluationProgress {
     pub completed_tasks: Vec<crate::api::CompletedTaskInfo>,
     pub remaining_task_ids: Vec<String>,
     pub partial_score: f64,
+}
+
+/// Progress of a validator's evaluation of an agent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidatorEvaluationProgress {
+    pub validator_hotkey: String,
+    pub status: String, // "pending", "in_progress", "completed"
+    pub total_tasks: i32,
+    pub completed_tasks: i32,
+    pub passed_tasks: i32,
+    pub failed_tasks: i32,
+    pub remaining_task_ids: Vec<String>,
+    pub current_task: Option<String>,
+    pub started_at: Option<i64>,
+    pub last_update: Option<i64>,
+}
+
+/// LLM usage record for tracking API calls during evaluation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmUsageRecord {
+    pub agent_hash: String,
+    pub validator_hotkey: String,
+    pub task_id: Option<String>,
+    pub model: String,
+    pub prompt_tokens: i32,
+    pub completion_tokens: i32,
+    pub cost_usd: f64,
 }
 
 /// Database query timeout in seconds
@@ -945,6 +990,74 @@ impl PgStorage {
             }
             None => Ok((false, 0.0, 0.0)),
         }
+    }
+
+    /// Get current and limit costs for a submission
+    /// Returns (total_cost_usd, cost_limit_usd)
+    pub async fn get_submission_costs(&self, agent_hash: &str) -> Result<(f64, f64)> {
+        let client = self.pool.get().await?;
+
+        let row = client
+            .query_opt(
+                "SELECT COALESCE(total_cost_usd, 0.0)::FLOAT8, COALESCE(cost_limit_usd, 10.0)::FLOAT8 
+                 FROM submissions WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        match row {
+            Some(r) => {
+                let total: f64 = r.get(0);
+                let limit: f64 = r.get(1);
+                Ok((total, limit))
+            }
+            None => Err(anyhow::anyhow!("Submission not found: {}", agent_hash)),
+        }
+    }
+
+    /// Record an LLM usage entry for tracking and auditing
+    pub async fn record_llm_usage(&self, record: LlmUsageRecord) -> Result<()> {
+        let client = self.pool.get().await?;
+
+        client
+            .execute(
+                "INSERT INTO llm_usage (agent_hash, validator_hotkey, task_id, model, prompt_tokens, completion_tokens, cost_usd)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                &[
+                    &record.agent_hash,
+                    &record.validator_hotkey,
+                    &record.task_id,
+                    &record.model,
+                    &record.prompt_tokens,
+                    &record.completion_tokens,
+                    &(record.cost_usd as f32),
+                ],
+            )
+            .await?;
+
+        debug!(
+            "Recorded LLM usage: agent={}, model={}, tokens={}, cost=${:.4}",
+            &record.agent_hash[..12.min(record.agent_hash.len())],
+            record.model,
+            record.prompt_tokens + record.completion_tokens,
+            record.cost_usd
+        );
+
+        Ok(())
+    }
+
+    /// Get total LLM usage cost for an agent
+    pub async fn get_agent_llm_usage(&self, agent_hash: &str) -> Result<f64> {
+        let client = self.pool.get().await?;
+
+        let row = client
+            .query_one(
+                "SELECT COALESCE(SUM(cost_usd), 0.0)::FLOAT8 FROM llm_usage WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        Ok(row.get(0))
     }
 
     /// Get API key for a submission (for inference bridge)
@@ -2150,6 +2263,12 @@ impl PgStorage {
         let score_f32 = log.score as f32;
         let cost_f32 = log.cost_usd as f32;
 
+        // Truncate large log fields to prevent database bloat
+        let agent_stderr = truncate_log(log.agent_stderr.clone());
+        let agent_stdout = truncate_log(log.agent_stdout.clone());
+        let test_output = truncate_log(log.test_output.clone());
+        let execution_log = truncate_log(log.execution_log.clone());
+
         client
             .execute(
                 "INSERT INTO task_logs (id, agent_hash, validator_hotkey, task_id, task_name,
@@ -2185,13 +2304,13 @@ impl PgStorage {
                     &log.steps,
                     &cost_f32,
                     &log.error,
-                    &log.execution_log,
+                    &execution_log,
                     &log.trajectory,
                     &(log.started_at as f64),
                     &(log.completed_at as f64),
-                    &log.agent_stderr,
-                    &log.agent_stdout,
-                    &log.test_output,
+                    &agent_stderr,
+                    &agent_stdout,
+                    &test_output,
                     &log.steps_executed,
                     &log.failure_stage,
                 ],
@@ -2432,6 +2551,254 @@ impl PgStorage {
             remaining_task_ids,
             partial_score,
         })
+    }
+
+    /// Get all task logs for an agent across all validators
+    pub async fn get_agent_task_logs(&self, agent_hash: &str) -> Result<Vec<TaskLog>> {
+        let client = self.pool.get().await?;
+
+        let rows = client
+            .query(
+                "SELECT id, agent_hash, validator_hotkey, task_id, task_name, passed, score,
+                        execution_time_ms, steps, cost_usd, error, execution_log, trajectory,
+                        EXTRACT(EPOCH FROM started_at)::BIGINT as started_at,
+                        EXTRACT(EPOCH FROM completed_at)::BIGINT as completed_at,
+                        agent_stderr, agent_stdout, test_output, steps_executed, failure_stage
+                 FROM task_logs 
+                 WHERE agent_hash = $1
+                 ORDER BY validator_hotkey, completed_at DESC",
+                &[&agent_hash],
+            )
+            .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| TaskLog {
+                id: row.get("id"),
+                agent_hash: row.get("agent_hash"),
+                validator_hotkey: row.get("validator_hotkey"),
+                task_id: row.get("task_id"),
+                task_name: row.get("task_name"),
+                passed: row.get("passed"),
+                score: row.get("score"),
+                execution_time_ms: row.get("execution_time_ms"),
+                steps: row.get("steps"),
+                cost_usd: row.get("cost_usd"),
+                error: row.get("error"),
+                execution_log: row.get("execution_log"),
+                trajectory: row.get("trajectory"),
+                started_at: row.get("started_at"),
+                completed_at: row.get("completed_at"),
+                agent_stderr: row.get("agent_stderr"),
+                agent_stdout: row.get("agent_stdout"),
+                test_output: row.get("test_output"),
+                steps_executed: row.get("steps_executed"),
+                failure_stage: row.get("failure_stage"),
+            })
+            .collect())
+    }
+
+    /// Get task logs for an agent by a specific validator
+    pub async fn get_agent_task_logs_by_validator(
+        &self,
+        agent_hash: &str,
+        validator_hotkey: &str,
+    ) -> Result<Vec<TaskLog>> {
+        let client = self.pool.get().await?;
+
+        let rows = client
+            .query(
+                "SELECT id, agent_hash, validator_hotkey, task_id, task_name, passed, score,
+                        execution_time_ms, steps, cost_usd, error, execution_log, trajectory,
+                        EXTRACT(EPOCH FROM started_at)::BIGINT as started_at,
+                        EXTRACT(EPOCH FROM completed_at)::BIGINT as completed_at,
+                        agent_stderr, agent_stdout, test_output, steps_executed, failure_stage
+                 FROM task_logs 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2
+                 ORDER BY completed_at DESC",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| TaskLog {
+                id: row.get("id"),
+                agent_hash: row.get("agent_hash"),
+                validator_hotkey: row.get("validator_hotkey"),
+                task_id: row.get("task_id"),
+                task_name: row.get("task_name"),
+                passed: row.get("passed"),
+                score: row.get("score"),
+                execution_time_ms: row.get("execution_time_ms"),
+                steps: row.get("steps"),
+                cost_usd: row.get("cost_usd"),
+                error: row.get("error"),
+                execution_log: row.get("execution_log"),
+                trajectory: row.get("trajectory"),
+                started_at: row.get("started_at"),
+                completed_at: row.get("completed_at"),
+                agent_stderr: row.get("agent_stderr"),
+                agent_stdout: row.get("agent_stdout"),
+                test_output: row.get("test_output"),
+                steps_executed: row.get("steps_executed"),
+                failure_stage: row.get("failure_stage"),
+            })
+            .collect())
+    }
+
+    /// Get evaluation progress for an agent across all validators
+    pub async fn get_agent_evaluation_progress_all_validators(
+        &self,
+        agent_hash: &str,
+    ) -> Result<Vec<ValidatorEvaluationProgress>> {
+        let client = self.pool.get().await?;
+
+        // Get all validator assignments for this agent
+        let assignments = client
+            .query(
+                "SELECT validator_hotkey, status, 
+                        EXTRACT(EPOCH FROM assigned_at)::BIGINT as assigned_at
+                 FROM validator_assignments 
+                 WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // Get assigned tasks count
+        let total_tasks: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM evaluation_tasks WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?
+            .get(0);
+
+        let mut results = Vec::new();
+
+        for assignment in assignments {
+            let validator_hotkey: String = assignment.get("validator_hotkey");
+            let assignment_status: String = assignment.get("status");
+            let assigned_at: Option<i64> = assignment.try_get("assigned_at").ok();
+
+            // Get task log summary for this validator
+            let summary = client
+                .query_one(
+                    "SELECT 
+                        COUNT(*) as completed,
+                        COUNT(*) FILTER (WHERE passed = true) as passed,
+                        COUNT(*) FILTER (WHERE passed = false) as failed,
+                        MAX(EXTRACT(EPOCH FROM completed_at)::BIGINT) as last_update
+                     FROM task_logs 
+                     WHERE agent_hash = $1 AND validator_hotkey = $2",
+                    &[&agent_hash, &validator_hotkey],
+                )
+                .await?;
+
+            let completed: i64 = summary.get("completed");
+            let passed: i64 = summary.get("passed");
+            let failed: i64 = summary.get("failed");
+            let last_update: Option<i64> = summary.try_get("last_update").ok().flatten();
+
+            // Get completed task IDs
+            let completed_tasks = client
+                .query(
+                    "SELECT task_id FROM task_logs WHERE agent_hash = $1 AND validator_hotkey = $2",
+                    &[&agent_hash, &validator_hotkey],
+                )
+                .await?;
+            let completed_task_ids: Vec<String> =
+                completed_tasks.iter().map(|r| r.get("task_id")).collect();
+
+            // Get all assigned task IDs
+            let all_tasks = client
+                .query(
+                    "SELECT task_id FROM evaluation_tasks WHERE agent_hash = $1",
+                    &[&agent_hash],
+                )
+                .await?;
+            let all_task_ids: Vec<String> = all_tasks.iter().map(|r| r.get("task_id")).collect();
+
+            // Remaining = all - completed
+            let remaining_task_ids: Vec<String> = all_task_ids
+                .into_iter()
+                .filter(|id| !completed_task_ids.contains(id))
+                .collect();
+
+            // Determine status
+            let status = if completed == 0 {
+                if assignment_status == "pending" {
+                    "pending"
+                } else {
+                    "in_progress"
+                }
+            } else if remaining_task_ids.is_empty() {
+                "completed"
+            } else {
+                "in_progress"
+            };
+
+            // Current task = first remaining
+            let current_task = remaining_task_ids.first().cloned();
+
+            results.push(ValidatorEvaluationProgress {
+                validator_hotkey,
+                status: status.to_string(),
+                total_tasks: total_tasks as i32,
+                completed_tasks: completed as i32,
+                passed_tasks: passed as i32,
+                failed_tasks: failed as i32,
+                remaining_task_ids,
+                current_task,
+                started_at: assigned_at,
+                last_update,
+            });
+        }
+
+        Ok(results)
+    }
+
+    /// Get recent evaluations by a specific validator
+    pub async fn get_validator_recent_evaluations(
+        &self,
+        validator_hotkey: &str,
+        limit: i32,
+    ) -> Result<Vec<ValidatorEvaluation>> {
+        let client = self.pool.get().await?;
+
+        let rows = client
+            .query(
+                "SELECT id, agent_hash, validator_hotkey, submission_id, miner_hotkey,
+                        score, tasks_passed, tasks_total, tasks_failed, total_cost_usd,
+                        execution_time_ms, task_results, epoch,
+                        EXTRACT(EPOCH FROM created_at)::BIGINT as created_at
+                 FROM validator_evaluations 
+                 WHERE validator_hotkey = $1
+                 ORDER BY created_at DESC
+                 LIMIT $2",
+                &[&validator_hotkey, &(limit as i64)],
+            )
+            .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| ValidatorEvaluation {
+                id: row.get("id"),
+                agent_hash: row.get("agent_hash"),
+                validator_hotkey: row.get("validator_hotkey"),
+                submission_id: row.get("submission_id"),
+                miner_hotkey: row.get("miner_hotkey"),
+                score: row.get("score"),
+                tasks_passed: row.get("tasks_passed"),
+                tasks_total: row.get("tasks_total"),
+                tasks_failed: row.get("tasks_failed"),
+                total_cost_usd: row.get("total_cost_usd"),
+                execution_time_ms: row.get("execution_time_ms"),
+                task_results: row.get("task_results"),
+                epoch: row.get("epoch"),
+                created_at: row.get("created_at"),
+            })
+            .collect())
     }
 
     // ========================================================================

@@ -856,6 +856,7 @@ pub struct LocalLlmProxyRequest {
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    pub task_id: Option<String>,
 }
 
 /// POST /llm/proxy - Local LLM proxy for validator mode
@@ -903,9 +904,12 @@ pub async fn llm_local_proxy(
     let signature_bytes = keypair.sign(message.as_bytes());
     let signature = format!("0x{}", hex::encode(signature_bytes.0));
 
-    // Forward to central server
+    // Forward to central server via bridge
     let central_url = state.platform_client.base_url();
-    let forward_url = format!("{}/api/v1/llm/chat", central_url);
+    let forward_url = format!(
+        "{}/api/v1/bridge/{}/api/v1/llm/chat",
+        central_url, state.challenge_id
+    );
 
     let forward_payload = serde_json::json!({
         "validator_hotkey": validator_hotkey,
@@ -916,12 +920,13 @@ pub async fn llm_local_proxy(
         "model": req.model,
         "max_tokens": req.max_tokens,
         "temperature": req.temperature,
+        "task_id": req.task_id,
     });
 
     info!(
-        "LLM local proxy: forwarding request for agent {} to {}",
+        "LLM local proxy: forwarding request for agent {} via bridge to {}",
         &req.agent_hash[..12.min(req.agent_hash.len())],
-        central_url
+        forward_url
     );
 
     let client = reqwest::Client::new();
@@ -961,6 +966,119 @@ pub async fn llm_local_proxy(
             Json(body),
         ))
     }
+}
+
+/// POST /llm/proxy/stream - Streaming local LLM proxy for validator mode
+///
+/// Flow: Agent in container -> Validator's term-challenge -> Central server (streaming)
+pub async fn llm_local_proxy_stream(
+    State(state): State<Arc<ChallengeServerState>>,
+    Json(req): Json<LocalLlmProxyRequest>,
+) -> Result<axum::response::Response, (StatusCode, Json<serde_json::Value>)> {
+    use axum::body::Body;
+    use sp_core::{sr25519, Pair};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Get validator hotkey from environment
+    let validator_hotkey = std::env::var("VALIDATOR_HOTKEY").unwrap_or_default();
+    if validator_hotkey.is_empty() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "Validator hotkey not configured (VALIDATOR_HOTKEY env var)"
+            })),
+        ));
+    }
+
+    // Load validator keypair for signing
+    let keypair = load_validator_keypair().map_err(|e| {
+        error!("Failed to load validator keypair: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "success": false,
+                "error": format!("Validator secret key not configured: {}", e)
+            })),
+        )
+    })?;
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // Sign with validator's sr25519 keypair
+    let message = format!("llm_proxy:{}:{}", req.agent_hash, timestamp);
+    let signature_bytes = keypair.sign(message.as_bytes());
+    let signature = format!("0x{}", hex::encode(signature_bytes.0));
+
+    // Forward to central server via bridge (streaming endpoint)
+    let central_url = state.platform_client.base_url();
+    let forward_url = format!(
+        "{}/api/v1/bridge/{}/api/v1/llm/chat/stream",
+        central_url, state.challenge_id
+    );
+
+    let forward_payload = serde_json::json!({
+        "validator_hotkey": validator_hotkey,
+        "signature": signature,
+        "timestamp": timestamp,
+        "agent_hash": req.agent_hash,
+        "messages": req.messages,
+        "model": req.model,
+        "max_tokens": req.max_tokens,
+        "temperature": req.temperature,
+        "task_id": req.task_id,
+    });
+
+    info!(
+        "LLM local proxy stream: forwarding request for agent {} via bridge to {}",
+        &req.agent_hash[..12.min(req.agent_hash.len())],
+        forward_url
+    );
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(&forward_url)
+        .header("Content-Type", "application/json")
+        .json(&forward_payload)
+        .send()
+        .await
+        .map_err(|e| {
+            error!("Failed to forward LLM stream request: {}", e);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("Failed to reach central server: {}", e)
+                })),
+            )
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err((
+            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+            Json(serde_json::json!({
+                "success": false,
+                "error": error_text
+            })),
+        ));
+    }
+
+    // Stream the response through
+    let stream = response.bytes_stream();
+    let body = Body::from_stream(stream);
+
+    Ok(axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .body(body)
+        .unwrap())
 }
 
 // ============================================================================
@@ -1173,7 +1291,8 @@ pub async fn run_server_with_mode(
         .route("/config", get(get_config))
         .route("/leaderboard", get(get_leaderboard))
         // Local LLM proxy for validator mode (agent -> validator -> central)
-        .route("/llm/proxy", post(llm_local_proxy));
+        .route("/llm/proxy", post(llm_local_proxy))
+        .route("/llm/proxy/stream", post(llm_local_proxy_stream));
 
     // /evaluate only available in validator mode (no pg_storage)
     // In server mode, evaluations are done by validators via /api/v1/validator/* endpoints
@@ -1299,9 +1418,25 @@ pub async fn run_server_with_mode(
                 "/validator/download_binary/:agent_hash",
                 post(api::download_binary),
             )
+            // Task observability endpoints
+            .route("/agent/:agent_hash/tasks", get(api::get_agent_tasks))
+            .route(
+                "/agent/:agent_hash/tasks/:task_id",
+                get(api::get_agent_task_detail),
+            )
+            .route("/agent/:agent_hash/progress", get(api::get_agent_progress))
+            .route(
+                "/validator/:hotkey/evaluations",
+                get(api::get_validator_evaluations_list),
+            )
+            .route(
+                "/validator/:hotkey/agent/:agent_hash/tasks",
+                get(api::get_validator_agent_tasks),
+            )
             .route("/status", get(api::get_status))
-            // LLM proxy endpoint (validator authenticated - central server)
+            // LLM proxy endpoints (validator authenticated - central server)
             .route("/llm/chat", post(api::llm_chat_proxy))
+            .route("/llm/chat/stream", post(api::llm_chat_proxy_stream))
             // Sudo endpoints (subnet owner only)
             .route(
                 "/sudo/relaunch/:agent_hash",

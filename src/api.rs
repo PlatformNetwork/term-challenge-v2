@@ -11,12 +11,15 @@ use crate::auth::{
     is_timestamp_valid, is_valid_ss58_hotkey, verify_signature, AuthManager,
 };
 use crate::pg_storage::{
-    LeaderboardEntry, PgStorage, Submission, SubmissionInfo, TaskAssignment, TaskLog,
-    ValidatorJobInfo, DEFAULT_COST_LIMIT_USD, EPOCHS_BETWEEN_SUBMISSIONS, MAX_COST_LIMIT_USD,
+    LeaderboardEntry, LlmUsageRecord, PgStorage, Submission, SubmissionInfo, TaskAssignment,
+    TaskLog, ValidatorJobInfo, DEFAULT_COST_LIMIT_USD, EPOCHS_BETWEEN_SUBMISSIONS,
+    MAX_COST_LIMIT_USD,
 };
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -2113,6 +2116,89 @@ pub async fn download_binary(
 }
 
 // ============================================================================
+// TASK OBSERVABILITY RESPONSE TYPES
+// ============================================================================
+
+/// Response for GET /api/v1/agent/:agent_hash/tasks
+#[derive(Debug, Serialize)]
+pub struct AgentTasksResponse {
+    pub agent_hash: String,
+    pub validators: Vec<ValidatorTasksSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ValidatorTasksSummary {
+    pub validator_hotkey: String,
+    pub status: String,
+    pub tasks: Vec<TaskLogResponse>,
+    pub summary: TaskSummaryStats,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskLogResponse {
+    pub task_id: String,
+    pub task_name: String,
+    pub passed: bool,
+    pub score: f64,
+    pub execution_time_ms: i64,
+    pub error: Option<String>,
+    pub agent_stderr: Option<String>,
+    pub agent_stdout: Option<String>,
+    pub test_output: Option<String>,
+    pub failure_stage: Option<String>,
+    pub completed_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskSummaryStats {
+    pub total: i32,
+    pub passed: i32,
+    pub failed: i32,
+    pub score: f64,
+}
+
+/// Response for GET /api/v1/agent/:agent_hash/progress
+#[derive(Debug, Serialize)]
+pub struct AgentProgressResponse {
+    pub agent_hash: String,
+    pub overall_status: String,
+    pub validators: Vec<ValidatorProgressResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ValidatorProgressResponse {
+    pub validator_hotkey: String,
+    pub status: String,
+    pub total_tasks: i32,
+    pub completed_tasks: i32,
+    pub passed_tasks: i32,
+    pub failed_tasks: i32,
+    pub remaining_tasks: Vec<String>,
+    pub current_task: Option<String>,
+    pub started_at: Option<i64>,
+    pub last_update: Option<i64>,
+}
+
+/// Response for validator evaluations
+#[derive(Debug, Serialize)]
+pub struct ValidatorEvaluationsResponse {
+    pub validator_hotkey: String,
+    pub evaluations: Vec<EvaluationSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EvaluationSummary {
+    pub agent_hash: String,
+    pub miner_hotkey: String,
+    pub score: f64,
+    pub tasks_passed: i32,
+    pub tasks_total: i32,
+    pub tasks_failed: i32,
+    pub total_cost_usd: f64,
+    pub created_at: i64,
+}
+
+// ============================================================================
 // STATUS ENDPOINTS
 // ============================================================================
 
@@ -2267,6 +2353,8 @@ pub struct LlmProxyRequest {
     pub max_tokens: Option<u32>,
     /// Temperature (optional)
     pub temperature: Option<f32>,
+    /// Task ID for tracking (optional)
+    pub task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2403,6 +2491,35 @@ pub async fn llm_chat_proxy(
         provider
     );
 
+    // Check cost limit before making the LLM call
+    let (current_cost, cost_limit) = state
+        .storage
+        .get_submission_costs(&req.agent_hash)
+        .await
+        .map_err(|e| {
+            error!("Failed to get submission costs: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(err_response(format!("Database error: {}", e))),
+            )
+        })?;
+
+    if current_cost >= cost_limit {
+        warn!(
+            "LLM proxy: cost limit exceeded for agent {}: ${:.4} >= ${:.4}",
+            &req.agent_hash[..12.min(req.agent_hash.len())],
+            current_cost,
+            cost_limit
+        );
+        return Err((
+            StatusCode::PAYMENT_REQUIRED,
+            Json(err_response(format!(
+                "cost_limit_exceeded: ${:.4} used of ${:.4} limit",
+                current_cost, cost_limit
+            ))),
+        ));
+    }
+
     // Make LLM call
     let llm_response = make_llm_request(
         &api_key,
@@ -2416,11 +2533,55 @@ pub async fn llm_chat_proxy(
 
     match llm_response {
         Ok(response) => {
-            // TODO: Track cost per agent for billing
+            // Track cost in llm_usage table and update submission total
+            let cost = response.cost_usd.unwrap_or(0.0);
+            let model_name = response
+                .model
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+
+            // Record detailed usage for auditing
+            if let Err(e) = state
+                .storage
+                .record_llm_usage(LlmUsageRecord {
+                    agent_hash: req.agent_hash.clone(),
+                    validator_hotkey: req.validator_hotkey.clone(),
+                    task_id: req.task_id.clone(),
+                    model: model_name.clone(),
+                    prompt_tokens: response
+                        .usage
+                        .as_ref()
+                        .map(|u| u.prompt_tokens as i32)
+                        .unwrap_or(0),
+                    completion_tokens: response
+                        .usage
+                        .as_ref()
+                        .map(|u| u.completion_tokens as i32)
+                        .unwrap_or(0),
+                    cost_usd: cost,
+                })
+                .await
+            {
+                warn!("Failed to record LLM usage: {}", e);
+            }
+
+            // Update total cost on submission
+            if cost > 0.0 {
+                if let Err(e) = state
+                    .storage
+                    .add_submission_cost(&req.agent_hash, cost)
+                    .await
+                {
+                    warn!("Failed to update submission cost: {}", e);
+                }
+            }
+
             info!(
-                "LLM proxy: success for agent {}, tokens: {}",
+                "LLM proxy: success for agent {}, model={}, tokens={}, cost=${:.4}",
                 &req.agent_hash[..12.min(req.agent_hash.len())],
-                response.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0)
+                model_name,
+                response.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
+                cost
             );
 
             Ok(Json(LlmProxyResponse {
@@ -2557,6 +2718,332 @@ async fn make_llm_request(
         usage,
         cost_usd,
     })
+}
+
+/// POST /api/v1/llm/chat/stream - Streaming LLM proxy for agent requests
+///
+/// Same validation as non-streaming endpoint, but returns SSE stream.
+/// Usage is tracked after the stream completes (from final usage chunk).
+pub async fn llm_chat_proxy_stream(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<LlmProxyRequest>,
+) -> Result<Response, (StatusCode, Json<LlmProxyResponse>)> {
+    let err_response = |msg: String| LlmProxyResponse {
+        success: false,
+        content: None,
+        model: None,
+        usage: None,
+        cost_usd: None,
+        error: Some(msg),
+    };
+
+    // Validate validator hotkey
+    if !is_valid_ss58_hotkey(&req.validator_hotkey) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(err_response("Invalid validator hotkey format".to_string())),
+        ));
+    }
+
+    // Validate timestamp
+    if !is_timestamp_valid(req.timestamp) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(err_response("Request timestamp expired".to_string())),
+        ));
+    }
+
+    // Verify signature (skip in test mode)
+    let message = format!("llm_chat:{}:{}", req.timestamp, req.agent_hash);
+    let skip_auth = std::env::var("SKIP_AUTH")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
+    if !skip_auth && !verify_signature(&req.validator_hotkey, &message, &req.signature) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(err_response("Invalid signature".to_string())),
+        ));
+    }
+
+    // Verify validator is authorized
+    if !skip_auth && !state.is_authorized_validator(&req.validator_hotkey).await {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(err_response(
+                "Validator not authorized (requires >= 1000 TAO stake)".to_string(),
+            )),
+        ));
+    }
+
+    // Get agent's API key and provider from submission
+    let submission: Option<Submission> = state
+        .storage
+        .get_submission(&req.agent_hash)
+        .await
+        .map_err(|e| {
+            error!("LLM stream: failed to get submission: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(err_response(format!("Failed to lookup agent: {}", e))),
+            )
+        })?;
+
+    let submission = match submission {
+        Some(s) => s,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(err_response(format!("Agent {} not found", req.agent_hash))),
+            ));
+        }
+    };
+
+    let api_key: String = match submission.api_key {
+        Some(key) if !key.is_empty() => key,
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(err_response("Agent has no API key configured".to_string())),
+            ));
+        }
+    };
+
+    let provider = submission
+        .api_provider
+        .unwrap_or_else(|| "openrouter".to_string());
+
+    // Check cost limit before making the LLM call
+    let (current_cost, cost_limit) = state
+        .storage
+        .get_submission_costs(&req.agent_hash)
+        .await
+        .map_err(|e| {
+            error!("Failed to get submission costs: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(err_response(format!("Database error: {}", e))),
+            )
+        })?;
+
+    if current_cost >= cost_limit {
+        warn!(
+            "LLM stream: cost limit exceeded for agent {}: ${:.4} >= ${:.4}",
+            &req.agent_hash[..12.min(req.agent_hash.len())],
+            current_cost,
+            cost_limit
+        );
+        return Err((
+            StatusCode::PAYMENT_REQUIRED,
+            Json(err_response(format!(
+                "cost_limit_exceeded: ${:.4} used of ${:.4} limit",
+                current_cost, cost_limit
+            ))),
+        ));
+    }
+
+    info!(
+        "LLM stream: validator {} requesting for agent {} (provider: {})",
+        &req.validator_hotkey[..12.min(req.validator_hotkey.len())],
+        &req.agent_hash[..12.min(req.agent_hash.len())],
+        provider
+    );
+
+    // Make streaming LLM request and return SSE response
+    let stream_response = make_llm_stream_request(
+        &api_key,
+        &provider,
+        &req.messages,
+        req.model.as_deref(),
+        req.max_tokens,
+        req.temperature,
+        state.clone(),
+        req.agent_hash.clone(),
+        req.validator_hotkey.clone(),
+        req.task_id.clone(),
+    )
+    .await;
+
+    match stream_response {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            error!(
+                "LLM stream: failed for agent {}: {}",
+                &req.agent_hash[..12.min(req.agent_hash.len())],
+                e
+            );
+            Err((
+                StatusCode::BAD_GATEWAY,
+                Json(err_response(format!("LLM stream failed: {}", e))),
+            ))
+        }
+    }
+}
+
+/// Make streaming LLM API call and return SSE response
+async fn make_llm_stream_request(
+    api_key: &str,
+    provider: &str,
+    messages: &[LlmMessage],
+    model: Option<&str>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    state: Arc<ApiState>,
+    agent_hash: String,
+    validator_hotkey: String,
+    task_id: Option<String>,
+) -> anyhow::Result<Response> {
+    use futures::StreamExt;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    // Determine endpoint and model based on provider
+    let (endpoint, default_model, auth_header) = match provider.to_lowercase().as_str() {
+        "openrouter" => (
+            "https://openrouter.ai/api/v1/chat/completions",
+            "anthropic/claude-3.5-sonnet",
+            format!("Bearer {}", api_key),
+        ),
+        "openai" => (
+            "https://api.openai.com/v1/chat/completions",
+            "gpt-4o",
+            format!("Bearer {}", api_key),
+        ),
+        "chutes" => (
+            "https://llm.chutes.ai/v1/chat/completions",
+            "deepseek-ai/DeepSeek-V3",
+            format!("Bearer {}", api_key),
+        ),
+        _ => {
+            anyhow::bail!("Streaming not supported for provider: {}", provider);
+        }
+    };
+
+    let model = model.unwrap_or(default_model).to_string();
+
+    // Build request body with stream: true
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens.unwrap_or(4096),
+        "temperature": temperature.unwrap_or(0.7),
+        "stream": true,
+    });
+
+    let client = reqwest::Client::new();
+    let mut request = client
+        .post(endpoint)
+        .header("Content-Type", "application/json")
+        .header("Authorization", &auth_header);
+
+    if provider == "openrouter" {
+        request = request.header("HTTP-Referer", "https://platform.network");
+    }
+
+    let response = request
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Stream request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_default();
+        anyhow::bail!("LLM API error ({}): {}", status, error_text);
+    }
+
+    // Create a channel to send SSE events
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(32);
+
+    // Spawn a task to process the upstream stream
+    let model_for_tracking = model.clone();
+    tokio::spawn(async move {
+        use futures::TryStreamExt;
+
+        let mut byte_stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut total_content = String::new();
+
+        while let Ok(Some(chunk)) = byte_stream.try_next().await {
+            if let Ok(text) = String::from_utf8(chunk.to_vec()) {
+                buffer.push_str(&text);
+
+                // Process complete SSE lines
+                while let Some(newline_pos) = buffer.find('\n') {
+                    let line = buffer[..newline_pos].trim().to_string();
+                    buffer = buffer[newline_pos + 1..].to_string();
+
+                    if line.is_empty() || !line.starts_with("data: ") {
+                        continue;
+                    }
+
+                    let data = &line[6..];
+                    if data == "[DONE]" {
+                        // Send done marker
+                        let _ = tx.send(Ok("data: [DONE]\n\n".to_string())).await;
+                        break;
+                    }
+
+                    // Parse chunk to extract content
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
+                            total_content.push_str(content);
+                        }
+                    }
+
+                    // Forward the SSE line
+                    let sse_line = format!("data: {}\n\n", data);
+                    if tx.send(Ok(sse_line)).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Track usage after stream completes (estimate tokens from content length)
+        let est_tokens = (total_content.len() / 4) as i32;
+        let cost = (est_tokens as f64) * 0.000015; // Rough estimate
+
+        if let Err(e) = state
+            .storage
+            .record_llm_usage(LlmUsageRecord {
+                agent_hash: agent_hash.clone(),
+                validator_hotkey: validator_hotkey.clone(),
+                task_id,
+                model: model_for_tracking,
+                prompt_tokens: 0, // Not available in streaming
+                completion_tokens: est_tokens,
+                cost_usd: cost,
+            })
+            .await
+        {
+            warn!("Failed to record stream LLM usage: {}", e);
+        }
+
+        if cost > 0.0 {
+            if let Err(e) = state.storage.add_submission_cost(&agent_hash, cost).await {
+                warn!("Failed to update submission cost after stream: {}", e);
+            }
+        }
+
+        info!(
+            "LLM stream: completed for agent {}, ~{} tokens, ~${:.4}",
+            &agent_hash[..12.min(agent_hash.len())],
+            est_tokens,
+            cost
+        );
+    });
+
+    // Return SSE response
+    let stream = ReceiverStream::new(rx);
+    let body = Body::from_stream(stream);
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .body(body)
+        .unwrap())
 }
 
 // =============================================================================
@@ -2788,5 +3275,295 @@ pub async fn sudo_set_agent_status(
         success: true,
         message: format!("Agent {} status set to {}", agent_hash, req.status),
         error: None,
+    }))
+}
+
+// ============================================================================
+// TASK OBSERVABILITY ENDPOINTS
+// ============================================================================
+
+/// GET /api/v1/agent/:agent_hash/tasks - Get all task logs for an agent
+pub async fn get_agent_tasks(
+    State(state): State<Arc<ApiState>>,
+    Path(agent_hash): Path<String>,
+) -> Result<Json<AgentTasksResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let task_logs = state
+        .storage
+        .get_agent_task_logs(&agent_hash)
+        .await
+        .map_err(|e| {
+            error!("Failed to get agent task logs: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+            )
+        })?;
+
+    // Group by validator
+    let mut validators_map: std::collections::HashMap<String, Vec<_>> =
+        std::collections::HashMap::new();
+    for log in task_logs {
+        validators_map
+            .entry(log.validator_hotkey.clone())
+            .or_default()
+            .push(log);
+    }
+
+    let validators: Vec<ValidatorTasksSummary> = validators_map
+        .into_iter()
+        .map(|(validator_hotkey, logs)| {
+            let passed = logs.iter().filter(|l| l.passed).count() as i32;
+            let failed = logs.iter().filter(|l| !l.passed).count() as i32;
+            let total = logs.len() as i32;
+            let score = if total > 0 {
+                passed as f64 / total as f64
+            } else {
+                0.0
+            };
+
+            // Determine status
+            let status = if total == 0 {
+                "pending"
+            } else {
+                "completed" // We only have logs for completed tasks
+            };
+
+            ValidatorTasksSummary {
+                validator_hotkey,
+                status: status.to_string(),
+                tasks: logs
+                    .into_iter()
+                    .map(|l| TaskLogResponse {
+                        task_id: l.task_id,
+                        task_name: l.task_name,
+                        passed: l.passed,
+                        score: l.score,
+                        execution_time_ms: l.execution_time_ms,
+                        error: l.error,
+                        agent_stderr: l.agent_stderr,
+                        agent_stdout: l.agent_stdout,
+                        test_output: l.test_output,
+                        failure_stage: l.failure_stage,
+                        completed_at: l.completed_at,
+                    })
+                    .collect(),
+                summary: TaskSummaryStats {
+                    total,
+                    passed,
+                    failed,
+                    score,
+                },
+            }
+        })
+        .collect();
+
+    Ok(Json(AgentTasksResponse {
+        agent_hash,
+        validators,
+    }))
+}
+
+/// GET /api/v1/agent/:agent_hash/tasks/:task_id - Get specific task details
+pub async fn get_agent_task_detail(
+    State(state): State<Arc<ApiState>>,
+    Path((agent_hash, task_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let task_logs = state
+        .storage
+        .get_agent_task_logs(&agent_hash)
+        .await
+        .map_err(|e| {
+            error!("Failed to get agent task logs: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+            )
+        })?;
+
+    // Filter by task_id
+    let matching_logs: Vec<_> = task_logs
+        .into_iter()
+        .filter(|l| l.task_id == task_id)
+        .map(|l| TaskLogResponse {
+            task_id: l.task_id,
+            task_name: l.task_name,
+            passed: l.passed,
+            score: l.score,
+            execution_time_ms: l.execution_time_ms,
+            error: l.error,
+            agent_stderr: l.agent_stderr,
+            agent_stdout: l.agent_stdout,
+            test_output: l.test_output,
+            failure_stage: l.failure_stage,
+            completed_at: l.completed_at,
+        })
+        .collect();
+
+    if matching_logs.is_empty() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Task not found"})),
+        ));
+    }
+
+    Ok(Json(serde_json::json!({
+        "agent_hash": agent_hash,
+        "task_id": task_id,
+        "validators": matching_logs,
+    })))
+}
+
+/// GET /api/v1/agent/:agent_hash/progress - Get evaluation progress for an agent
+pub async fn get_agent_progress(
+    State(state): State<Arc<ApiState>>,
+    Path(agent_hash): Path<String>,
+) -> Result<Json<AgentProgressResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let progress = state
+        .storage
+        .get_agent_evaluation_progress_all_validators(&agent_hash)
+        .await
+        .map_err(|e| {
+            error!("Failed to get agent progress: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+            )
+        })?;
+
+    // Determine overall status
+    let overall_status = if progress.is_empty() {
+        "no_validators"
+    } else if progress.iter().all(|p| p.status == "completed") {
+        "completed"
+    } else if progress.iter().any(|p| p.status == "in_progress") {
+        "in_progress"
+    } else {
+        "pending"
+    };
+
+    let validators: Vec<ValidatorProgressResponse> = progress
+        .into_iter()
+        .map(|p| ValidatorProgressResponse {
+            validator_hotkey: p.validator_hotkey,
+            status: p.status,
+            total_tasks: p.total_tasks,
+            completed_tasks: p.completed_tasks,
+            passed_tasks: p.passed_tasks,
+            failed_tasks: p.failed_tasks,
+            remaining_tasks: p.remaining_task_ids,
+            current_task: p.current_task,
+            started_at: p.started_at,
+            last_update: p.last_update,
+        })
+        .collect();
+
+    Ok(Json(AgentProgressResponse {
+        agent_hash,
+        overall_status: overall_status.to_string(),
+        validators,
+    }))
+}
+
+/// Query params for evaluations list
+#[derive(Debug, Deserialize)]
+pub struct EvaluationsQuery {
+    pub limit: Option<i32>,
+}
+
+/// GET /api/v1/validator/:hotkey/evaluations - Get recent evaluations by a validator
+pub async fn get_validator_evaluations_list(
+    State(state): State<Arc<ApiState>>,
+    Path(hotkey): Path<String>,
+    Query(query): Query<EvaluationsQuery>,
+) -> Result<Json<ValidatorEvaluationsResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let limit = query.limit.unwrap_or(50).min(100);
+
+    let evaluations = state
+        .storage
+        .get_validator_recent_evaluations(&hotkey, limit)
+        .await
+        .map_err(|e| {
+            error!("Failed to get validator evaluations: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+            )
+        })?;
+
+    let summaries: Vec<EvaluationSummary> = evaluations
+        .into_iter()
+        .map(|e| EvaluationSummary {
+            agent_hash: e.agent_hash,
+            miner_hotkey: e.miner_hotkey,
+            score: e.score,
+            tasks_passed: e.tasks_passed,
+            tasks_total: e.tasks_total,
+            tasks_failed: e.tasks_failed,
+            total_cost_usd: e.total_cost_usd,
+            created_at: e.created_at,
+        })
+        .collect();
+
+    Ok(Json(ValidatorEvaluationsResponse {
+        validator_hotkey: hotkey,
+        evaluations: summaries,
+    }))
+}
+
+/// GET /api/v1/validator/:hotkey/agent/:agent_hash/tasks - Get tasks for an agent by a specific validator
+pub async fn get_validator_agent_tasks(
+    State(state): State<Arc<ApiState>>,
+    Path((hotkey, agent_hash)): Path<(String, String)>,
+) -> Result<Json<ValidatorTasksSummary>, (StatusCode, Json<serde_json::Value>)> {
+    let logs = state
+        .storage
+        .get_agent_task_logs_by_validator(&agent_hash, &hotkey)
+        .await
+        .map_err(|e| {
+            error!("Failed to get validator agent tasks: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+            )
+        })?;
+
+    let passed = logs.iter().filter(|l| l.passed).count() as i32;
+    let failed = logs.iter().filter(|l| !l.passed).count() as i32;
+    let total = logs.len() as i32;
+    let score = if total > 0 {
+        passed as f64 / total as f64
+    } else {
+        0.0
+    };
+
+    let status = if total == 0 { "pending" } else { "completed" };
+
+    let tasks: Vec<TaskLogResponse> = logs
+        .into_iter()
+        .map(|l| TaskLogResponse {
+            task_id: l.task_id,
+            task_name: l.task_name,
+            passed: l.passed,
+            score: l.score,
+            execution_time_ms: l.execution_time_ms,
+            error: l.error,
+            agent_stderr: l.agent_stderr,
+            agent_stdout: l.agent_stdout,
+            test_output: l.test_output,
+            failure_stage: l.failure_stage,
+            completed_at: l.completed_at,
+        })
+        .collect();
+
+    Ok(Json(ValidatorTasksSummary {
+        validator_hotkey: hotkey,
+        status: status.to_string(),
+        tasks,
+        summary: TaskSummaryStats {
+            total,
+            passed,
+            failed,
+            score,
+        },
     }))
 }
