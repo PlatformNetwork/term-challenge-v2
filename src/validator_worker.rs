@@ -17,7 +17,7 @@ use sp_core::{sr25519, Pair};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
 /// Polling interval for pending jobs
@@ -25,6 +25,9 @@ const POLL_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Number of tasks to evaluate each agent on
 const TASKS_PER_EVALUATION: usize = 30;
+
+/// Maximum concurrent task containers (prevents resource exhaustion)
+const MAX_CONCURRENT_TASK_CONTAINERS: usize = 5;
 
 /// Dataset to load tasks from
 const TASK_DATASET_NAME: &str = "terminal-bench";
@@ -66,6 +69,8 @@ pub struct ValidatorWorker {
     container_backend: Arc<dyn ContainerBackend>,
     /// Binary cache to avoid re-downloading (agent_hash -> binary)
     binary_cache: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    /// Semaphore to limit concurrent task containers
+    task_container_semaphore: Arc<Semaphore>,
 }
 
 impl ValidatorWorker {
@@ -95,6 +100,7 @@ impl ValidatorWorker {
             task_registry: Arc::new(RwLock::new(None)),
             container_backend,
             binary_cache: Arc::new(RwLock::new(HashMap::new())),
+            task_container_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASK_CONTAINERS)),
         })
     }
 
@@ -217,6 +223,7 @@ impl ValidatorWorker {
             task_registry: self.task_registry.clone(),
             container_backend: self.container_backend.clone(),
             binary_cache: self.binary_cache.clone(),
+            task_container_semaphore: self.task_container_semaphore.clone(),
         }
     }
 
@@ -264,16 +271,21 @@ impl ValidatorWorker {
                     } else {
                         info!("Found {} pending jobs", jobs.len());
                     }
-                    let in_progress = self.in_progress.read().await;
+
+                    // Use write lock to atomically check and add to in_progress
+                    // This prevents race conditions where the same job could be started twice
+                    let mut in_progress = self.in_progress.write().await;
 
                     for job in jobs {
                         if job.binary_ready && !in_progress.contains(&job.agent_hash) {
+                            // Mark as in progress BEFORE spawning task
+                            in_progress.insert(job.agent_hash.clone());
                             drop(in_progress);
 
                             let worker = self.clone_ref();
                             let agent_hash = job.agent_hash.clone();
                             tokio::spawn(async move {
-                                worker.handle_binary_ready(&agent_hash).await;
+                                worker.run_evaluation(&agent_hash).await;
                             });
 
                             break; // One at a time to avoid overload
@@ -287,9 +299,9 @@ impl ValidatorWorker {
         }
     }
 
-    /// Handle binary_ready event
+    /// Handle binary_ready event from WebSocket
     pub async fn handle_binary_ready(&self, agent_hash: &str) {
-        // Check if already in progress
+        // Atomically check and add to in_progress
         {
             let mut in_progress = self.in_progress.write().await;
             if in_progress.contains(agent_hash) {
@@ -302,6 +314,11 @@ impl ValidatorWorker {
             in_progress.insert(agent_hash.to_string());
         }
 
+        self.run_evaluation(agent_hash).await;
+    }
+
+    /// Run evaluation (assumes already marked as in_progress)
+    async fn run_evaluation(&self, agent_hash: &str) {
         let short_hash = &agent_hash[..16.min(agent_hash.len())];
         info!("Starting evaluation for agent {}", short_hash);
 
@@ -598,6 +615,13 @@ impl ValidatorWorker {
         use crate::container_backend::MountConfig;
         use std::time::Instant;
 
+        // Acquire semaphore permit to limit concurrent containers
+        let _permit = self
+            .task_container_semaphore
+            .acquire()
+            .await
+            .map_err(|_| anyhow::anyhow!("Task container semaphore closed"))?;
+
         let start = Instant::now();
         let task_id = task.id();
         let timeout_secs = task.config.timeout_secs as u64;
@@ -719,12 +743,30 @@ impl ValidatorWorker {
                 Err(e) => (false, Some(format!("Test error: {}", e))),
             }
         } else {
-            (false, Some("Agent did not complete".to_string()))
+            // Include agent stderr in the "did not complete" message
+            let msg = if agent_stderr.is_empty() {
+                "Agent did not complete (no stderr)".to_string()
+            } else {
+                format!(
+                    "Agent did not complete. Stderr:\n{}",
+                    // Truncate stderr to avoid huge payloads
+                    if agent_stderr.len() > 1000 {
+                        format!("{}... (truncated)", &agent_stderr[..1000])
+                    } else {
+                        agent_stderr.clone()
+                    }
+                )
+            };
+            (false, Some(msg))
         };
 
-        // Cleanup
-        let _ = task_container.stop().await;
-        let _ = task_container.remove().await;
+        // Force cleanup - always stop and remove container
+        if let Err(e) = task_container.stop().await {
+            debug!("Failed to stop container (may already be stopped): {}", e);
+        }
+        if let Err(e) = task_container.remove().await {
+            warn!("Failed to remove container: {}", e);
+        }
 
         let elapsed = start.elapsed();
         debug!(
