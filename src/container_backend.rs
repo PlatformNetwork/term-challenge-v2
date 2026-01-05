@@ -142,6 +142,10 @@ pub trait ContainerBackend: Send + Sync {
 
     /// Cleanup all containers for a challenge
     async fn cleanup(&self, challenge_id: &str) -> Result<usize>;
+
+    /// Cleanup orphan volumes for a challenge
+    /// Removes volumes that are no longer in use, preserving shared volumes
+    async fn cleanup_volumes(&self, challenge_id: &str) -> Result<usize>;
 }
 
 // =============================================================================
@@ -316,6 +320,55 @@ impl ContainerBackend for DirectDockerBackend {
                 .is_ok()
             {
                 removed += 1;
+            }
+        }
+
+        Ok(removed)
+    }
+
+    async fn cleanup_volumes(&self, challenge_id: &str) -> Result<usize> {
+        // List all volumes
+        let volumes = self.docker.list_volumes::<String>(None).await?;
+
+        let mut removed = 0;
+        let prefix = format!("challenge-{}-", challenge_id);
+
+        // Preserved shared volumes (reused across runs)
+        let preserved: Vec<String> = vec![
+            "term-challenge-tasks".to_string(),
+            "term-challenge-cache".to_string(),
+            "term-challenge-evals".to_string(),
+            format!("challenge-{}-cache", challenge_id),
+            format!("challenge-{}-server-data", challenge_id),
+            format!("challenge-{}-server-data-cache", challenge_id),
+            format!("challenge-{}-validator-data", challenge_id),
+        ];
+
+        for vol in volumes.volumes.unwrap_or_default() {
+            // Skip preserved volumes
+            if preserved.contains(&vol.name) {
+                continue;
+            }
+
+            // Only cleanup challenge-specific volumes with UUID pattern
+            // Pattern: challenge-term-challenge-{UUID}-data or challenge-term-challenge-{UUID}-data-cache
+            if !vol.name.starts_with(&prefix) {
+                continue;
+            }
+
+            // Try to remove - will fail silently if in use
+            match self.docker.remove_volume(&vol.name, None).await {
+                Ok(_) => {
+                    info!("Removed orphan volume: {}", vol.name);
+                    removed += 1;
+                }
+                Err(e) => {
+                    // Volume might be in use, that's fine
+                    debug!(
+                        "Could not remove volume {} (may be in use): {}",
+                        vol.name, e
+                    );
+                }
             }
         }
 
@@ -607,6 +660,12 @@ impl ContainerBackend for SecureBrokerBackend {
         }
 
         Ok(removed)
+    }
+
+    async fn cleanup_volumes(&self, _challenge_id: &str) -> Result<usize> {
+        // Broker backend doesn't manage volumes directly
+        // Volume cleanup is handled by the Docker host via DirectDockerBackend
+        Ok(0)
     }
 }
 
@@ -955,6 +1014,12 @@ impl ContainerBackend for WsBrokerBackend {
         }
 
         Ok(removed)
+    }
+
+    async fn cleanup_volumes(&self, _challenge_id: &str) -> Result<usize> {
+        // WebSocket broker backend doesn't manage volumes directly
+        // Volume cleanup is handled by the Docker host
+        Ok(0)
     }
 }
 

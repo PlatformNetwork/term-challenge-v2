@@ -2853,6 +2853,7 @@ pub async fn llm_chat_proxy_stream(
 }
 
 /// Make streaming LLM API call and return SSE response
+#[allow(clippy::too_many_arguments)]
 async fn make_llm_stream_request(
     api_key: &str,
     provider: &str,

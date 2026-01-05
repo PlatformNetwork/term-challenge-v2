@@ -106,6 +106,19 @@ impl ValidatorWorker {
             }
         }
 
+        // Cleanup orphan volumes from previous runs
+        // This prevents disk space from being consumed by unused volumes
+        match container_backend.cleanup_volumes(&challenge_id).await {
+            Ok(count) => {
+                if count > 0 {
+                    info!("Cleaned up {} orphan volumes from previous runs", count);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to cleanup orphan volumes at startup: {}", e);
+            }
+        }
+
         Ok(Self {
             platform_url,
             challenge_id,
@@ -905,6 +918,21 @@ impl ValidatorWorker {
             warn!("Failed to remove container: {}", e);
         }
 
+        // Cleanup orphan volumes in background to not block evaluation
+        let backend = self.container_backend.clone();
+        let cid = self.challenge_id.clone();
+        tokio::spawn(async move {
+            match backend.cleanup_volumes(&cid).await {
+                Ok(count) if count > 0 => {
+                    info!("Background cleanup: removed {} orphan volumes", count);
+                }
+                Err(e) => {
+                    debug!("Background volume cleanup failed: {}", e);
+                }
+                _ => {}
+            }
+        });
+
         let elapsed = start.elapsed();
         debug!(
             "Task {} completed in {:?}: {}",
@@ -927,6 +955,7 @@ impl ValidatorWorker {
 
     /// Run the agent binary in a loop until completion or timeout
     /// Returns (completed, accumulated_stderr, steps_executed)
+    #[allow(clippy::too_many_arguments)]
     async fn run_agent_loop(
         &self,
         task_container: &dyn ContainerHandle,
