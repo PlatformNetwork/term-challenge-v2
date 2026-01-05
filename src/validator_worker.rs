@@ -146,7 +146,7 @@ impl ValidatorWorker {
         Ok(())
     }
 
-    /// Get the first N tasks for evaluation
+    /// Get the first N tasks for evaluation (sorted by ID for determinism)
     async fn get_evaluation_tasks(&self) -> Result<Vec<Task>> {
         // Ensure tasks are loaded
         self.load_tasks().await?;
@@ -156,9 +156,11 @@ impl ValidatorWorker {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Task registry not loaded"))?;
 
-        // Get all tasks and take first TASKS_PER_EVALUATION
-        let tasks: Vec<Task> = registry
-            .list_tasks()
+        // Get all tasks, sort by ID for deterministic selection, then take first N
+        let mut task_infos: Vec<_> = registry.list_tasks();
+        task_infos.sort_by(|a, b| a.id.cmp(&b.id));
+
+        let tasks: Vec<Task> = task_infos
             .into_iter()
             .take(TASKS_PER_EVALUATION)
             .filter_map(|info| registry.get(&info.id).cloned())

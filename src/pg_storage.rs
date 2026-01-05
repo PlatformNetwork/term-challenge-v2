@@ -2410,14 +2410,11 @@ impl PgStorage {
     ) -> Result<TaskLogSummary> {
         let client = self.pool.get().await?;
 
-        // Get expected task count
-        let expected_row = client
-            .query_one(
-                "SELECT COUNT(*) FROM evaluation_tasks WHERE agent_hash = $1",
-                &[&agent_hash],
-            )
-            .await?;
-        let total_tasks: i64 = expected_row.get(0);
+        // Fixed task count - validators always evaluate 30 tasks from terminal-bench@2.0
+        // Note: evaluation_tasks table uses placeholder IDs (task_01, task_02, etc.)
+        // while actual task_logs use real terminal-bench task IDs, so we use a constant here.
+        const TASKS_PER_EVALUATION: i64 = 30;
+        let total_tasks: i64 = TASKS_PER_EVALUATION;
 
         // Get completed task summary
         let summary_row = client
@@ -2666,13 +2663,9 @@ impl PgStorage {
             .await?;
 
         // Get assigned tasks count
-        let total_tasks: i64 = client
-            .query_one(
-                "SELECT COUNT(*) FROM evaluation_tasks WHERE agent_hash = $1",
-                &[&agent_hash],
-            )
-            .await?
-            .get(0);
+        // Fixed task count - validators always evaluate 30 tasks from terminal-bench@2.0
+        const TASKS_PER_EVALUATION: i64 = 30;
+        let total_tasks: i64 = TASKS_PER_EVALUATION;
 
         let mut results = Vec::new();
 
@@ -2700,46 +2693,28 @@ impl PgStorage {
             let failed: i64 = summary.get("failed");
             let last_update: Option<i64> = summary.try_get("last_update").ok().flatten();
 
-            // Get completed task IDs
-            let completed_tasks = client
-                .query(
-                    "SELECT task_id FROM task_logs WHERE agent_hash = $1 AND validator_hotkey = $2",
-                    &[&agent_hash, &validator_hotkey],
-                )
-                .await?;
-            let completed_task_ids: Vec<String> =
-                completed_tasks.iter().map(|r| r.get("task_id")).collect();
+            // Calculate remaining based on completed count vs total (30)
+            // Note: We don't track individual task IDs for remaining since evaluation_tasks
+            // uses placeholder IDs while task_logs use real terminal-bench IDs
+            let remaining = (total_tasks - completed).max(0);
+            let remaining_task_ids: Vec<String> = Vec::new(); // Not tracking individual IDs
 
-            // Get all assigned task IDs
-            let all_tasks = client
-                .query(
-                    "SELECT task_id FROM evaluation_tasks WHERE agent_hash = $1",
-                    &[&agent_hash],
-                )
-                .await?;
-            let all_task_ids: Vec<String> = all_tasks.iter().map(|r| r.get("task_id")).collect();
-
-            // Remaining = all - completed
-            let remaining_task_ids: Vec<String> = all_task_ids
-                .into_iter()
-                .filter(|id| !completed_task_ids.contains(id))
-                .collect();
-
-            // Determine status
+            // Determine status based on completed count
             let status = if completed == 0 {
                 if assignment_status == "pending" {
                     "pending"
                 } else {
                     "in_progress"
                 }
-            } else if remaining_task_ids.is_empty() {
+            } else if completed >= total_tasks {
                 "completed"
             } else {
                 "in_progress"
             };
 
-            // Current task = first remaining
-            let current_task = remaining_task_ids.first().cloned();
+            // No current task tracking since we don't have individual remaining IDs
+            let current_task: Option<String> = None;
+            let _ = remaining; // Used for status calculation above
 
             results.push(ValidatorEvaluationProgress {
                 validator_hotkey,
