@@ -572,10 +572,8 @@ impl SecureBrokerBackend {
 
     pub fn from_env() -> Option<Self> {
         let socket = std::env::var("CONTAINER_BROKER_SOCKET").ok()?;
-        // Prefer CHALLENGE_UUID (matches JWT token) over CHALLENGE_ID (human-readable name)
-        let challenge_id = std::env::var("CHALLENGE_UUID")
-            .or_else(|_| std::env::var("CHALLENGE_ID"))
-            .unwrap_or_else(|_| "term-challenge".to_string());
+        let challenge_id =
+            std::env::var("CHALLENGE_ID").unwrap_or_else(|_| "term-challenge".to_string());
         let owner_id = std::env::var("VALIDATOR_HOTKEY").unwrap_or_else(|_| "unknown".to_string());
         Some(Self::new(&socket, &challenge_id, &owner_id))
     }
@@ -921,10 +919,8 @@ impl WsBrokerBackend {
         // Both URL and JWT are required for broker mode
         let ws_url = std::env::var("CONTAINER_BROKER_WS_URL").ok()?;
         let jwt_token = std::env::var("CONTAINER_BROKER_JWT").ok()?;
-        // Prefer CHALLENGE_UUID (matches JWT token) over CHALLENGE_ID (human-readable name)
-        let challenge_id = std::env::var("CHALLENGE_UUID")
-            .or_else(|_| std::env::var("CHALLENGE_ID"))
-            .unwrap_or_else(|_| "term-challenge".to_string());
+        let challenge_id =
+            std::env::var("CHALLENGE_ID").unwrap_or_else(|_| "term-challenge".to_string());
         let owner_id = std::env::var("VALIDATOR_HOTKEY").unwrap_or_else(|_| "unknown".to_string());
         Some(Self::new(&ws_url, &jwt_token, &challenge_id, &owner_id))
     }
@@ -1394,10 +1390,8 @@ pub async fn create_backend() -> Result<Arc<dyn ContainerBackend>> {
 
     // Check default socket path
     if std::path::Path::new(DEFAULT_BROKER_SOCKET).exists() {
-        // Prefer CHALLENGE_UUID (matches JWT token) over CHALLENGE_ID (human-readable name)
-        let challenge_id = std::env::var("CHALLENGE_UUID")
-            .or_else(|_| std::env::var("CHALLENGE_ID"))
-            .unwrap_or_else(|_| "term-challenge".to_string());
+        let challenge_id =
+            std::env::var("CHALLENGE_ID").unwrap_or_else(|_| "term-challenge".to_string());
         let owner_id = std::env::var("VALIDATOR_HOTKEY").unwrap_or_else(|_| "unknown".to_string());
         let secure = SecureBrokerBackend::new(DEFAULT_BROKER_SOCKET, &challenge_id, &owner_id);
         info!("Using default broker socket (production mode)");

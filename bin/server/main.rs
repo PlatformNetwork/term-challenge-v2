@@ -34,7 +34,7 @@ struct Args {
     platform_url: String,
 
     /// Challenge ID
-    #[arg(long, env = "CHALLENGE_ID", default_value = "term-bench")]
+    #[arg(long, env = "CHALLENGE_ID", default_value = "term-challenge")]
     challenge_id: String,
 
     /// Server host

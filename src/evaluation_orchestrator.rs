@@ -669,7 +669,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_creation() {
-        let chain_storage = Arc::new(ChainStorage::new("http://localhost:8080", "term-bench"));
+        let chain_storage = Arc::new(ChainStorage::new("http://localhost:8080", "term-challenge"));
         let config = ChallengeConfig::default();
         let source_provider = Arc::new(MockSourceProvider {
             sources: HashMap::new(),
