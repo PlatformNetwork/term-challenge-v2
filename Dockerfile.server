@@ -54,6 +54,9 @@ RUN pip3 install --break-system-packages \
     pyinstaller \
     staticx
 
+# Re-declare ARG for runtime stage (build args don't carry over to final stage)
+ARG TERM_REPO_PATH=.
+
 WORKDIR /app
 
 # Copy binary from builder
