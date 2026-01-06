@@ -35,7 +35,8 @@ const MAX_BINARY_SIZE: usize = 100 * 1024 * 1024;
 // Use full python image (not slim) because it includes binutils/objdump
 // which is required by PyInstaller. Slim images require apt-get which
 // may fail in isolated network environments.
-const COMPILER_IMAGE: &str = "python:3.11";
+// Now uses term-compiler:latest which includes PyInstaller and StaticX
+const COMPILER_IMAGE: &str = "term-compiler:latest";
 
 /// Result of agent compilation
 #[derive(Debug)]
@@ -133,6 +134,7 @@ async fn compile_in_container(
         cmd: Some(vec!["sleep".to_string(), "infinity".to_string()]),
         challenge_id: "compiler".to_string(),
         owner_id: "system".to_string(),
+        auto_remove: false, // Explicit cleanup preferred for compiler containers
     };
 
     debug!(
@@ -271,14 +273,44 @@ async fn run_compilation_steps(
 
     info!("Binary exists: {}", check.stdout.trim());
 
-    // Read the compiled binary using Docker archive API via read_file
+    // Wrap binary with StaticX for portability across different glibc versions
+    info!("Running StaticX to create portable binary...");
+    let staticx_result = container
+        .exec(&[
+            "staticx",
+            "/compile/dist/agent",
+            "/compile/dist/agent-static",
+        ])
+        .await
+        .context("StaticX execution failed")?;
+
+    if !staticx_result.success() {
+        error!("StaticX failed: {}", staticx_result.stderr);
+        anyhow::bail!("StaticX wrapping failed: {}", staticx_result.stderr);
+    }
+
+    info!("StaticX wrapping completed successfully");
+
+    // Verify static binary exists
+    let static_check = container
+        .exec(&["ls", "-la", "/compile/dist/agent-static"])
+        .await
+        .context("Failed to check static binary existence")?;
+
+    if !static_check.success() {
+        anyhow::bail!("Static binary not found at /compile/dist/agent-static");
+    }
+
+    info!("Static binary exists: {}", static_check.stdout.trim());
+
+    // Read the compiled static binary using Docker archive API via read_file
     // This uses CopyFrom protocol which transfers via Docker's archive API
     // (much more reliable than exec + base64 for large files)
-    info!("Reading binary via Docker archive API...");
+    info!("Reading static binary via Docker archive API...");
     let binary = container
-        .read_file("/compile/dist/agent")
+        .read_file("/compile/dist/agent-static")
         .await
-        .context("Failed to read compiled binary via CopyFrom")?;
+        .context("Failed to read compiled static binary via CopyFrom")?;
 
     if binary.is_empty() {
         anyhow::bail!("Compiled binary is empty");
@@ -581,6 +613,47 @@ if __name__ == "__main__":
 "#,
         source_code
     )
+}
+
+/// Build the term-compiler Docker image from Dockerfile.compiler
+///
+/// This function should be called once at server startup to ensure the
+/// compiler image is available for all subsequent compilation tasks.
+///
+/// # Errors
+///
+/// Returns an error if the Docker build fails. This is fatal and the
+/// server should not continue without the compiler image.
+pub async fn build_compiler_image() -> Result<()> {
+    use std::process::Command;
+
+    info!("Building compiler image: {}", COMPILER_IMAGE);
+
+    // Build using docker command directly
+    let output = Command::new("docker")
+        .args(&[
+            "build",
+            "-f",
+            "docker/Dockerfile.compiler",
+            "-t",
+            COMPILER_IMAGE,
+            ".",
+        ])
+        .output()
+        .context("Failed to spawn docker build process")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        error!(
+            "Docker build failed:\nstdout: {}\nstderr: {}",
+            stdout, stderr
+        );
+        anyhow::bail!("Failed to build compiler image: {}", stderr);
+    }
+
+    info!("Compiler image built successfully: {}", COMPILER_IMAGE);
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1240,6 +1240,12 @@ pub async fn run_server_with_mode(
         );
     }
 
+    // Build the compiler image at startup (once, fatal if fails)
+    if let Err(e) = crate::compiler::build_compiler_image().await {
+        error!("Failed to build compiler image at startup: {}", e);
+        return Err(e);
+    }
+
     let state = Arc::new(ChallengeServerState::with_options(
         config,
         platform_url,

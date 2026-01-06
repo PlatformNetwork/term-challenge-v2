@@ -52,6 +52,9 @@ pub struct SandboxConfig {
     pub challenge_id: String,
     /// Owner ID for tracking
     pub owner_id: String,
+    /// Automatically remove container on exit
+    /// For compilation containers, explicit cleanup is preferred (set to false)
+    pub auto_remove: bool,
 }
 
 impl Default for SandboxConfig {
@@ -68,6 +71,7 @@ impl Default for SandboxConfig {
             cmd: None,
             challenge_id: "term-challenge".to_string(),
             owner_id: "unknown".to_string(),
+            auto_remove: false,
         }
     }
 }

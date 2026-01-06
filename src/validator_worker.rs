@@ -812,6 +812,7 @@ impl ValidatorWorker {
             challenge_id: self.challenge_id.clone(),
             owner_id: self.validator_hotkey.clone(),
             name: None,
+            auto_remove: false,
         };
 
         // Create and start container via backend
