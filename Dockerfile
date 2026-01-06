@@ -117,6 +117,9 @@ RUN cd /opt/term-sdk/python && \
 # Copy default data and tasks
 COPY ${TERM_REPO_PATH}/data /app/data
 
+# Copy docker directory (contains Dockerfile.compiler for static binary compilation)
+COPY ${TERM_REPO_PATH}/docker /app/docker
+
 # Copy agent runner script
 COPY ${TERM_REPO_PATH}/docker/agent_runner.py /opt/term-sdk/agent_runner.py
 RUN chmod +x /opt/term-sdk/agent_runner.py
