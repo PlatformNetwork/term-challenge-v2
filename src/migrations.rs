@@ -177,6 +177,10 @@ pub const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         "009_validator_assignment_status",
         include_str!("../migrations/009_validator_assignment_status.sql"),
     ),
+    (
+        "010_reassignment_tracking",
+        include_str!("../migrations/010_reassignment_tracking.sql"),
+    ),
 ];
 
 /// Run embedded migrations (when migrations dir is not available)

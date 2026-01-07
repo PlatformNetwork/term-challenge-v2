@@ -466,6 +466,27 @@ pub struct LlmUsageRecord {
     pub cost_usd: f64,
 }
 
+/// Stale validator assignment (no task started within timeout)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaleAssignment {
+    pub agent_hash: String,
+    pub validator_hotkey: String,
+    pub assigned_at: i64,
+    pub reassignment_count: i32,
+}
+
+/// Reassignment history record for audit logging
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReassignmentHistory {
+    pub id: String,
+    pub agent_hash: String,
+    pub old_validator_hotkey: String,
+    pub new_validator_hotkey: String,
+    pub reassignment_number: i32,
+    pub reason: String,
+    pub created_at: i64,
+}
+
 /// Database query timeout in seconds
 const DB_QUERY_TIMEOUT_SECS: u64 = 30;
 
@@ -1402,6 +1423,194 @@ impl PgStorage {
             )
             .await?;
         Ok(rows.iter().map(|r| r.get(0)).collect())
+    }
+
+    /// Get stale validator assignments (no task_logs after timeout)
+    /// Returns assignments where:
+    /// 1. No task_logs exist for this agent+validator combination
+    /// 2. Assignment is older than timeout_minutes
+    /// 3. Agent has compile_status = 'success'
+    /// 4. Reassignment count is less than max_reassignments
+    pub async fn get_stale_assignments(
+        &self,
+        timeout_minutes: i64,
+        max_reassignments: i32,
+    ) -> Result<Vec<StaleAssignment>> {
+        let client = self.pool.get().await?;
+
+        let rows = client
+            .query(
+                "SELECT 
+                    va.agent_hash,
+                    va.validator_hotkey,
+                    EXTRACT(EPOCH FROM va.assigned_at)::BIGINT as assigned_at,
+                    COALESCE(s.reassignment_count, 0) as reassignment_count
+                FROM validator_assignments va
+                JOIN submissions s ON s.agent_hash = va.agent_hash
+                LEFT JOIN task_logs tl ON tl.agent_hash = va.agent_hash 
+                                      AND tl.validator_hotkey = va.validator_hotkey
+                WHERE tl.id IS NULL
+                  AND va.assigned_at < NOW() - ($1 || ' minutes')::INTERVAL
+                  AND s.compile_status = 'success'
+                  AND COALESCE(s.reassignment_count, 0) < $2",
+                &[&timeout_minutes.to_string(), &max_reassignments],
+            )
+            .await?;
+
+        let assignments = rows
+            .iter()
+            .map(|r| StaleAssignment {
+                agent_hash: r.get(0),
+                validator_hotkey: r.get(1),
+                assigned_at: r.get(2),
+                reassignment_count: r.get(3),
+            })
+            .collect();
+
+        Ok(assignments)
+    }
+
+    /// Reassign an agent from one validator to another
+    /// 1. Deletes old assignment
+    /// 2. Creates new assignment
+    /// 3. Increments reassignment_count in submissions
+    /// 4. Records the reassignment in history table
+    pub async fn reassign_validator(
+        &self,
+        agent_hash: &str,
+        old_validator: &str,
+        new_validator: &str,
+        reason: &str,
+    ) -> Result<()> {
+        let client = self.pool.get().await?;
+
+        // Start transaction
+        let transaction_id = uuid::Uuid::new_v4().to_string();
+
+        // 1. Delete old assignment
+        client
+            .execute(
+                "DELETE FROM validator_assignments WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &old_validator],
+            )
+            .await?;
+
+        // 2. Create new assignment
+        let new_id = uuid::Uuid::new_v4().to_string();
+        client
+            .execute(
+                "INSERT INTO validator_assignments (id, agent_hash, validator_hotkey, status, assigned_at)
+                 VALUES ($1, $2, $3, 'pending', NOW())
+                 ON CONFLICT(agent_hash, validator_hotkey) DO NOTHING",
+                &[&new_id, &agent_hash, &new_validator],
+            )
+            .await?;
+
+        // 3. Increment reassignment_count and get current value
+        let row = client
+            .query_one(
+                "UPDATE submissions 
+                 SET reassignment_count = COALESCE(reassignment_count, 0) + 1 
+                 WHERE agent_hash = $1
+                 RETURNING reassignment_count",
+                &[&agent_hash],
+            )
+            .await?;
+        let reassignment_number: i32 = row.get(0);
+
+        // 4. Record in history table
+        let history_id = uuid::Uuid::new_v4().to_string();
+        client
+            .execute(
+                "INSERT INTO reassignment_history 
+                 (id, agent_hash, old_validator_hotkey, new_validator_hotkey, reassignment_number, reason)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+                &[
+                    &history_id,
+                    &agent_hash,
+                    &old_validator,
+                    &new_validator,
+                    &reassignment_number,
+                    &reason,
+                ],
+            )
+            .await?;
+
+        info!(
+            "Reassigned agent {} from {} to {} (reassignment #{}), tx={}",
+            &agent_hash[..16.min(agent_hash.len())],
+            &old_validator[..16.min(old_validator.len())],
+            &new_validator[..16.min(new_validator.len())],
+            reassignment_number,
+            &transaction_id[..8]
+        );
+
+        Ok(())
+    }
+
+    /// Get validators already assigned to an agent (for exclusion during reassignment)
+    pub async fn get_validators_assigned_to_agent(&self, agent_hash: &str) -> Result<Vec<String>> {
+        let client = self.pool.get().await?;
+
+        // Get current assignments
+        let current_rows = client
+            .query(
+                "SELECT validator_hotkey FROM validator_assignments WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // Also get validators from reassignment history (they already failed)
+        let history_rows = client
+            .query(
+                "SELECT DISTINCT old_validator_hotkey FROM reassignment_history WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        let mut validators: Vec<String> = current_rows.iter().map(|r| r.get(0)).collect();
+        for row in history_rows {
+            let v: String = row.get(0);
+            if !validators.contains(&v) {
+                validators.push(v);
+            }
+        }
+
+        Ok(validators)
+    }
+
+    /// Get reassignment history for an agent
+    pub async fn get_reassignment_history(
+        &self,
+        agent_hash: &str,
+    ) -> Result<Vec<ReassignmentHistory>> {
+        let client = self.pool.get().await?;
+
+        let rows = client
+            .query(
+                "SELECT id, agent_hash, old_validator_hotkey, new_validator_hotkey, 
+                        reassignment_number, reason, EXTRACT(EPOCH FROM created_at)::BIGINT
+                 FROM reassignment_history 
+                 WHERE agent_hash = $1 
+                 ORDER BY created_at ASC",
+                &[&agent_hash],
+            )
+            .await?;
+
+        let history = rows
+            .iter()
+            .map(|r| ReassignmentHistory {
+                id: r.get(0),
+                agent_hash: r.get(1),
+                old_validator_hotkey: r.get(2),
+                new_validator_hotkey: r.get(3),
+                reassignment_number: r.get(4),
+                reason: r.get(5),
+                created_at: r.get(6),
+            })
+            .collect();
+
+        Ok(history)
     }
 
     /// Get jobs available for a specific validator

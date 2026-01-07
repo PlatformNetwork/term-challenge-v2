@@ -33,6 +33,7 @@
 pub mod agent_queue;
 pub mod agent_registry;
 pub mod agent_submission;
+pub mod assignment_monitor;
 pub mod bench;
 pub mod blockchain_evaluation;
 pub mod challenge;

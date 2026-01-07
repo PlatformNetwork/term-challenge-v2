@@ -1540,7 +1540,15 @@ pub async fn run_server_with_mode(
                 Arc::new(pg.clone()),
                 compile_ws_client.map(Arc::new),
                 crate::compile_worker::CompileWorkerConfig::default(),
+                compile_platform_url.clone(),
+            );
+
+            // Start assignment monitor to detect and reassign stale validator assignments
+            info!("Starting assignment monitor...");
+            crate::assignment_monitor::spawn_assignment_monitor(
+                Arc::new(pg.clone()),
                 compile_platform_url,
+                crate::assignment_monitor::AssignmentMonitorConfig::default(),
             );
         }
     }
