@@ -972,10 +972,12 @@ impl ValidatorWorker {
         use tokio::process::Command;
 
         const MAX_STEPS: usize = 500;
+        const MAX_CONSECUTIVE_EMPTY_STEPS: usize = 3;
 
         let mut last_output = String::new();
         let mut last_exit_code = 0i32;
         let mut accumulated_stderr = String::new();
+        let mut consecutive_empty_steps: usize = 0;
 
         for step in 1..=MAX_STEPS {
             let input = serde_json::json!({
@@ -1032,12 +1034,29 @@ impl ValidatorWorker {
                 accumulated_stderr.push_str(&format!("[step {}] {}", step, stderr.trim()));
             }
 
-            // Parse agent response
-            let response: serde_json::Value = stdout
+            // Parse agent response - detect invalid JSON as empty response
+            let response: serde_json::Value = match stdout
                 .lines()
                 .last()
                 .and_then(|line| serde_json::from_str(line).ok())
-                .unwrap_or_default();
+            {
+                Some(v) => v,
+                None => {
+                    consecutive_empty_steps += 1;
+                    warn!(
+                        "Invalid or empty JSON response from agent at step {} ({}/{} consecutive)",
+                        step, consecutive_empty_steps, MAX_CONSECUTIVE_EMPTY_STEPS
+                    );
+                    if consecutive_empty_steps >= MAX_CONSECUTIVE_EMPTY_STEPS {
+                        warn!(
+                            "Agent stuck: {} consecutive invalid responses, aborting task",
+                            consecutive_empty_steps
+                        );
+                        return Ok((false, accumulated_stderr, step as i32));
+                    }
+                    continue;
+                }
+            };
 
             // Check if agent is done (support both "done" and "task_complete" for SDK compatibility)
             if response["done"].as_bool().unwrap_or(false)
@@ -1047,11 +1066,25 @@ impl ValidatorWorker {
                 return Ok((true, accumulated_stderr, step as i32));
             }
 
-            // Get command to execute
+            // Get command to execute - detect empty commands as dead steps
             let command = match response["command"].as_str() {
-                Some(cmd) if !cmd.is_empty() => cmd.to_string(),
+                Some(cmd) if !cmd.is_empty() => {
+                    consecutive_empty_steps = 0; // Reset on valid command
+                    cmd.to_string()
+                }
                 _ => {
-                    debug!("No command from agent at step {}", step);
+                    consecutive_empty_steps += 1;
+                    warn!(
+                        "No command from agent at step {} ({}/{} consecutive empty responses)",
+                        step, consecutive_empty_steps, MAX_CONSECUTIVE_EMPTY_STEPS
+                    );
+                    if consecutive_empty_steps >= MAX_CONSECUTIVE_EMPTY_STEPS {
+                        warn!(
+                            "Agent stuck: {} consecutive empty responses without command or completion, aborting task",
+                            consecutive_empty_steps
+                        );
+                        return Ok((false, accumulated_stderr, step as i32));
+                    }
                     continue;
                 }
             };
