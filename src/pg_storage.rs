@@ -678,7 +678,7 @@ impl PgStorage {
     pub async fn get_evaluations(&self, agent_hash: &str) -> Result<Vec<EvaluationRecord>> {
         let client = self.pool.get().await?;
         let rows = client.query(
-            "SELECT id, submission_id, agent_hash, miner_hotkey, score, tasks_passed, tasks_total, tasks_failed, total_cost_usd, execution_time_ms, task_results, EXTRACT(EPOCH FROM created_at)::BIGINT
+            "SELECT id, submission_id, agent_hash, miner_hotkey, score::FLOAT8, tasks_passed, tasks_total, tasks_failed, total_cost_usd::FLOAT8, execution_time_ms, task_results, EXTRACT(EPOCH FROM created_at)::BIGINT
              FROM evaluations WHERE agent_hash = $1 ORDER BY created_at DESC",
             &[&agent_hash],
         ).await?;
@@ -960,8 +960,9 @@ impl PgStorage {
             )
             .await?;
 
-        let total_cost: f64 = row.get(0);
-        let cost_limit: f64 = row.get(1);
+        // Columns are REAL (f32), convert to f64 for Rust
+        let total_cost: f64 = row.get::<_, f32>(0) as f64;
+        let cost_limit: f64 = row.get::<_, f32>(1) as f64;
 
         if total_cost > cost_limit {
             warn!(
@@ -981,7 +982,7 @@ impl PgStorage {
 
         let row = client
             .query_opt(
-                "SELECT total_cost_usd, cost_limit_usd FROM submissions WHERE agent_hash = $1",
+                "SELECT total_cost_usd::FLOAT8, cost_limit_usd::FLOAT8 FROM submissions WHERE agent_hash = $1",
                 &[&agent_hash],
             )
             .await?;
@@ -1863,7 +1864,7 @@ impl PgStorage {
         let rows = client
             .query(
                 "SELECT id, agent_hash, validator_hotkey, submission_id, miner_hotkey,
-                    score, tasks_passed, tasks_total, tasks_failed, total_cost_usd,
+                    score::FLOAT8, tasks_passed, tasks_total, tasks_failed, total_cost_usd::FLOAT8,
                     execution_time_ms, task_results, epoch, 
                     EXTRACT(EPOCH FROM created_at)::BIGINT
              FROM validator_evaluations WHERE agent_hash = $1
@@ -2560,8 +2561,8 @@ impl PgStorage {
 
         let rows = client
             .query(
-                "SELECT id, agent_hash, validator_hotkey, task_id, task_name, passed, score,
-                        execution_time_ms, steps, cost_usd, error, execution_log, trajectory,
+                "SELECT id, agent_hash, validator_hotkey, task_id, task_name, passed, score::FLOAT8,
+                        execution_time_ms, steps, cost_usd::FLOAT8, error, execution_log, trajectory,
                         EXTRACT(EPOCH FROM started_at)::BIGINT as started_at,
                         EXTRACT(EPOCH FROM completed_at)::BIGINT as completed_at,
                         agent_stderr, agent_stdout, test_output, steps_executed, failure_stage
@@ -2609,8 +2610,8 @@ impl PgStorage {
 
         let rows = client
             .query(
-                "SELECT id, agent_hash, validator_hotkey, task_id, task_name, passed, score,
-                        execution_time_ms, steps, cost_usd, error, execution_log, trajectory,
+                "SELECT id, agent_hash, validator_hotkey, task_id, task_name, passed, score::FLOAT8,
+                        execution_time_ms, steps, cost_usd::FLOAT8, error, execution_log, trajectory,
                         EXTRACT(EPOCH FROM started_at)::BIGINT as started_at,
                         EXTRACT(EPOCH FROM completed_at)::BIGINT as completed_at,
                         agent_stderr, agent_stdout, test_output, steps_executed, failure_stage
@@ -2748,7 +2749,7 @@ impl PgStorage {
         let rows = client
             .query(
                 "SELECT id, agent_hash, validator_hotkey, submission_id, miner_hotkey,
-                        score, tasks_passed, tasks_total, tasks_failed, total_cost_usd,
+                        score::FLOAT8, tasks_passed, tasks_total, tasks_failed, total_cost_usd::FLOAT8,
                         execution_time_ms, task_results, epoch,
                         EXTRACT(EPOCH FROM created_at)::BIGINT as created_at
                  FROM validator_evaluations 
