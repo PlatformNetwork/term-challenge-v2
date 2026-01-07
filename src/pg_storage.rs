@@ -1336,6 +1336,48 @@ impl PgStorage {
         Ok(assigned)
     }
 
+    /// Clear all validator assignments for an agent
+    /// Used before reassigning validators (e.g., during recompilation)
+    pub async fn clear_validator_assignments(&self, agent_hash: &str) -> Result<usize> {
+        let client = self.pool.get().await?;
+        let result = client
+            .execute(
+                "DELETE FROM validator_assignments WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        if result > 0 {
+            debug!(
+                "Cleared {} validator assignments for agent {}",
+                result,
+                &agent_hash[..16.min(agent_hash.len())]
+            );
+        }
+        Ok(result as usize)
+    }
+
+    /// Clear all evaluation task assignments for an agent
+    /// Used before reassigning tasks (e.g., during recompilation)
+    pub async fn clear_evaluation_tasks(&self, agent_hash: &str) -> Result<usize> {
+        let client = self.pool.get().await?;
+        let result = client
+            .execute(
+                "DELETE FROM evaluation_tasks WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        if result > 0 {
+            debug!(
+                "Cleared {} evaluation tasks for agent {}",
+                result,
+                &agent_hash[..16.min(agent_hash.len())]
+            );
+        }
+        Ok(result as usize)
+    }
+
     /// Check if a validator is assigned to evaluate an agent
     pub async fn is_validator_assigned(
         &self,

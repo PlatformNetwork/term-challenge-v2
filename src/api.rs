@@ -27,55 +27,8 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-/// Select validators for an agent deterministically based on agent_hash
-/// Uses hash-based selection for reproducibility across runs
-fn select_validators_for_agent(
-    agent_hash: &str,
-    validators: &[String],
-    count: usize,
-) -> Vec<String> {
-    if validators.is_empty() {
-        return vec![];
-    }
-
-    let count = count.min(validators.len());
-
-    // Sort validators for deterministic ordering
-    let mut sorted_validators: Vec<&String> = validators.iter().collect();
-    sorted_validators.sort();
-
-    // Use agent_hash to deterministically select starting index
-    let hash_bytes = hex::decode(agent_hash).unwrap_or_default();
-    let start_idx = if hash_bytes.is_empty() {
-        0
-    } else {
-        // Use first 8 bytes of hash as u64 for index
-        let mut idx_bytes = [0u8; 8];
-        for (i, b) in hash_bytes.iter().take(8).enumerate() {
-            idx_bytes[i] = *b;
-        }
-        u64::from_le_bytes(idx_bytes) as usize % sorted_validators.len()
-    };
-
-    // Select 'count' validators starting from start_idx (wrapping around)
-    let mut selected = Vec::with_capacity(count);
-    for i in 0..count {
-        let idx = (start_idx + i) % sorted_validators.len();
-        selected.push(sorted_validators[idx].clone());
-    }
-
-    debug!(
-        "Selected {} validators for agent {}: {:?}",
-        selected.len(),
-        &agent_hash[..16.min(agent_hash.len())],
-        selected
-            .iter()
-            .map(|v| &v[..16.min(v.len())])
-            .collect::<Vec<_>>()
-    );
-
-    selected
-}
+// Note: Validator selection has been moved to compile_worker.rs
+// Validators are assigned after successful compilation for fresh assignment state
 
 // ============================================================================
 // LLM SECURITY REVIEW
@@ -161,64 +114,11 @@ async fn do_llm_security_review(
 }
 
 // ============================================================================
-// PLATFORM SERVER INTEGRATION
-// ============================================================================
-
-/// Validator info from platform-server /validators endpoint
-#[derive(Debug, Deserialize)]
-struct ValidatorInfo {
-    hotkey: String,
-    #[allow(dead_code)]
-    stake: i64,
-    #[allow(dead_code)]
-    last_seen: i64,
-    is_active: bool,
-    #[allow(dead_code)]
-    created_at: i64,
-}
-
-/// Fetch all active validators from platform-server database
-async fn fetch_validators_from_platform(platform_url: &str) -> Vec<String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
-
-    let url = format!("{}/api/v1/validators", platform_url);
-
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => match resp.json::<Vec<ValidatorInfo>>().await {
-            Ok(validators) => {
-                let active: Vec<String> = validators
-                    .into_iter()
-                    .filter(|v| v.is_active)
-                    .map(|v| v.hotkey)
-                    .collect();
-                info!(
-                    "Fetched {} active validators from platform-server",
-                    active.len()
-                );
-                active
-            }
-            Err(e) => {
-                warn!("Failed to parse validators response: {}", e);
-                vec![]
-            }
-        },
-        Ok(resp) => {
-            warn!("Failed to fetch validators: HTTP {}", resp.status());
-            vec![]
-        }
-        Err(e) => {
-            warn!("Failed to connect to platform-server: {}", e);
-            vec![]
-        }
-    }
-}
-
-// ============================================================================
 // SHARED STATE
 // ============================================================================
+
+// Note: Validator selection and fetching has been moved to compile_worker.rs
+// Validators are assigned after successful compilation for fresh assignment state
 
 /// API state shared across all handlers
 pub struct ApiState {
@@ -481,64 +381,30 @@ pub async fn submit_agent(
         }
     }
 
-    // Fetch active validators from platform-server database
-    let all_validators = fetch_validators_from_platform(&state.platform_url).await;
-    if all_validators.is_empty() {
-        warn!("No active validators available from platform-server");
-    }
-
-    // Select 3 validators from whitelist (deterministic based on agent_hash for reproducibility)
-    let selected_validators = select_validators_for_agent(&agent_hash, &all_validators, 3);
-    let validator_count = selected_validators.len() as i32;
-
+    // Queue submission for evaluation (validator_count will be set after compilation)
     if let Err(e) = state
         .storage
         .queue_submission_for_evaluation(
             &submission_id,
             &agent_hash,
             &req.miner_hotkey,
-            validator_count,
+            0, // Validators are assigned by compile_worker after successful compilation
         )
         .await
     {
         warn!("Failed to queue submission for evaluation: {:?}", e);
     }
 
-    // Assign selected validators to this agent
-    if !selected_validators.is_empty() {
-        if let Err(e) = state
-            .storage
-            .assign_validators_to_agent(&agent_hash, &selected_validators)
-            .await
-        {
-            warn!("Failed to assign validators: {:?}", e);
-        }
-    }
-
-    // Assign default tasks to this agent (30 tasks for term-challenge)
-    let default_tasks: Vec<TaskAssignment> = (1..=30)
-        .map(|i| TaskAssignment {
-            task_id: format!("task_{:02}", i),
-            task_name: format!("Task {}", i),
-        })
-        .collect();
-
-    if let Err(e) = state
-        .storage
-        .assign_tasks_to_agent(&agent_hash, &default_tasks)
-        .await
-    {
-        warn!("Failed to assign tasks: {:?}", e);
-    }
+    // Note: Validators and tasks are assigned by compile_worker after successful compilation
+    // This ensures assignments are fresh and based on current platform state
 
     info!(
-        "Agent submitted: {} v{} from {} (epoch {}, cost_limit: ${:.2}, validators: {})",
+        "Agent submitted: {} v{} from {} (epoch {}, cost_limit: ${:.2})",
         &agent_hash[..16],
         version,
         &submission.miner_hotkey[..16.min(submission.miner_hotkey.len())],
         epoch,
-        cost_limit,
-        validator_count
+        cost_limit
     );
 
     // Spawn background task for LLM review (compilation handled by compile_worker)
@@ -667,26 +533,8 @@ pub async fn submit_agent(
         });
     }
 
-    // Send targeted WebSocket notification to assigned validators
-    // This is more efficient than broadcast - only the 3 assigned validators receive it
-    if let Some(ws_client) = state.platform_ws_client.as_ref() {
-        if !selected_validators.is_empty() {
-            let ws = ws_client.clone();
-            let validators = selected_validators.clone();
-            let hash = agent_hash.clone();
-            let miner = req.miner_hotkey.clone();
-            let sub_id = submission_id.clone();
-
-            tokio::spawn(async move {
-                if let Err(e) = ws
-                    .notify_validators_new_submission(&validators, &hash, &miner, &sub_id)
-                    .await
-                {
-                    warn!("Failed to notify validators via WebSocket: {}", e);
-                }
-            });
-        }
-    }
+    // Note: WebSocket notification to validators happens after compilation
+    // in compile_worker via notify_validators_binary_ready()
 
     Ok(Json(SubmitAgentResponse {
         success: true,

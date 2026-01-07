@@ -1533,10 +1533,14 @@ pub async fn run_server_with_mode(
             // Create a separate WebSocket client for the compile worker
             let compile_ws_client = crate::platform_ws_client::create_from_env().await;
 
+            // Get platform URL for validator assignment
+            let compile_platform_url = state.platform_client.base_url().to_string();
+
             crate::compile_worker::spawn_compile_worker(
                 Arc::new(pg.clone()),
                 compile_ws_client.map(Arc::new),
                 crate::compile_worker::CompileWorkerConfig::default(),
+                compile_platform_url,
             );
         }
     }
