@@ -646,7 +646,7 @@ impl AgentQueue {
         let config = TrialConfig {
             trial_name: container_name.to_string(),
             output_dir: output_dir.clone(),
-            max_steps: 50,
+            max_steps: 200,
             timeout_multiplier: 1.0,
             force_build: false,
             delete_container: true,

@@ -141,8 +141,8 @@ RULES:
             msg.push_str(&format!("\nEXIT CODE: {}", code));
         }
         if let Some(out) = &req.output {
-            let truncated = if out.len() > 4000 {
-                format!("{}...[truncated]", &out[..4000])
+            let truncated = if out.len() > 16000 {
+                format!("{}...[truncated]", &out[..16000])
             } else {
                 out.clone()
             };

@@ -25,10 +25,10 @@ pub const MAX_COST_LIMIT_USD: f64 = 100.0;
 pub const DEFAULT_COST_LIMIT_USD: f64 = 10.0;
 
 /// Maximum number of validators per agent evaluation
-pub const MAX_VALIDATORS_PER_AGENT: i32 = 3;
+pub const MAX_VALIDATORS_PER_AGENT: i32 = 2;
 
 /// Maximum log size per field (1 MB)
-const MAX_LOG_SIZE: usize = 1024 * 1024;
+const MAX_LOG_SIZE: usize = 4 * 1024 * 1024; // 4MB
 
 /// Truncate log string to maximum size
 fn truncate_log(log: Option<String>) -> Option<String> {

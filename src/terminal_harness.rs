@@ -59,9 +59,9 @@ pub struct HarnessConfig {
 impl Default for HarnessConfig {
     fn default() -> Self {
         Self {
-            max_steps: 50,
+            max_steps: 200,
             step_timeout_secs: 60,
-            total_timeout_secs: 300,
+            total_timeout_secs: 600,
             working_dir: "/app".to_string(),
         }
     }

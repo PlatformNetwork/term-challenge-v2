@@ -28,7 +28,7 @@ use tracing::{debug, error, info, warn};
 const TASKS_PER_AGENT: usize = 30;
 
 /// Number of validators to assign per agent
-const VALIDATORS_PER_AGENT: usize = 3;
+const VALIDATORS_PER_AGENT: usize = 2;
 
 /// Dataset to load tasks from
 const TASK_DATASET_NAME: &str = "terminal-bench";

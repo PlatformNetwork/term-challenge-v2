@@ -277,7 +277,7 @@ impl TaskEvaluator {
         // Run the agent with two-container architecture
         let instruction = task.instruction();
         info!(
-            "Running agent (max_steps=50, timeout={}s)",
+            "Running agent (max_steps=200, timeout={}s)",
             task.config.timeout_secs
         );
         let harness_result = self
@@ -287,7 +287,7 @@ impl TaskEvaluator {
                 &language,
                 instruction,
                 task.config.timeout_secs as u64,
-                50, // max_steps
+                200, // max_steps
             )
             .await;
 

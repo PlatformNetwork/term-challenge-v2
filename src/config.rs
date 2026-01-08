@@ -338,14 +338,14 @@ pub struct EvaluationConfig {
 }
 
 fn default_max_steps() -> Option<u32> {
-    Some(100)
+    Some(200)
 }
 
 impl Default for EvaluationConfig {
     fn default() -> Self {
         Self {
             tasks_per_evaluation: 30,
-            max_steps_per_task: Some(100),
+            max_steps_per_task: Some(200),
             randomize_tasks: true,
             save_intermediate: true,
             realtime_progress: true,
