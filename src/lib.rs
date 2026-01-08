@@ -35,6 +35,7 @@ pub mod agent_registry;
 pub mod agent_submission;
 pub mod assignment_monitor;
 pub mod bench;
+pub mod block_sync;
 pub mod blockchain_evaluation;
 pub mod challenge;
 pub mod code_visibility;
@@ -45,6 +46,7 @@ pub mod container_backend;
 pub mod docker;
 pub mod emission;
 pub mod encrypted_api_key;
+pub mod epoch;
 pub mod evaluation_orchestrator;
 pub mod evaluation_pipeline;
 pub mod evaluator;
@@ -120,6 +122,7 @@ pub use agent_registry::{AgentEntry, AgentNameEntry, AgentRegistry, AgentStatus,
 pub use agent_submission::{
     AgentSubmission, AgentSubmissionHandler, SubmissionError, SubmissionStatus,
 };
+pub use block_sync::{BlockSync, BlockSyncConfig, BlockSyncEvent, NetworkStateResponse};
 pub use blockchain_evaluation::{
     AggregatedResult, BlockchainEvaluationManager, EvaluationContract, EvaluationError,
     EvaluationSubmission, MINIMUM_STAKE_RAO, MINIMUM_VALIDATORS, SUCCESS_CODE_PREFIX,
@@ -152,6 +155,10 @@ pub use emission::{
 pub use encrypted_api_key::{
     decode_ss58, decrypt_api_key, encode_ss58, encrypt_api_key, parse_hotkey, ApiKeyConfig,
     ApiKeyConfigBuilder, ApiKeyError, EncryptedApiKey, SecureSubmitRequest, SS58_PREFIX,
+};
+pub use epoch::{
+    create_epoch_calculator, EpochCalculator, EpochPhase, EpochState, EpochTransition,
+    SharedEpochCalculator, DEFAULT_TEMPO, EPOCH_ZERO_START_BLOCK,
 };
 pub use evaluation_pipeline::{
     AgentSubmission as PipelineAgentSubmission, EvaluationPipeline,

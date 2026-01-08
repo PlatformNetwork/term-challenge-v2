@@ -8,6 +8,7 @@
 //! API keys are encrypted at rest using ChaCha20-Poly1305.
 
 use crate::encrypted_api_key::{self, ApiKeyError};
+use crate::epoch::EpochCalculator;
 use crate::migrations;
 use anyhow::Result;
 use deadpool_postgres::{Config, Pool, Runtime};
@@ -2365,6 +2366,22 @@ impl PgStorage {
             )
             .await?;
         Ok(())
+    }
+
+    /// Calculate epoch from block number using term-challenge epoch formula
+    ///
+    /// This uses the epoch calculator which defines:
+    /// - Epoch 0 starts at block 7,276,080
+    /// - Each epoch is `tempo` blocks (default 360)
+    pub fn calculate_epoch_from_block(block: u64) -> i64 {
+        let calculator = EpochCalculator::new();
+        calculator.epoch_from_block(block) as i64
+    }
+
+    /// Calculate epoch from block with custom tempo
+    pub fn calculate_epoch_from_block_with_tempo(block: u64, tempo: u64) -> i64 {
+        let calculator = EpochCalculator::with_tempo(tempo);
+        calculator.epoch_from_block(block) as i64
     }
 
     // ========================================================================

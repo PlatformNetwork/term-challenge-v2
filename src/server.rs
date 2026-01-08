@@ -21,8 +21,10 @@ use crate::bench::external_agent::ExternalAgent;
 use crate::bench::registry::{Dataset, RegistryClient, TaskSource};
 use crate::bench::runner::{TrialConfig, TrialRunner};
 use crate::bench::task::Task;
+use crate::block_sync::{BlockSync, BlockSyncConfig};
 use crate::central_client::PlatformClient;
 use crate::config::ChallengeConfig;
+use crate::epoch::{create_epoch_calculator, SharedEpochCalculator};
 use crate::llm_review::{LlmConfig, LlmProvider, LlmReviewManager};
 use crate::pg_storage::PgStorage;
 use crate::python_whitelist::{PythonWhitelist, WhitelistConfig};
@@ -83,6 +85,8 @@ pub struct ChallengeServerState {
     pub pg_storage: Option<PgStorage>,
     /// Authentication manager for validator whitelist
     pub auth_manager: AuthManager,
+    /// Epoch calculator for block-based epoch tracking
+    pub epoch_calculator: SharedEpochCalculator,
 }
 
 impl ChallengeServerState {
@@ -125,7 +129,18 @@ impl ChallengeServerState {
             test_mode,
             pg_storage,
             auth_manager: AuthManager::with_whitelist(validator_whitelist),
+            epoch_calculator: create_epoch_calculator(),
         }
+    }
+
+    /// Get the current epoch from the epoch calculator
+    pub fn current_epoch(&self) -> u64 {
+        self.epoch_calculator.current_epoch()
+    }
+
+    /// Get the current block from the epoch calculator
+    pub fn current_block(&self) -> u64 {
+        self.epoch_calculator.last_block()
     }
 
     /// Check if running in server mode (with PostgreSQL storage)
@@ -1310,6 +1325,34 @@ pub async fn run_server_with_mode(
         validator_whitelist,
     ));
 
+    // Initialize block sync to keep epoch in sync with the blockchain
+    // This fetches current block/tempo from platform and polls for updates
+    info!("Initializing block sync for epoch tracking...");
+    let block_sync_config = BlockSyncConfig {
+        platform_url: platform_url.to_string(),
+        poll_interval_secs: 12, // ~1 block
+        ..Default::default()
+    };
+    let block_sync = BlockSync::new(
+        block_sync_config,
+        state.epoch_calculator.clone(),
+        state.pg_storage.as_ref().map(|pg| Arc::new(pg.clone())),
+    );
+
+    // Start block sync (polls platform for block updates and syncs epoch)
+    if let Err(e) = block_sync.start().await {
+        warn!(
+            "Failed to start block sync: {} (epoch tracking may be delayed)",
+            e
+        );
+    } else {
+        info!(
+            "Block sync started: epoch_zero_start_block={}, tempo={}",
+            crate::epoch::EPOCH_ZERO_START_BLOCK,
+            state.epoch_calculator.tempo()
+        );
+    }
+
     // Pre-download tasks at startup
     info!(
         "Pre-downloading tasks for dataset: {}",
@@ -1589,6 +1632,16 @@ pub async fn run_server_with_mode(
         } else {
             "VALIDATOR (API only)"
         }
+    );
+    info!(
+        "║  Epoch Config: start_block={}, tempo={}             ║",
+        crate::epoch::EPOCH_ZERO_START_BLOCK,
+        state.epoch_calculator.tempo()
+    );
+    info!(
+        "║  Current: block={}, epoch={}                           ║",
+        state.current_block(),
+        state.current_epoch()
     );
     info!("╠══════════════════════════════════════════════════════════════╣");
     info!("║  Endpoints:                                                  ║");
