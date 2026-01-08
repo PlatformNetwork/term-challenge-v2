@@ -322,8 +322,8 @@ impl Default for DynamicPricing {
         output_prices.insert("claude-3-5-sonnet-20241022".to_string(), 0.015);
 
         Self {
-            max_cost_per_task_usd: 0.50,
-            max_total_cost_usd: 10.0,
+            max_cost_per_task_usd: 2.50,
+            max_total_cost_usd: 80.0,
             input_token_prices: input_prices,
             output_token_prices: output_prices,
             updated_at: Utc::now(),

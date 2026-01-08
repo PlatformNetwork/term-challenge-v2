@@ -62,7 +62,7 @@ __version__ = "1.0.0"
 from .types import Request, Response, Tool, FunctionCall, HistoryEntry
 from .agent import Agent
 from .runner import run, run_stdio, log, log_error, set_logging
-from .llm import LLM, LLMResponse, LLMError
+from .llm import LLM, LLMResponse, LLMError, CostLimitExceeded
 
 # Aliases for compatibility
 AgentRequest = Request
@@ -84,6 +84,7 @@ __all__ = [
     "LLM",
     "LLMResponse",
     "LLMError",
+    "CostLimitExceeded",
     # Function calling
     "Tool",
     "FunctionCall",

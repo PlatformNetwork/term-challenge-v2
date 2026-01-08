@@ -22,7 +22,7 @@ pub const EPOCHS_BETWEEN_SUBMISSIONS: i64 = 3;
 pub const MAX_COST_LIMIT_USD: f64 = 100.0;
 
 /// Default cost limit per validator in USD
-pub const DEFAULT_COST_LIMIT_USD: f64 = 10.0;
+pub const DEFAULT_COST_LIMIT_USD: f64 = 80.0;
 
 /// Maximum number of validators per agent evaluation
 pub const MAX_VALIDATORS_PER_AGENT: i32 = 2;
@@ -1025,7 +1025,7 @@ impl PgStorage {
 
         let row = client
             .query_opt(
-                "SELECT COALESCE(total_cost_usd, 0.0)::FLOAT8, COALESCE(cost_limit_usd, 10.0)::FLOAT8 
+                "SELECT COALESCE(total_cost_usd, 0.0)::FLOAT8, COALESCE(cost_limit_usd, 80.0)::FLOAT8 
                  FROM submissions WHERE agent_hash = $1",
                 &[&agent_hash],
             )
@@ -1166,7 +1166,7 @@ impl PgStorage {
             .query_opt(
                 "SELECT id, agent_hash, miner_hotkey, source_code, source_hash, name, 
                     COALESCE(version, 1), epoch, status, api_key, 
-                    COALESCE(api_provider, 'openrouter'), COALESCE(cost_limit_usd, 10.0)::FLOAT8, 
+                    COALESCE(api_provider, 'openrouter'), COALESCE(cost_limit_usd, 80.0)::FLOAT8, 
                     COALESCE(total_cost_usd, 0.0)::FLOAT8, EXTRACT(EPOCH FROM created_at)::BIGINT
              FROM submissions WHERE agent_hash = $1",
                 &[&agent_hash],
@@ -1206,7 +1206,7 @@ impl PgStorage {
         let row = client
             .query_opt(
                 "SELECT id, agent_hash, miner_hotkey, name, COALESCE(version, 1), epoch, status, 
-                    COALESCE(cost_limit_usd, 10.0)::FLOAT8, COALESCE(total_cost_usd, 0.0)::FLOAT8, 
+                    COALESCE(cost_limit_usd, 80.0)::FLOAT8, COALESCE(total_cost_usd, 0.0)::FLOAT8, 
                     EXTRACT(EPOCH FROM created_at)::BIGINT
              FROM submissions WHERE agent_hash = $1",
                 &[&agent_hash],
@@ -1233,7 +1233,7 @@ impl PgStorage {
         let rows = client
             .query(
                 "SELECT id, agent_hash, miner_hotkey, name, COALESCE(version, 1), epoch, status, 
-                    COALESCE(cost_limit_usd, 10.0)::FLOAT8, COALESCE(total_cost_usd, 0.0)::FLOAT8, 
+                    COALESCE(cost_limit_usd, 80.0)::FLOAT8, COALESCE(total_cost_usd, 0.0)::FLOAT8, 
                     EXTRACT(EPOCH FROM created_at)::BIGINT
              FROM submissions WHERE miner_hotkey = $1 ORDER BY created_at DESC",
                 &[&miner_hotkey],

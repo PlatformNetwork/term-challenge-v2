@@ -10,6 +10,7 @@ import signal
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from .types import Request, Response
 from .agent import Agent
+from .llm import CostLimitExceeded
 
 
 # Default port for HTTP server
@@ -77,6 +78,19 @@ class AgentHandler(BaseHTTPRequestHandler):
                 self.send_header('Content-Length', len(response_json))
                 self.end_headers()
                 self.wfile.write(response_json.encode('utf-8'))
+                
+            except CostLimitExceeded as e:
+                # Fatal error - agent must stop immediately
+                log_error(f"Cost limit exceeded: {e.message}")
+                log(f"Agent stopping: ${e.used:.4f} used of ${e.limit:.4f} limit")
+                done_response = Response.done(
+                    f"Cost limit exceeded: ${e.used:.2f} of ${e.limit:.2f}"
+                ).to_json()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', len(done_response))
+                self.end_headers()
+                self.wfile.write(done_response.encode('utf-8'))
                 
             except Exception as e:
                 log_error(f"Error in solve(): {e}")
@@ -202,6 +216,12 @@ def run_stdio(agent: Agent) -> None:
                 
                 if response.task_complete:
                     break
+            except CostLimitExceeded as e:
+                # Fatal error - agent must stop immediately
+                log_error(f"Cost limit exceeded: {e.message}")
+                log(f"Agent stopping: ${e.used:.4f} used of ${e.limit:.4f} limit")
+                print(Response.done(f"Cost limit exceeded: ${e.used:.2f} of ${e.limit:.2f}").to_json(), flush=True)
+                break
             except Exception as e:
                 error_count += 1
                 log_error(f"Error in solve(): {e}")

@@ -980,6 +980,10 @@ impl ValidatorWorker {
         let mut accumulated_stderr = String::new();
         let mut consecutive_empty_steps: usize = 0;
 
+        // Track repeated error commands to detect stuck agents
+        let mut last_error_command: Option<String> = None;
+        let mut consecutive_error_commands: usize = 0;
+
         for step in 1..=MAX_STEPS {
             let input = serde_json::json!({
                 "instruction": instruction,
@@ -1070,7 +1074,30 @@ impl ValidatorWorker {
             // Get command to execute - detect empty commands as dead steps
             let command = match response["command"].as_str() {
                 Some(cmd) if !cmd.is_empty() => {
-                    consecutive_empty_steps = 0; // Reset on valid command
+                    // Check for repeated error commands (agent returning same error in loop)
+                    if cmd.starts_with("echo 'AGENT ERROR:")
+                        || cmd.starts_with("echo \"AGENT ERROR:")
+                    {
+                        if last_error_command.as_deref() == Some(cmd) {
+                            consecutive_error_commands += 1;
+                            if consecutive_error_commands >= MAX_CONSECUTIVE_EMPTY_STEPS {
+                                warn!(
+                                    "Agent stuck: returning same error {} times, aborting: {}",
+                                    consecutive_error_commands,
+                                    &cmd[..cmd.len().min(100)]
+                                );
+                                return Ok((false, accumulated_stderr, step as i32));
+                            }
+                        } else {
+                            last_error_command = Some(cmd.to_string());
+                            consecutive_error_commands = 1;
+                        }
+                    } else {
+                        // Valid non-error command - reset counters
+                        consecutive_empty_steps = 0;
+                        last_error_command = None;
+                        consecutive_error_commands = 0;
+                    }
                     cmd.to_string()
                 }
                 _ => {

@@ -67,7 +67,7 @@ impl InContainerAgentConfig {
             validator_hotkey,
             api_key: None,
             api_provider: "openrouter".to_string(),
-            cost_limit_usd: 10.0,
+            cost_limit_usd: 80.0,
         }
     }
 

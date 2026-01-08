@@ -258,8 +258,8 @@ impl Default for PricingConfig {
         output_prices.insert("claude-3-opus-20240229".to_string(), 0.075);
 
         Self {
-            max_cost_per_task_usd: 0.50, // Max $0.50 per task
-            max_total_cost_usd: 10.0,    // Max $10 total per evaluation
+            max_cost_per_task_usd: 2.50, // Max $2.50 per task
+            max_total_cost_usd: 80.0,    // Max $80 total per evaluation
             track_costs: true,
             fail_on_cost_exceeded: true,
             input_token_prices: input_prices,

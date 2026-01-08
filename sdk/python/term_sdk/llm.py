@@ -77,6 +77,30 @@ class LLMError(Exception):
         return f"LLMError({self.code}): {self.message}"
 
 
+class CostLimitExceeded(LLMError):
+    """
+    Fatal error: cost limit reached, agent should stop immediately.
+    
+    This exception is raised when the agent has exhausted its LLM budget.
+    The agent runner will catch this and gracefully terminate the task.
+    
+    Attributes:
+        limit: The cost limit in USD
+        used: The amount used in USD
+    """
+    def __init__(self, message: str, limit: float = 0.0, used: float = 0.0):
+        self.limit = limit
+        self.used = used
+        super().__init__(
+            code="cost_limit_exceeded",
+            message=message,
+            details={"limit": limit, "used": used}
+        )
+    
+    def __str__(self) -> str:
+        return f"CostLimitExceeded: ${self.used:.4f} used of ${self.limit:.4f} limit"
+
+
 @dataclass
 class LLMResponse:
     """Response from LLM."""
@@ -462,6 +486,24 @@ class LLM:
                     error_msg = data.get("error", response.text)
                 except Exception:
                     error_msg = response.text
+                
+                # Check for cost_limit_exceeded - this is fatal, agent must stop
+                error_str = str(error_msg).lower()
+                if "cost_limit_exceeded" in error_str or "cost limit" in error_str:
+                    # Try to parse limit and used from error message
+                    # Format: "cost_limit_exceeded: $X.XX used of $Y.YY limit"
+                    import re
+                    limit, used = 0.0, 0.0
+                    match = re.search(r'\$?([\d.]+)\s*used\s*of\s*\$?([\d.]+)', error_str)
+                    if match:
+                        used = float(match.group(1))
+                        limit = float(match.group(2))
+                    raise CostLimitExceeded(
+                        message=str(error_msg),
+                        limit=limit,
+                        used=used
+                    )
+                
                 raise LLMError(
                     code="proxy_error",
                     message=str(error_msg),
@@ -653,6 +695,22 @@ class LLM:
                         error_msg = error_data.get("error", error_text)
                     except Exception:
                         error_msg = f"HTTP {response.status_code}"
+                    
+                    # Check for cost_limit_exceeded - this is fatal
+                    error_str = str(error_msg).lower()
+                    if "cost_limit_exceeded" in error_str or "cost limit" in error_str:
+                        import re
+                        limit, used = 0.0, 0.0
+                        match = re.search(r'\$?([\d.]+)\s*used\s*of\s*\$?([\d.]+)', error_str)
+                        if match:
+                            used = float(match.group(1))
+                            limit = float(match.group(2))
+                        raise CostLimitExceeded(
+                            message=str(error_msg),
+                            limit=limit,
+                            used=used
+                        )
+                    
                     raise LLMError(
                         code="proxy_error",
                         message=str(error_msg),

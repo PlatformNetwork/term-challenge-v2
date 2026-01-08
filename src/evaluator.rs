@@ -456,11 +456,32 @@ impl TaskEvaluator {
 
         if !agent_ready {
             // Check stderr for errors
-            let log_result = agent_container.exec(&["cat", "/agent/stderr.log"]).await;
-            let stderr = log_result.map(|r| r.output()).unwrap_or_default();
+            let stderr_result = agent_container.exec(&["cat", "/agent/stderr.log"]).await;
+            let stderr = stderr_result.map(|r| r.output()).unwrap_or_default();
+
+            // Also check stdout for more context
+            let stdout_result = agent_container.exec(&["cat", "/agent/stdout.log"]).await;
+            let stdout = stdout_result.map(|r| r.output()).unwrap_or_default();
+
+            // Log detailed error info
+            error!(
+                "Agent HTTP server failed to start. stderr: {}, stdout: {}",
+                if stderr.is_empty() {
+                    "(empty)"
+                } else {
+                    &stderr[..stderr.len().min(500)]
+                },
+                if stdout.is_empty() {
+                    "(empty)"
+                } else {
+                    &stdout[..stdout.len().min(500)]
+                }
+            );
+
             return Err(anyhow::anyhow!(
-                "Agent HTTP server failed to start: {}",
-                stderr
+                "Agent HTTP server failed to start. stderr: {}, stdout: {}",
+                stderr,
+                stdout
             ));
         }
 
@@ -472,6 +493,12 @@ impl TaskEvaluator {
         let mut last_exit_code: Option<i32> = None;
         let mut cwd = "/app".to_string();
         let mut task_complete = false;
+
+        // Track consecutive empty/error responses to detect stuck agents
+        const MAX_CONSECUTIVE_EMPTY: u32 = 3;
+        let mut consecutive_empty_responses: u32 = 0;
+        let mut last_error_command: Option<String> = None;
+        let mut consecutive_error_commands: u32 = 0;
 
         for step in 1..=max_steps {
             // Check timeout
@@ -544,6 +571,55 @@ impl TaskEvaluator {
                 task_complete = true;
                 steps.push((response.command.clone(), String::new(), 0));
                 break;
+            }
+
+            // Check for empty response (no command and not complete) - agent might be stuck
+            let is_empty_response = response
+                .command
+                .as_ref()
+                .map(|c| c.is_empty())
+                .unwrap_or(true);
+            if is_empty_response {
+                consecutive_empty_responses += 1;
+                warn!(
+                    "Empty response from agent at step {} ({}/{} consecutive)",
+                    step, consecutive_empty_responses, MAX_CONSECUTIVE_EMPTY
+                );
+                if consecutive_empty_responses >= MAX_CONSECUTIVE_EMPTY {
+                    warn!(
+                        "Agent stuck: {} consecutive empty responses, aborting task",
+                        consecutive_empty_responses
+                    );
+                    break;
+                }
+                // Skip execution, continue to next step
+                steps.push((None, String::new(), 0));
+                continue;
+            }
+
+            // Check for repeated error commands (agent returning same error in loop)
+            if let Some(ref cmd) = response.command {
+                if cmd.starts_with("echo 'AGENT ERROR:") || cmd.starts_with("echo \"AGENT ERROR:") {
+                    if last_error_command.as_ref() == Some(cmd) {
+                        consecutive_error_commands += 1;
+                        if consecutive_error_commands >= MAX_CONSECUTIVE_EMPTY {
+                            warn!(
+                                "Agent stuck: returning same error {} times, aborting: {}",
+                                consecutive_error_commands,
+                                &cmd[..cmd.len().min(100)]
+                            );
+                            break;
+                        }
+                    } else {
+                        last_error_command = Some(cmd.clone());
+                        consecutive_error_commands = 1;
+                    }
+                } else {
+                    // Valid non-error command - reset counters
+                    consecutive_empty_responses = 0;
+                    last_error_command = None;
+                    consecutive_error_commands = 0;
+                }
             }
 
             // Execute command in TASK container (has task-specific tools)

@@ -261,7 +261,7 @@ impl LlmClient {
             api_key,
             temperature: 0.7,
             max_tokens: 4096,
-            cost_tracker: CostTracker::new(10.0), // Default $10 budget
+            cost_tracker: CostTracker::new(80.0), // Default $80 budget
         })
     }
 
