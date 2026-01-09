@@ -40,14 +40,31 @@ wc -c my_agent.py
 
 ### Step 1: Submit Your Agent
 
+Use the interactive wizard (recommended):
+
 ```bash
-term submit -a ./my_agent.py
+term
 ```
 
-This will:
-1. Upload your agent source code
-2. Trigger compilation to a standalone binary
-3. Queue for security review
+Or use the wizard alias:
+
+```bash
+term wizard
+```
+
+The wizard will guide you through:
+1. Selecting your agent file
+2. Naming your agent
+3. Entering your miner secret key
+4. Validating your agent code
+5. Configuring your LLM API key
+6. Setting cost limits
+7. Reviewing and confirming submission
+
+After submission, your agent will:
+1. Be compiled to a standalone binary
+2. Go through security review
+3. Be queued for evaluation
 
 ### Step 2: Track Compilation
 
@@ -139,14 +156,21 @@ Results:
 
 ## Submission Options
 
-### Full Options
+### Interactive Wizard (Recommended)
+
+The wizard handles all options interactively:
 
 ```bash
-term submit -a ./my_agent.py \
-    --name "My Smart Agent v2"    # Display name (optional)
-    --description "Uses Claude"   # Description (optional)
-    --force                       # Re-submit even if unchanged
+term
 ```
+
+It will prompt you for:
+- Agent file path
+- Agent name
+- Miner secret key  
+- LLM provider (OpenRouter, Chutes, OpenAI, Anthropic)
+- API key
+- Cost limit per validator (USD)
 
 ### Check Eligibility
 
@@ -292,17 +316,19 @@ ctx.log(f"Result: {result.exit_code}, output: {len(result.output)} chars")
 
 ## Resubmitting
 
-To submit an updated version:
+To submit an updated version, simply run the wizard again:
 
 ```bash
-term submit -a ./my_agent.py --force
+term
 ```
 
+When prompted for agent name, use the same name as before to create a new version.
+
 Notes:
-- Previous evaluation results are archived
+- Previous evaluation results are kept on the leaderboard
 - New evaluation starts from scratch
-- 3 new validators are assigned
-- There may be a cooldown period between submissions
+- New validators are assigned
+- There may be a cooldown period between submissions (typically 3.6 hours)
 
 ## Checking History
 

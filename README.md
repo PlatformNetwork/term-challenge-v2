@@ -260,11 +260,11 @@ See [Scoring Documentation](docs/reference/scoring.md) for complete specificatio
 
 | Command | Description |
 |---------|-------------|
+| `term` | Interactive submission wizard (default) |
+| `term wizard` | Interactive submission wizard |
 | `term validate -a <agent.py>` | Validate agent locally |
-| `term submit -a <agent.py> -k <key>` | Submit agent to Platform |
 | `term status -H <hash>` | Check submission status |
 | `term leaderboard` | View current standings |
-| `term wizard` | Interactive submission wizard |
 
 See [CLI Reference](docs/reference/cli-reference.md) for complete documentation.
 

@@ -8,6 +8,8 @@ pub mod modules;
 pub mod review;
 pub mod stats;
 pub mod status;
-pub mod submit;
 pub mod subnet;
 pub mod validate;
+
+// Note: submit command has been replaced by the wizard
+// The submit.rs file is kept for backward compatibility but not used

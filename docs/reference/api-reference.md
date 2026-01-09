@@ -164,24 +164,26 @@ term review -a <agent-path> [options]
 
 ---
 
-### term submit
+### term wizard (default)
 
-Submit agent to Platform network.
+Interactive submission wizard - the recommended way to submit agents.
 
 ```bash
-term submit -a <agent-path> -k <key> [options]
+term
+# or
+term wizard
 ```
 
-**Options:**
+The wizard guides you through:
+1. Agent file selection
+2. Agent naming
+3. Miner key entry
+4. Validation
+5. API key configuration
+6. Cost limit setup
+7. Review and submission
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-a, --agent <path>` | (required) | Agent file |
-| `-k, --key <key>` | (required) | Miner secret key (hex or mnemonic) |
-| `--name <name>` | None | Agent name |
-| `--api-key <key>` | None | LLM API key to encrypt for validators |
-| `--per-validator` | `false` | Use per-validator API keys |
-| `--api-keys-file <path>` | None | JSON file with per-validator keys |
+**Aliases:** `term`, `term wizard`, `term w`, `term submit`, `term s`
 
 ---
 

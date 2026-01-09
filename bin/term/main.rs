@@ -46,44 +46,14 @@ struct Cli {
     verbose: bool,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Interactive submission wizard (recommended for first-time users)
-    #[command(visible_alias = "w")]
+    /// Interactive submission wizard - guided agent submission (default command)
+    #[command(visible_aliases = ["w", "submit", "s"])]
     Wizard,
-
-    /// Submit an agent to the network
-    #[command(visible_alias = "s")]
-    Submit {
-        /// Path to the agent Python file
-        #[arg(short, long)]
-        agent: std::path::PathBuf,
-
-        /// Your miner secret key (hex or mnemonic)
-        #[arg(short, long, env = "MINER_SECRET_KEY")]
-        key: String,
-
-        /// Agent name (optional)
-        #[arg(long)]
-        name: Option<String>,
-
-        /// LLM API key (OpenRouter recommended)
-        #[arg(long, env = "LLM_API_KEY")]
-        api_key: Option<String>,
-
-        /// LLM provider: openrouter, chutes, openai, anthropic
-        #[arg(long, default_value = "openrouter")]
-        provider: String,
-
-        /// Maximum cost limit per validator in USD (0-100, default: 10)
-        /// Your agent will be evaluated by up to 3 validators.
-        /// IMPORTANT: Set a credit limit on your API key provider!
-        #[arg(long, default_value = "10.0")]
-        cost_limit: f64,
-    },
 
     /// Check agent status and results
     #[command(visible_alias = "st")]
@@ -285,27 +255,11 @@ async fn main() {
         tracing_subscriber::fmt().with_env_filter("info").init();
     }
 
-    let result = match cli.command {
+    // Default to wizard if no command specified
+    let command = cli.command.unwrap_or(Commands::Wizard);
+
+    let result = match command {
         Commands::Wizard => wizard::run_submit_wizard(&cli.rpc).await,
-        Commands::Submit {
-            agent,
-            key,
-            name,
-            api_key,
-            provider,
-            cost_limit,
-        } => {
-            commands::submit::run(
-                &cli.rpc,
-                agent,
-                key,
-                name,
-                api_key,
-                provider,
-                Some(cost_limit),
-            )
-            .await
-        }
         Commands::Status { hash, watch } => commands::status::run(&cli.rpc, hash, watch).await,
         Commands::Leaderboard { limit } => commands::leaderboard::run(&cli.rpc, limit).await,
         Commands::Validate { agent } => commands::validate::run(agent).await,

@@ -222,37 +222,33 @@ term validate -a ./my_agent.py
 #   Agent ready for submission
 ```
 
-### Submit Agent
+### Submit Agent (Wizard)
 
 ```bash
-term submit -a <AGENT_PATH> -k <SECRET_KEY> [OPTIONS]
+term wizard
+# or simply:
+term
 ```
 
-Submits an agent to the Platform network for evaluation.
+The interactive wizard guides you through the entire submission process:
 
-| Option | Description |
-|--------|-------------|
-| `-a, --agent <PATH>` | Path to agent file (required) |
-| `-k, --key <KEY>` | Miner secret key - hex or mnemonic (required) |
-| `--name <NAME>` | Agent name (optional) |
-| `--api-key <KEY>` | LLM API key to encrypt for validators |
-| `--per-validator` | Use per-validator API keys |
-| `--api-keys-file <PATH>` | JSON file with per-validator keys |
+1. **Select agent file** - Enter path to your Python agent
+2. **Choose agent name** - Name your agent (alphanumeric, dash, underscore)
+3. **Enter miner key** - Your secret key (hex or mnemonic)
+4. **Validate agent** - Automatic syntax & security checks
+5. **Configure API key** - Select provider and enter API key
+6. **Set cost limit** - Maximum cost per validator in USD
+7. **Review & submit** - Confirm and submit to network
 
-**Examples:**
+**Aliases:** `term`, `term wizard`, `term w`, `term submit`, `term s`
+
+**Example:**
 ```bash
-# Basic submission
-term submit -a ./my_agent.py -k "your mnemonic phrase here"
+# Launch the interactive wizard
+term
 
-# With encrypted API key
-term submit -a ./my_agent.py \
-    -k "$MINER_SECRET_KEY" \
-    --api-key "$OPENROUTER_API_KEY"
-
-# With agent name
-term submit -a ./my_agent.py \
-    -k "$MINER_SECRET_KEY" \
-    --name "MyAwesomeAgent"
+# Same as above
+term wizard
 ```
 
 ### Check Status
@@ -458,10 +454,8 @@ term validate -a ./my_agent.py
 # 7. LLM review (optional - check against blockchain rules)
 term review -a ./my_agent.py --api-key "$OPENROUTER_API_KEY"
 
-# 8. Submit to network
-term submit -a ./my_agent.py \
-    -k "$MINER_SECRET_KEY" \
-    --api-key "$OPENROUTER_API_KEY"
+# 8. Submit to network (interactive wizard)
+term
 
 # 9. Check status
 term status -H <returned-hash> --watch
