@@ -472,6 +472,7 @@ async fn run_agent_in_container(
     let max_poll = Duration::from_secs(config.timeout_secs + 60);
     let mut agent_completed = false;
     let mut steps = 0u32;
+    let mut last_log_lines = 0usize;
 
     info!("Polling /status...");
     loop {
@@ -511,16 +512,18 @@ async fn run_agent_in_container(
             _ => {}
         }
 
-        // Print agent logs periodically
-        if poll_start.elapsed().as_secs().is_multiple_of(5) {
-            let stderr = env
-                .exec(&["tail", "-5", "/agent/stderr.log"])
-                .await
-                .map(|r| r.stdout)
-                .unwrap_or_default();
-            for line in stderr.lines() {
+        // Print new agent logs
+        let stderr = env
+            .exec_shell("cat /agent/stderr.log 2>/dev/null || true")
+            .await
+            .map(|r| r.stdout)
+            .unwrap_or_default();
+        let lines: Vec<&str> = stderr.lines().collect();
+        if lines.len() > last_log_lines {
+            for line in &lines[last_log_lines..] {
                 eprintln!("\x1b[90m[agent]\x1b[0m {}", line);
             }
+            last_log_lines = lines.len();
         }
     }
 
