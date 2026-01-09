@@ -962,6 +962,480 @@ impl ContainerHandle for WsBrokerContainerHandle {
 }
 
 // =============================================================================
+// DIRECT DOCKER BACKEND (Development/Local)
+// =============================================================================
+
+use bollard::container::{
+    Config as BollardConfig, CreateContainerOptions, LogOutput, RemoveContainerOptions,
+    StartContainerOptions, StopContainerOptions,
+};
+use bollard::exec::{CreateExecOptions, StartExecResults};
+use bollard::image::{BuildImageOptions, CreateImageOptions};
+use bollard::models::HostConfig;
+use bollard::Docker;
+
+/// Direct Docker backend for local development/testing
+///
+/// Uses the bollard crate to communicate directly with Docker daemon.
+/// This is used when no broker is available (local development).
+pub struct DirectDockerBackend {
+    docker: Docker,
+    challenge_id: String,
+}
+
+impl DirectDockerBackend {
+    /// Create a new DirectDockerBackend connected to local Docker
+    pub async fn new() -> Result<Self> {
+        let docker = Docker::connect_with_local_defaults()
+            .map_err(|e| anyhow::anyhow!("Failed to connect to Docker: {}", e))?;
+
+        // Verify Docker is running
+        docker
+            .ping()
+            .await
+            .map_err(|e| anyhow::anyhow!("Docker is not running: {}", e))?;
+
+        let challenge_id =
+            std::env::var("CHALLENGE_ID").unwrap_or_else(|_| "term-challenge".to_string());
+
+        Ok(Self {
+            docker,
+            challenge_id,
+        })
+    }
+}
+
+#[async_trait]
+impl ContainerBackend for DirectDockerBackend {
+    async fn create_sandbox(&self, config: SandboxConfig) -> Result<Box<dyn ContainerHandle>> {
+        // Build environment variables
+        let env: Vec<String> = config
+            .env
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+
+        // Build mounts
+        let binds: Vec<String> = config
+            .mounts
+            .iter()
+            .map(|m| {
+                if m.read_only {
+                    format!("{}:{}:ro", m.source, m.target)
+                } else {
+                    format!("{}:{}", m.source, m.target)
+                }
+            })
+            .collect();
+
+        // Container name
+        let container_name = config
+            .name
+            .unwrap_or_else(|| format!("term-sandbox-{}", &uuid::Uuid::new_v4().to_string()[..8]));
+
+        // Host config with security settings
+        let host_config = HostConfig {
+            memory: Some(config.memory_bytes),
+            nano_cpus: Some((config.cpu_cores * 1_000_000_000.0) as i64),
+            network_mode: Some(config.network_mode.clone()),
+            binds: if binds.is_empty() { None } else { Some(binds) },
+            privileged: Some(false),
+            cap_drop: Some(vec!["ALL".to_string()]),
+            cap_add: Some(vec![
+                "CHOWN".to_string(),
+                "SETUID".to_string(),
+                "SETGID".to_string(),
+                "DAC_OVERRIDE".to_string(),
+            ]),
+            security_opt: Some(vec!["no-new-privileges:true".to_string()]),
+            pids_limit: Some(256),
+            auto_remove: Some(config.auto_remove),
+            ..Default::default()
+        };
+
+        let bollard_config = BollardConfig {
+            image: Some(config.image.clone()),
+            hostname: Some(container_name.clone()),
+            cmd: config.cmd.clone(),
+            working_dir: Some(config.working_dir.clone()),
+            env: if env.is_empty() { None } else { Some(env) },
+            tty: Some(false),
+            host_config: Some(host_config),
+            user: config.user.clone(),
+            labels: Some(
+                [
+                    ("term.challenge_id".to_string(), config.challenge_id.clone()),
+                    ("term.owner_id".to_string(), config.owner_id.clone()),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            ..Default::default()
+        };
+
+        // Remove existing container if any
+        let _ = self
+            .docker
+            .remove_container(
+                &container_name,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await;
+
+        // Create container
+        let response = self
+            .docker
+            .create_container(
+                Some(CreateContainerOptions {
+                    name: container_name.as_str(),
+                    platform: None,
+                }),
+                bollard_config,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create container: {}", e))?;
+
+        info!(
+            "Created container via direct Docker: {} ({})",
+            container_name,
+            &response.id[..12]
+        );
+
+        Ok(Box::new(DirectDockerHandle {
+            docker: self.docker.clone(),
+            container_id: response.id,
+            container_name,
+        }))
+    }
+
+    async fn pull_image(&self, image: &str) -> Result<()> {
+        info!("Pulling image: {}", image);
+
+        let mut stream = self.docker.create_image(
+            Some(CreateImageOptions {
+                from_image: image,
+                ..Default::default()
+            }),
+            None,
+            None,
+        );
+
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(info) => {
+                    if let Some(status) = info.status {
+                        debug!("Pull: {}", status);
+                    }
+                }
+                Err(e) => {
+                    bail!("Failed to pull image {}: {}", image, e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn image_exists(&self, image: &str) -> Result<bool> {
+        match self.docker.inspect_image(image).await {
+            Ok(_) => Ok(true),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(false),
+            Err(e) => bail!("Failed to check image {}: {}", image, e),
+        }
+    }
+
+    async fn build_image(&self, tag: &str, dockerfile: &str) -> Result<()> {
+        info!("Building image: {}", tag);
+
+        // Create a tar archive with the Dockerfile
+        let mut ar = tar::Builder::new(Vec::new());
+        let dockerfile_bytes = dockerfile.as_bytes();
+
+        let mut header = tar::Header::new_gnu();
+        header.set_path("Dockerfile")?;
+        header.set_size(dockerfile_bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+
+        ar.append(&header, dockerfile_bytes)?;
+        let tar_data = ar.into_inner()?;
+
+        let options = BuildImageOptions {
+            t: tag,
+            rm: true,
+            ..Default::default()
+        };
+
+        let mut stream = self
+            .docker
+            .build_image(options, None, Some(tar_data.into()));
+
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(info) => {
+                    if let Some(stream) = info.stream {
+                        debug!("Build: {}", stream.trim());
+                    }
+                    if let Some(error) = info.error {
+                        bail!("Build error: {}", error);
+                    }
+                }
+                Err(e) => {
+                    bail!("Build failed: {}", e);
+                }
+            }
+        }
+
+        info!("Successfully built image: {}", tag);
+        Ok(())
+    }
+
+    async fn list_containers(&self, challenge_id: &str) -> Result<Vec<String>> {
+        use bollard::container::ListContainersOptions;
+
+        let mut filters = std::collections::HashMap::new();
+        filters.insert(
+            "label".to_string(),
+            vec![format!("term.challenge_id={}", challenge_id)],
+        );
+
+        let options = ListContainersOptions {
+            all: true,
+            filters,
+            ..Default::default()
+        };
+
+        let containers = self.docker.list_containers(Some(options)).await?;
+        Ok(containers.into_iter().filter_map(|c| c.id).collect())
+    }
+
+    async fn cleanup(&self, challenge_id: &str) -> Result<usize> {
+        let containers = self.list_containers(challenge_id).await?;
+        let mut removed = 0;
+
+        for id in containers {
+            let _ = self
+                .docker
+                .stop_container(&id, Some(StopContainerOptions { t: 5 }))
+                .await;
+            if self
+                .docker
+                .remove_container(
+                    &id,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .is_ok()
+            {
+                removed += 1;
+            }
+        }
+
+        Ok(removed)
+    }
+
+    async fn cleanup_volumes(&self, _challenge_id: &str) -> Result<usize> {
+        // For local development, we don't track volumes by challenge
+        Ok(0)
+    }
+}
+
+/// Direct Docker container handle
+struct DirectDockerHandle {
+    docker: Docker,
+    container_id: String,
+    container_name: String,
+}
+
+#[async_trait]
+impl ContainerHandle for DirectDockerHandle {
+    fn id(&self) -> &str {
+        &self.container_id
+    }
+
+    async fn start(&self) -> Result<Option<String>> {
+        self.docker
+            .start_container(&self.container_id, None::<StartContainerOptions<String>>)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start container: {}", e))?;
+
+        // Get container IP for bridge network
+        let inspect = self
+            .docker
+            .inspect_container(&self.container_id, None)
+            .await?;
+        let ip = inspect
+            .network_settings
+            .and_then(|ns| ns.networks)
+            .and_then(|nets| nets.get("bridge").cloned())
+            .and_then(|net| net.ip_address);
+
+        Ok(ip)
+    }
+
+    async fn stop(&self) -> Result<()> {
+        let _ = self
+            .docker
+            .stop_container(&self.container_id, Some(StopContainerOptions { t: 10 }))
+            .await;
+        Ok(())
+    }
+
+    async fn remove(&self) -> Result<()> {
+        self.docker
+            .remove_container(
+                &self.container_id,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to remove container: {}", e))?;
+        Ok(())
+    }
+
+    async fn exec(&self, cmd: &[&str]) -> Result<ExecOutput> {
+        let exec = self
+            .docker
+            .create_exec(
+                &self.container_id,
+                CreateExecOptions {
+                    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        if let StartExecResults::Attached {
+            output: mut stream, ..
+        } = self.docker.start_exec(&exec.id, None).await?
+        {
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(LogOutput::StdOut { message }) => {
+                        stdout.push_str(&String::from_utf8_lossy(&message));
+                    }
+                    Ok(LogOutput::StdErr { message }) => {
+                        stderr.push_str(&String::from_utf8_lossy(&message));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let inspect = self.docker.inspect_exec(&exec.id).await?;
+        let exit_code = inspect.exit_code.unwrap_or(-1) as i32;
+
+        Ok(ExecOutput {
+            stdout,
+            stderr,
+            exit_code,
+        })
+    }
+
+    async fn logs(&self, tail: usize) -> Result<String> {
+        use bollard::container::LogsOptions;
+
+        let options = LogsOptions::<String> {
+            stdout: true,
+            stderr: true,
+            tail: tail.to_string(),
+            ..Default::default()
+        };
+
+        let mut stream = self.docker.logs(&self.container_id, Some(options));
+        let mut output = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(LogOutput::StdOut { message }) => {
+                    output.push_str(&String::from_utf8_lossy(&message));
+                }
+                Ok(LogOutput::StdErr { message }) => {
+                    output.push_str(&String::from_utf8_lossy(&message));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(output)
+    }
+
+    async fn write_file(&self, path: &str, content: &[u8]) -> Result<()> {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(content);
+
+        // Write in chunks for large files
+        let chunk_size = 50000;
+        let chunks: Vec<&str> = encoded
+            .as_bytes()
+            .chunks(chunk_size)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect();
+
+        // Ensure parent directory exists
+        let parent = std::path::Path::new(path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".to_string());
+        self.exec(&["mkdir", "-p", &parent]).await?;
+
+        // Clear file first
+        let clear_cmd = format!("rm -f {}.b64", path);
+        self.exec(&["sh", "-c", &clear_cmd]).await?;
+
+        for chunk in chunks {
+            let cmd = format!("echo -n '{}' >> {}.b64", chunk, path);
+            self.exec(&["sh", "-c", &cmd]).await?;
+        }
+
+        // Decode
+        let decode_cmd = format!("base64 -d {}.b64 > {} && rm {}.b64", path, path, path);
+        let result = self.exec(&["sh", "-c", &decode_cmd]).await?;
+        if !result.success() {
+            bail!("Failed to write file: {}", result.stderr);
+        }
+
+        Ok(())
+    }
+
+    async fn read_file(&self, path: &str) -> Result<Vec<u8>> {
+        use base64::Engine;
+        // Use -w0 to avoid line wrapping in base64 output
+        let result = self
+            .exec(&["sh", "-c", &format!("base64 -w0 {}", path)])
+            .await?;
+        if !result.success() {
+            bail!("Failed to read file: {}", result.stderr);
+        }
+        // Remove any whitespace/newlines that might have snuck in
+        let clean_b64: String = result
+            .stdout
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&clean_b64)
+            .map_err(|e| anyhow::anyhow!("Failed to decode base64: {}", e))?;
+        Ok(decoded)
+    }
+}
+
+// =============================================================================
 // BACKEND SELECTION
 // =============================================================================
 
@@ -1019,13 +1493,26 @@ pub async fn create_backend() -> Result<Arc<dyn ContainerBackend>> {
         return Ok(Arc::new(secure));
     }
 
-    // No broker available
-    bail!(
-        "No container backend available. \
-         Set CONTAINER_BROKER_WS_URL + CONTAINER_BROKER_JWT for WebSocket broker, \
-         or start broker at {}",
-        DEFAULT_BROKER_SOCKET
-    )
+    // No broker available - fall back to direct Docker for local development
+    info!("No broker available, attempting direct Docker connection (development mode)");
+
+    match DirectDockerBackend::new().await {
+        Ok(backend) => {
+            info!("Using direct Docker backend (development mode)");
+            warn!("⚠️  Direct Docker mode - not for production use");
+            Ok(Arc::new(backend))
+        }
+        Err(e) => {
+            bail!(
+                "No container backend available. \
+                 Set CONTAINER_BROKER_WS_URL + CONTAINER_BROKER_JWT for WebSocket broker, \
+                 or start broker at {}, \
+                 or ensure Docker is running for local development. Error: {}",
+                DEFAULT_BROKER_SOCKET,
+                e
+            )
+        }
+    }
 }
 
 /// Check if running in secure mode (broker available)

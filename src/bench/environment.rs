@@ -439,6 +439,24 @@ impl DockerEnvironment {
         self.container_id.as_deref()
     }
 
+    /// Get container IP address
+    pub async fn container_ip(&self) -> Result<String> {
+        let container_id = self
+            .container_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
+
+        let inspect = self.docker.inspect_container(container_id, None).await?;
+
+        inspect
+            .network_settings
+            .and_then(|ns| ns.networks)
+            .and_then(|nets| nets.get("bridge").cloned())
+            .and_then(|net| net.ip_address)
+            .filter(|ip| !ip.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Failed to get container IP"))
+    }
+
     /// Get logs directory
     pub fn logs_dir(&self) -> &Path {
         &self.logs_dir
@@ -474,6 +492,54 @@ impl DockerEnvironment {
 
         let full_cmd = format!("{} {}", env_str, cmd);
         self.exec_command(&full_cmd, None).await
+    }
+
+    /// Write raw bytes to a file in the container using Docker's upload API
+    pub async fn write_file(&self, container_path: &str, content: &[u8]) -> Result<()> {
+        let container_id = self
+            .container_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
+
+        // Create tar archive with the file
+        let mut tar_data = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_data);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o755); // Executable
+            header.set_cksum();
+
+            let filename = Path::new(container_path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+
+            builder.append_data(&mut header, &*filename, content)?;
+            builder.finish()?;
+        }
+
+        let parent_dir = Path::new(container_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".to_string());
+
+        // Ensure parent directory exists
+        self.exec(&["mkdir", "-p", &parent_dir]).await?;
+
+        self.docker
+            .upload_to_container(
+                container_id,
+                Some(bollard::container::UploadToContainerOptions {
+                    path: parent_dir,
+                    ..Default::default()
+                }),
+                tar_data.into(),
+            )
+            .await
+            .context("Failed to upload file to container")?;
+
+        Ok(())
     }
 }
 

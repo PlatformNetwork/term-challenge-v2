@@ -5,6 +5,7 @@
 //! and verifying results.
 
 pub mod agent;
+pub mod binary_agent;
 pub mod environment;
 pub mod external_agent;
 pub mod in_container_agent;
@@ -17,6 +18,7 @@ pub mod task;
 pub mod verifier;
 
 pub use agent::{create_agent, LlmAgent};
+pub use binary_agent::{run_binary_agent, BinaryAgentConfig, BinaryAgentResult};
 pub use environment::DockerEnvironment;
 pub use external_agent::{create_external_agent, ExternalAgent};
 pub use in_container_agent::{InContainerAgent, InContainerResult, InContainerRunner};

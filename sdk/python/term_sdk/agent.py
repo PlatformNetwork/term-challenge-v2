@@ -107,11 +107,9 @@ class AgentContext:
     def __init__(
         self,
         instruction: str,
-        max_steps: int = 200,
         cwd: str = "/app",
     ):
         self.instruction = instruction
-        self.max_steps = max_steps
         self.cwd = cwd
         
         self._step = 0
@@ -140,11 +138,6 @@ class AgentContext:
         """Seconds elapsed since context creation."""
         return time.time() - self._start_time
     
-    @property
-    def remaining_steps(self) -> int:
-        """Steps remaining before max_steps limit."""
-        return max(0, self.max_steps - self._step)
-    
     def shell(self, cmd: str, timeout: int = 60, cwd: Optional[str] = None) -> ShellResult:
         """
         Execute a shell command.
@@ -159,9 +152,6 @@ class AgentContext:
         """
         if self._done:
             raise RuntimeError("Task already marked as done")
-        
-        if self._step >= self.max_steps:
-            raise RuntimeError(f"Max steps ({self.max_steps}) exceeded")
         
         self._step += 1
         effective_cwd = cwd or self.cwd

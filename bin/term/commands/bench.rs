@@ -1,6 +1,6 @@
 //! Terminal-Bench benchmark commands
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 use term_challenge::bench::{
@@ -12,7 +12,7 @@ use term_challenge::bench::{
     task::Task,
 };
 use tokio::sync::{Mutex, Semaphore};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use uuid::Uuid;
 
 /// Cleanup all bench containers on Ctrl+C
@@ -499,33 +499,32 @@ pub async fn run_benchmark(
 }
 
 /// Run external agent (Python/JavaScript/Rust) on a task
+///
+/// This compiles the agent to a binary and runs it in the task container,
+/// exactly like production validators do.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_external_agent(
     agent_path: PathBuf,
     task_path: PathBuf,
     provider: Option<&str>,
-    model: Option<&str>,
+    _model: Option<&str>,
     api_key: Option<&str>,
     output_dir: Option<PathBuf>,
     timeout_multiplier: f64,
     max_steps: u32,
 ) -> Result<()> {
-    use crate::tui_runner::Spinner;
-    use term_challenge::bench::create_external_agent;
+    use term_challenge::bench::{run_binary_agent, BinaryAgentConfig};
 
     let task = Task::from_path(&task_path)?;
 
-    // Detect language from extension
-    let lang = agent_path
+    // Only Python is supported for now (compiled to binary)
+    let ext = agent_path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| match e {
-            "py" => "Python",
-            "js" | "mjs" | "ts" => "JavaScript",
-            "rs" => "Rust",
-            _ => "Binary",
-        })
-        .unwrap_or("Binary");
+        .unwrap_or("");
+    if ext != "py" {
+        anyhow::bail!("Only Python agents (.py) are supported. Got: .{}", ext);
+    }
 
     // Print header
     println!();
@@ -533,16 +532,12 @@ pub async fn run_external_agent(
     println!("  \x1b[90m{}\x1b[0m", "─".repeat(50));
     println!();
     println!(
-        "  \x1b[90mAgent:\x1b[0m    {} \x1b[90m({})\x1b[0m",
-        agent_path.display(),
-        lang
+        "  \x1b[90mAgent:\x1b[0m    {} \x1b[90m(Python → Binary)\x1b[0m",
+        agent_path.display()
     );
     println!("  \x1b[90mTask:\x1b[0m     \x1b[1m{}\x1b[0m", task.name);
     if let Some(p) = provider {
         println!("  \x1b[90mProvider:\x1b[0m {}", p);
-    }
-    if let Some(m) = model {
-        println!("  \x1b[90mModel:\x1b[0m    {}", m);
     }
     println!();
     println!("  \x1b[90mInstruction:\x1b[0m");
@@ -552,73 +547,45 @@ pub async fn run_external_agent(
     println!();
     println!("  \x1b[90m{}\x1b[0m", "─".repeat(50));
 
-    // Create agent with spinner
-    let mut spinner = Spinner::new("Initializing agent...");
-    spinner.start();
+    // Read source code
+    let source_code = std::fs::read_to_string(&agent_path).context(format!(
+        "Failed to read agent file: {}",
+        agent_path.display()
+    ))?;
 
-    let agent = match create_external_agent(&agent_path, provider, api_key, model).await {
-        Ok(a) => {
-            spinner.stop(true, Some("Agent initialized (Docker)"));
-            a
-        }
-        Err(e) => {
-            spinner.stop(false, Some(&format!("Failed: {}", e)));
-            return Err(e);
-        }
-    };
-
+    // Setup output directory
     let output = output_dir.unwrap_or_else(|| PathBuf::from("./benchmark_results"));
     let short_id = &Uuid::new_v4().as_simple().to_string()[..12];
-    let trial_name = format!("ext-{}", short_id);
+    let trial_name = format!("bin-{}", short_id);
+    let logs_dir = output.join(&trial_name).join(&task.name);
+    std::fs::create_dir_all(&logs_dir)?;
 
-    let config = TrialConfig {
-        trial_name: trial_name.clone(),
-        output_dir: output.clone(),
+    // Configure agent
+    let config = BinaryAgentConfig {
         max_steps,
-        timeout_multiplier,
-        force_build: false,
-        delete_container: true,
-        agent_provider: provider.map(String::from),
-        model_name: model.map(String::from),
+        timeout_secs: (task.agent_timeout() * timeout_multiplier) as u64,
+        api_key: api_key.map(String::from),
+        api_provider: provider.map(String::from),
     };
 
-    let runner = TrialRunner::new(config);
-    info!("Created external agent: {}", agent.name());
-
-    // Run with spinner (evaluation happens inside Docker)
-    let mut spinner = Spinner::new(&format!("Running {}...", task.name));
-    spinner.start();
-
     let start = std::time::Instant::now();
-    let result = runner.run(&task, &agent).await;
+    let result = run_binary_agent(&source_code, &task, config, &logs_dir).await;
     let elapsed = start.elapsed().as_secs_f64();
 
-    // Cleanup agent container
-    if let Err(e) = agent.stop().await {
-        warn!("Failed to stop agent container: {}", e);
-    }
-
-    match &result {
+    match result {
         Ok(r) => {
-            let status = if r.success() {
-                format!("{} completed", task.name)
-            } else {
-                format!("{} failed", task.name)
-            };
-            spinner.stop(r.success(), Some(&status));
-
             // Print results
             println!();
-            let (icon, pass_text) = if r.success() {
+            let (icon, pass_text) = if r.success {
                 ("\x1b[32m✓\x1b[0m", "\x1b[1m\x1b[32mPASS\x1b[0m")
             } else {
                 ("\x1b[31m✗\x1b[0m", "\x1b[1m\x1b[31mFAIL\x1b[0m")
             };
-            println!("  {} \x1b[1m{}\x1b[0m  {}", icon, r.task_name, pass_text);
+            println!("  {} \x1b[1m{}\x1b[0m  {}", icon, task.name, pass_text);
             println!(
                 "    Reward: \x1b[{}m{:.4}\x1b[0m  Steps: {}  Time: {:.1}s",
-                if r.reward() > 0.0 { "32" } else { "90" },
-                r.reward(),
+                if r.reward > 0.0 { "32" } else { "90" },
+                r.reward,
                 r.steps,
                 elapsed
             );
@@ -631,11 +598,19 @@ pub async fn run_external_agent(
                 }
             }
 
+            if !r.verification.output.is_empty() {
+                println!();
+                println!("    \x1b[90mVerification:\x1b[0m");
+                for line in r.verification.output.lines().take(5) {
+                    println!("      \x1b[90m{}\x1b[0m", line);
+                }
+            }
+
             println!();
-            println!("  \x1b[90m📁 Logs:\x1b[0m {}", r.logs_path.display());
+            println!("  \x1b[90m📁 Logs:\x1b[0m {}", logs_dir.display());
         }
         Err(e) => {
-            spinner.stop(false, Some(&format!("Failed: {}", e)));
+            println!("  \x1b[31m✗\x1b[0m Failed: {}", e);
             error!("Trial failed: {:?}", e);
         }
     }

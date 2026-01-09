@@ -112,7 +112,7 @@ impl ProgressPrinter {
 
 /// Animated spinner for long operations
 pub struct Spinner {
-    message: String,
+    message: std::sync::Arc<std::sync::Mutex<String>>,
     started_at: Instant,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -120,7 +120,7 @@ pub struct Spinner {
 impl Spinner {
     pub fn new(message: &str) -> Self {
         Self {
-            message: message.to_string(),
+            message: std::sync::Arc::new(std::sync::Mutex::new(message.to_string())),
             started_at: Instant::now(),
             handle: None,
         }
@@ -132,12 +132,19 @@ impl Spinner {
             let mut tick = 0u64;
             loop {
                 let spinner = SPINNER_FRAMES[(tick as usize) % SPINNER_FRAMES.len()];
-                print!("\r\x1b[K  \x1b[36m{}\x1b[0m {}", spinner, msg);
+                let current_msg = msg.lock().unwrap().clone();
+                print!("\r\x1b[K  \x1b[36m{}\x1b[0m {}", spinner, current_msg);
                 let _ = stdout().flush();
                 tick += 1;
                 tokio::time::sleep(Duration::from_millis(80)).await;
             }
         }));
+    }
+
+    pub fn update(&mut self, message: &str) {
+        if let Ok(mut msg) = self.message.lock() {
+            *msg = message.to_string();
+        }
     }
 
     pub fn stop(&mut self, success: bool, message: Option<&str>) {
@@ -151,7 +158,8 @@ impl Spinner {
             "\x1b[31m✗\x1b[0m"
         };
 
-        let msg = message.unwrap_or(&self.message);
+        let default_msg = self.message.lock().unwrap().clone();
+        let msg = message.unwrap_or(&default_msg);
         println!("\r\x1b[K  {} {}", icon, msg);
     }
 }
