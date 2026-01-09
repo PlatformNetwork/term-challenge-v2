@@ -262,6 +262,9 @@ pub async fn run_task(
 }
 
 /// Run benchmark on a dataset with your external agent
+///
+/// Uses the binary agent system (same as validators) - compiles Python to binary
+/// and runs it inside the task container.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_benchmark(
     dataset_spec: &str,
@@ -273,26 +276,23 @@ pub async fn run_benchmark(
     max_tasks: Option<usize>,
     timeout_multiplier: f64,
     concurrent: usize,
-    max_steps: u32,
+    _max_steps: u32, // Ignored - agents manage their own limits (SDK 2.0)
 ) -> Result<()> {
-    use term_challenge::bench::create_external_agent;
+    use term_challenge::bench::{run_binary_agent, BinaryAgentConfig};
 
     let (name, version) = RegistryClient::parse_dataset_spec(dataset_spec);
 
-    // Detect language from extension
-    let lang = agent_path
+    // Only Python is supported (compiled to binary)
+    let ext = agent_path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| match e {
-            "py" => "Python",
-            "js" | "mjs" | "ts" => "JavaScript",
-            "rs" => "Rust",
-            _ => "Binary",
-        })
-        .unwrap_or("Binary");
+        .unwrap_or("");
+    if ext != "py" {
+        anyhow::bail!("Only Python agents (.py) are supported. Got: .{}", ext);
+    }
 
     println!("\n  🏁 Starting benchmark: {}@{}\n", name, version);
-    println!("  Agent:      {} ({})", agent_path.display(), lang);
+    println!("  Agent:      {} (Python -> Binary)", agent_path.display());
     if let Some(p) = provider {
         println!("  Provider:   {}", p);
     }
@@ -313,8 +313,21 @@ pub async fn run_benchmark(
     let total_tasks = task_paths.len();
     println!("  Tasks:      {}", total_tasks);
     println!("  Concurrent: {}", concurrent);
-    println!("  Max steps:  {}", max_steps);
     println!("  Timeout:    {}x\n", timeout_multiplier);
+
+    // Read agent source code once (binary is compiled and cached)
+    let source_code = std::fs::read_to_string(&agent_path).context(format!(
+        "Failed to read agent file: {}",
+        agent_path.display()
+    ))?;
+
+    // Pre-compile the agent binary before running tasks
+    // This ensures compilation happens once, not per-task
+    println!("  Compiling agent to binary (one-time)...");
+    let _pre_compile = term_challenge::compiler::compile_agent(&source_code, "bench-precompile")
+        .await
+        .context("Failed to pre-compile agent")?;
+    println!("  ✓ Agent compiled successfully\n");
 
     let output = output_dir.unwrap_or_else(|| PathBuf::from("./benchmark_results"));
     let agent_name = agent_path
@@ -332,7 +345,7 @@ pub async fn run_benchmark(
     let bench_dir = output.join(&bench_name);
     std::fs::create_dir_all(&bench_dir)?;
 
-    let model_name = model.unwrap_or("external");
+    let model_name = model.unwrap_or("binary");
 
     // Setup Ctrl+C handler - force kill immediately
     tokio::spawn(async move {
@@ -355,6 +368,7 @@ pub async fn run_benchmark(
     )));
     let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let semaphore = Arc::new(Semaphore::new(concurrent));
+    let source_code = Arc::new(source_code);
 
     // Spawn concurrent tasks
     let mut handles = Vec::new();
@@ -365,7 +379,7 @@ pub async fn run_benchmark(
         let completed = completed.clone();
         let bench_name = bench_name.clone();
         let bench_dir = bench_dir.clone();
-        let agent_path = agent_path.clone();
+        let source_code = source_code.clone();
         let api_key = api_key.map(String::from);
         let model = model.map(String::from);
         let provider = provider.map(String::from);
@@ -390,54 +404,28 @@ pub async fn run_benchmark(
             let task_num = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             println!("  [{}/{}] Running: {}", task_num, total_tasks, task.name);
 
-            // Create fresh external agent for each task (runs in Docker)
-            let agent = match create_external_agent(
-                &agent_path,
-                provider.as_deref(),
-                api_key.as_deref(),
-                model.as_deref(),
-            )
-            .await
-            {
-                Ok(a) => a,
-                Err(e) => {
-                    error!("Failed to create agent: {}", e);
-                    let mut results = results.lock().await;
-                    results.add_result(TaskResult {
-                        task_name: task.name.clone(),
-                        success: false,
-                        reward: 0.0,
-                        duration_sec: 0.0,
-                        steps: 0,
-                        error: Some(format!("Agent creation failed: {}", e)),
-                        trial_name: bench_name.clone(),
-                    });
-                    return;
-                }
-            };
-
             let trial_name = format!("{}-{}", bench_name, task.name);
-            let config = TrialConfig {
-                trial_name: trial_name.clone(),
-                output_dir: bench_dir.clone(),
-                max_steps,
-                timeout_multiplier,
-                force_build: false,
-                delete_container: true,
-                agent_provider: provider.clone(),
-                model_name: model.clone(),
+            let logs_dir = bench_dir.join(&task.name);
+            if let Err(e) = std::fs::create_dir_all(&logs_dir) {
+                error!("Failed to create logs dir: {}", e);
+                return;
+            }
+
+            // Configure binary agent
+            let config = BinaryAgentConfig {
+                timeout_secs: (task.agent_timeout() * timeout_multiplier) as u64,
+                api_key: api_key.clone(),
+                api_provider: provider.clone(),
+                api_model: model.clone(),
             };
 
-            let runner = TrialRunner::new(config);
-
-            let run_result = runner.run(&task, &agent).await;
-
-            // Cleanup agent container
-            let _ = agent.stop().await;
+            let start = std::time::Instant::now();
+            let run_result = run_binary_agent(&source_code, &task, config, &logs_dir).await;
+            let duration_sec = start.elapsed().as_secs_f64();
 
             match run_result {
-                Ok(trial_result) => {
-                    let status = if trial_result.success() { "✓" } else { "✗" };
+                Ok(agent_result) => {
+                    let status = if agent_result.success { "✓" } else { "✗" };
 
                     println!(
                         "  [{}/{}] {} {} reward={:.4} steps={} time={:.1}s",
@@ -445,13 +433,21 @@ pub async fn run_benchmark(
                         total_tasks,
                         status,
                         task.name,
-                        trial_result.reward(),
-                        trial_result.steps,
-                        trial_result.duration_sec,
+                        agent_result.reward,
+                        agent_result.steps,
+                        duration_sec,
                     );
 
                     let mut results = results.lock().await;
-                    results.add_result(TaskResult::from(trial_result));
+                    results.add_result(TaskResult {
+                        task_name: task.name.clone(),
+                        success: agent_result.success,
+                        reward: agent_result.reward,
+                        duration_sec,
+                        steps: agent_result.steps,
+                        error: agent_result.error,
+                        trial_name: trial_name.clone(),
+                    });
                 }
                 Err(e) => {
                     println!(
@@ -463,7 +459,7 @@ pub async fn run_benchmark(
                         task_name: task.name.clone(),
                         success: false,
                         reward: 0.0,
-                        duration_sec: 0.0,
+                        duration_sec,
                         steps: 0,
                         error: Some(e.to_string()),
                         trial_name: trial_name.clone(),
