@@ -15,7 +15,7 @@
 use crate::bench::registry::RegistryClient;
 use crate::compiler;
 use crate::container_backend::create_backend;
-use crate::pg_storage::{PgStorage, TaskAssignment};
+use crate::pg_storage::{PendingCompilation, PgStorage, TaskAssignment};
 use crate::platform_ws_client::PlatformWsClient;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -186,21 +186,32 @@ impl CompileWorker {
         info!("Found {} agents pending compilation", pending.len());
 
         // Process each agent (could be parallelized with semaphore)
-        for (agent_hash, source_code) in pending {
-            self.compile_agent(&agent_hash, &source_code).await;
+        for compilation in pending {
+            self.compile_agent(compilation).await;
         }
 
         Ok(())
     }
 
     /// Compile a single agent
-    async fn compile_agent(&self, agent_hash: &str, source_code: &str) {
+    async fn compile_agent(&self, compilation: PendingCompilation) {
+        let agent_hash = &compilation.agent_hash;
         let short_hash = &agent_hash[..16.min(agent_hash.len())];
-        info!("Compiling agent {}...", short_hash);
-        info!(
-            "Source code preview: {}...",
-            &source_code[..200.min(source_code.len())].replace('\n', " ")
-        );
+
+        if compilation.is_package {
+            info!("Compiling package agent {}...", short_hash);
+            info!(
+                "  Package format: {:?}, Entry point: {:?}",
+                compilation.package_format, compilation.entry_point
+            );
+        } else {
+            info!("Compiling single-file agent {}...", short_hash);
+            info!(
+                "Source code preview: {}...",
+                &compilation.source_code[..200.min(compilation.source_code.len())]
+                    .replace('\n', " ")
+            );
+        }
 
         // Mark as compiling
         if let Err(e) = self.storage.set_compiling(agent_hash).await {
@@ -221,8 +232,20 @@ impl CompileWorker {
                 .map(|s| format!("{}...", &s[..20.min(s.len())]))
         );
 
-        // Compile
-        match compiler::compile_agent(source_code, agent_hash).await {
+        // Compile based on submission type
+        let compile_result = if compilation.is_package {
+            compiler::compile_package(
+                compilation.package_data.as_deref().unwrap_or(&[]),
+                compilation.package_format.as_deref().unwrap_or("zip"),
+                compilation.entry_point.as_deref().unwrap_or("agent.py"),
+                agent_hash,
+            )
+            .await
+        } else {
+            compiler::compile_agent(&compilation.source_code, agent_hash).await
+        };
+
+        match compile_result {
             Ok(result) => {
                 info!(
                     "Agent {} compiled successfully: {} bytes in {}ms",

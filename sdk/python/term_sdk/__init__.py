@@ -99,6 +99,9 @@ from .runner import run, log, log_error, log_step, set_logging
 # LLM
 from .llm import LLM, LLMResponse, LLMError, CostLimitExceeded
 
+# Packager for multi-file submissions
+from .packager import create_package, validate_project, package_to_base64
+
 # Legacy types (for backwards compatibility if needed)
 from .types import Request, Response, Tool, FunctionCall
 
@@ -119,6 +122,10 @@ __all__ = [
     "LLMResponse",
     "LLMError",
     "CostLimitExceeded",
+    # Packager
+    "create_package",
+    "validate_project",
+    "package_to_base64",
     # Legacy (SDK 1.x compatibility)
     "Request",
     "Response",

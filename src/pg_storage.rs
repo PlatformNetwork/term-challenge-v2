@@ -228,6 +228,7 @@ pub struct Submission {
     pub id: String,
     pub agent_hash: String,
     pub miner_hotkey: String,
+    /// Source code (for single-file submissions) or empty for packages
     pub source_code: String,
     pub source_hash: String,
     pub name: Option<String>,
@@ -255,12 +256,23 @@ pub struct Submission {
     pub compile_error: Option<String>,
     /// Compilation time in milliseconds
     pub compile_time_ms: i32,
-    /// Whether agent passed LLM security review
-    pub llm_approved: bool,
     /// Whether agent is flagged for manual review
     pub flagged: bool,
     /// Reason for flagging if flagged=true
     pub flag_reason: Option<String>,
+
+    // ========================================================================
+    // PACKAGE SUPPORT (multi-file submissions)
+    // ========================================================================
+    /// Whether this is a package submission (true) or single-file (false)
+    pub is_package: bool,
+    /// Package data (ZIP/TAR.GZ archive) for multi-file submissions
+    #[serde(skip_serializing)]
+    pub package_data: Option<Vec<u8>>,
+    /// Package format: "zip" or "tar.gz"
+    pub package_format: Option<String>,
+    /// Entry point file path within the package (e.g., "agent.py" or "src/main.py")
+    pub entry_point: Option<String>,
 }
 
 /// Submission without source code (for listings)
@@ -285,6 +297,22 @@ pub struct MinerSubmissionHistory {
     pub last_submission_epoch: i64,
     pub last_submission_at: i64,
     pub total_submissions: i32,
+}
+
+/// Pending compilation info (for compile worker)
+#[derive(Debug, Clone)]
+pub struct PendingCompilation {
+    pub agent_hash: String,
+    /// Source code for single-file submissions
+    pub source_code: String,
+    /// Whether this is a package submission
+    pub is_package: bool,
+    /// Package data (ZIP/TAR.GZ) for multi-file submissions
+    pub package_data: Option<Vec<u8>>,
+    /// Package format: "zip" or "tar.gz"
+    pub package_format: Option<String>,
+    /// Entry point file path within the package
+    pub entry_point: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -924,8 +952,8 @@ impl PgStorage {
 
         debug!("Inserting into submissions table...");
         client.execute(
-            "INSERT INTO submissions (id, agent_hash, miner_hotkey, source_code, source_hash, name, version, epoch, status, api_key, api_provider, cost_limit_usd, total_cost_usd)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            "INSERT INTO submissions (id, agent_hash, miner_hotkey, source_code, source_hash, name, version, epoch, status, api_key, api_provider, cost_limit_usd, total_cost_usd, is_package, package_data, package_format, entry_point)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
              ON CONFLICT(agent_hash) DO UPDATE SET
                 source_code = EXCLUDED.source_code,
                 source_hash = EXCLUDED.source_hash,
@@ -934,13 +962,18 @@ impl PgStorage {
                 status = EXCLUDED.status,
                 api_key = EXCLUDED.api_key,
                 api_provider = EXCLUDED.api_provider,
-                cost_limit_usd = EXCLUDED.cost_limit_usd",
+                cost_limit_usd = EXCLUDED.cost_limit_usd,
+                is_package = EXCLUDED.is_package,
+                package_data = EXCLUDED.package_data,
+                package_format = EXCLUDED.package_format,
+                entry_point = EXCLUDED.entry_point",
             &[
                 &submission.id, &submission.agent_hash, &submission.miner_hotkey,
                 &submission.source_code, &submission.source_hash, &submission.name,
                 &submission.version, &submission.epoch, &submission.status,
                 &encrypted_api_key, &submission.api_provider, &(cost_limit as f32),
-                &(submission.total_cost_usd as f32),
+                &(submission.total_cost_usd as f32), &submission.is_package,
+                &submission.package_data, &submission.package_format, &submission.entry_point,
             ],
         ).await.map_err(|e| {
             tracing::error!("Failed to insert submission: {:?}", e);
@@ -1197,9 +1230,13 @@ impl PgStorage {
             compile_status: "pending".to_string(),
             compile_error: None,
             compile_time_ms: 0,
-            llm_approved: false,
             flagged: false,
             flag_reason: None,
+            // Package fields - defaults for single-file submissions
+            is_package: false,
+            package_data: None,
+            package_format: None,
+            entry_point: None,
         }))
     }
 
@@ -1643,7 +1680,7 @@ impl PgStorage {
                AND p.window_expires_at > NOW()
                AND s.compile_status = 'success'
                AND s.agent_binary IS NOT NULL
-               AND (s.llm_approved = TRUE OR s.flagged = TRUE)
+               AND s.flagged = FALSE
                AND NOT EXISTS (
                    SELECT 1 FROM validator_evaluations ve 
                    WHERE ve.agent_hash = p.agent_hash 
@@ -3115,11 +3152,10 @@ impl PgStorage {
         Ok(())
     }
 
-    /// Update LLM review status
-    pub async fn set_llm_review_result(
+    /// Flag or unflag a submission for manual review
+    pub async fn set_submission_flagged(
         &self,
         agent_hash: &str,
-        approved: bool,
         flagged: bool,
         reason: Option<&str>,
     ) -> Result<()> {
@@ -3127,11 +3163,10 @@ impl PgStorage {
         client
             .execute(
                 "UPDATE submissions SET 
-                    llm_approved = $1,
-                    flagged = $2,
-                    flag_reason = $3
-                 WHERE agent_hash = $4",
-                &[&approved, &flagged, &reason, &agent_hash],
+                    flagged = $1,
+                    flag_reason = $2
+                 WHERE agent_hash = $3",
+                &[&flagged, &reason, &agent_hash],
             )
             .await?;
         Ok(())
@@ -3151,12 +3186,12 @@ impl PgStorage {
         Ok(row.and_then(|r| r.get::<_, Option<Vec<u8>>>(0)))
     }
 
-    /// Check if agent is ready for evaluation (compiled + approved or flagged for manual review)
+    /// Check if agent is ready for evaluation (compiled successfully and not flagged)
     pub async fn is_agent_ready(&self, agent_hash: &str) -> Result<(bool, String)> {
         let client = self.pool.get().await?;
         let row = client
             .query_opt(
-                "SELECT compile_status, llm_approved, flagged, compile_error
+                "SELECT compile_status, flagged, compile_error
                  FROM submissions WHERE agent_hash = $1",
                 &[&agent_hash],
             )
@@ -3166,9 +3201,8 @@ impl PgStorage {
             None => Ok((false, "Agent not found".to_string())),
             Some(r) => {
                 let compile_status: String = r.get(0);
-                let llm_approved: bool = r.get(1);
-                let flagged: bool = r.get(2);
-                let compile_error: Option<String> = r.get(3);
+                let flagged: bool = r.get(1);
+                let compile_error: Option<String> = r.get(2);
 
                 if compile_status == "pending" {
                     return Ok((false, "Compilation pending".to_string()));
@@ -3182,22 +3216,23 @@ impl PgStorage {
                         format!("Compilation failed: {}", compile_error.unwrap_or_default()),
                     ));
                 }
-                if !llm_approved && !flagged {
-                    return Ok((false, "LLM review pending".to_string()));
+                if flagged {
+                    return Ok((false, "Flagged for manual review".to_string()));
                 }
 
-                // Ready if compiled successfully AND (approved OR flagged for manual review)
+                // Ready if compiled successfully and not flagged
                 Ok((true, "Ready for evaluation".to_string()))
             }
         }
     }
 
     /// Get agents pending compilation
-    pub async fn get_pending_compilations(&self, limit: i32) -> Result<Vec<(String, String)>> {
+    pub async fn get_pending_compilations(&self, limit: i32) -> Result<Vec<PendingCompilation>> {
         let client = self.pool.get().await?;
         let rows = client
             .query(
-                "SELECT agent_hash, source_code FROM submissions 
+                "SELECT agent_hash, source_code, is_package, package_data, package_format, entry_point 
+                 FROM submissions 
                  WHERE compile_status = 'pending'
                  ORDER BY created_at ASC
                  LIMIT $1",
@@ -3205,11 +3240,21 @@ impl PgStorage {
             )
             .await
             .map_err(|e| {
-                error!("Failed to get pending compilations: {}. Make sure migration 006_agent_binary.sql has been applied.", e);
+                error!("Failed to get pending compilations: {}. Make sure migrations have been applied.", e);
                 e
             })?;
 
-        Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| PendingCompilation {
+                agent_hash: r.get(0),
+                source_code: r.get(1),
+                is_package: r.get::<_, Option<bool>>(2).unwrap_or(false),
+                package_data: r.get(3),
+                package_format: r.get(4),
+                entry_point: r.get(5),
+            })
+            .collect())
     }
 
     /// Approve flagged agent manually (subnet owner only)
@@ -3218,8 +3263,8 @@ impl PgStorage {
         client
             .execute(
                 "UPDATE submissions SET 
-                    llm_approved = TRUE,
-                    flagged = FALSE
+                    flagged = FALSE,
+                    flag_reason = NULL
                  WHERE agent_hash = $1",
                 &[&agent_hash],
             )
@@ -3264,7 +3309,7 @@ impl PgStorage {
         let rows = client
             .query(
                 "SELECT s.agent_hash, s.miner_hotkey, s.name, s.version, s.epoch, s.status,
-                        s.compile_status, s.llm_approved, s.flagged,
+                        s.compile_status, s.flagged,
                         EXTRACT(EPOCH FROM s.created_at)::BIGINT,
                         p.validators_completed, p.total_validators,
                         EXTRACT(EPOCH FROM p.window_expires_at)::BIGINT
@@ -3288,12 +3333,11 @@ impl PgStorage {
                 epoch: r.get(4),
                 status: r.get(5),
                 compile_status: r.get(6),
-                llm_approved: r.get(7),
-                flagged: r.get(8),
-                created_at: r.get(9),
-                validators_completed: r.get::<_, Option<i32>>(10).unwrap_or(0),
-                total_validators: r.get::<_, Option<i32>>(11).unwrap_or(0),
-                window_expires_at: r.get(12),
+                flagged: r.get(7),
+                created_at: r.get(8),
+                validators_completed: r.get::<_, Option<i32>>(9).unwrap_or(0),
+                total_validators: r.get::<_, Option<i32>>(10).unwrap_or(0),
+                window_expires_at: r.get(11),
             })
             .collect())
     }
@@ -3398,7 +3442,6 @@ pub struct PublicSubmissionInfo {
     pub epoch: i64,
     pub status: String,
     pub compile_status: String,
-    pub llm_approved: bool,
     pub flagged: bool,
     pub created_at: i64,
     pub validators_completed: i32,
@@ -3514,7 +3557,7 @@ impl PgStorage {
 
         client
             .execute(
-                "UPDATE submissions SET llm_approved = true, flagged = false, status = 'approved' 
+                "UPDATE submissions SET flagged = false, flag_reason = NULL, status = 'approved' 
                  WHERE agent_hash = $1",
                 &[&agent_hash],
             )

@@ -10,11 +10,13 @@ use crate::auth::{
     create_get_source_message, create_list_agents_message, create_submit_message,
     is_timestamp_valid, is_valid_ss58_hotkey, verify_signature, AuthManager,
 };
+use crate::package_validator::PackageValidator;
 use crate::pg_storage::{
     LeaderboardEntry, LlmUsageRecord, PgStorage, Submission, SubmissionInfo, TaskAssignment,
     TaskLog, ValidatorJobInfo, DEFAULT_COST_LIMIT_USD, MAX_COST_LIMIT_USD,
     SUBMISSION_COOLDOWN_SECS,
 };
+use crate::python_whitelist::{PythonWhitelist, WhitelistConfig};
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -29,89 +31,6 @@ use tracing::{debug, error, info, warn};
 
 // Note: Validator selection has been moved to compile_worker.rs
 // Validators are assigned after successful compilation for fresh assignment state
-
-// ============================================================================
-// LLM SECURITY REVIEW
-// ============================================================================
-
-/// Perform LLM security review on agent source code
-/// Returns (approved, reason)
-async fn do_llm_security_review(
-    api_key: &str,
-    provider: &str,
-    source_code: &str,
-) -> anyhow::Result<(bool, String)> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()?;
-
-    let review_prompt = format!(
-        "Review this Python agent code for security and compliance. \
-         Check for: dangerous imports (subprocess, os.system, eval, exec), network access, \
-         file system access outside /app, code injection, infinite loops, resource abuse. \
-         Respond ONLY with JSON: {{\"approved\": true/false, \"reason\": \"brief explanation\"}}\n\n\
-         Code:\n```python\n{}\n```",
-        source_code
-    );
-
-    let (url, model) = match provider {
-        "openrouter" => (
-            "https://openrouter.ai/api/v1/chat/completions",
-            "anthropic/claude-haiku-4.5",
-        ),
-        _ => (
-            "https://openrouter.ai/api/v1/chat/completions",
-            "anthropic/claude-haiku-4.5",
-        ),
-    };
-
-    let response = client
-        .post(url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "You are a security reviewer. Respond ONLY with valid JSON."},
-                {"role": "user", "content": review_prompt}
-            ],
-            "max_tokens": 500,
-            "temperature": 0.0
-        }))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        anyhow::bail!("LLM API error {}: {}", status, text);
-    }
-
-    let result: serde_json::Value = response.json().await?;
-    let content = result["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("No content in LLM response"))?;
-
-    // Parse JSON from response
-    let json_str = content
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-
-    let review: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        anyhow::anyhow!("Failed to parse LLM response: {} - content: {}", e, content)
-    })?;
-
-    let approved = review["approved"].as_bool().unwrap_or(true);
-    let reason = review["reason"]
-        .as_str()
-        .unwrap_or("No reason provided")
-        .to_string();
-
-    Ok((approved, reason))
-}
 
 // ============================================================================
 // SHARED STATE
@@ -156,7 +75,25 @@ impl ApiState {
 
 #[derive(Debug, Deserialize)]
 pub struct SubmitAgentRequest {
-    pub source_code: String,
+    // ========================================================================
+    // Mode 1: Single file submission (existing, backwards compatible)
+    // ========================================================================
+    /// Python source code (for single-file submissions)
+    pub source_code: Option<String>,
+
+    // ========================================================================
+    // Mode 2: Package submission (new, multi-file)
+    // ========================================================================
+    /// Base64-encoded package archive (ZIP or TAR.GZ)
+    pub package: Option<String>,
+    /// Package format: "zip" or "tar.gz" (default: "zip")
+    pub package_format: Option<String>,
+    /// Entry point file within the package (default: "agent.py")
+    pub entry_point: Option<String>,
+
+    // ========================================================================
+    // Common fields
+    // ========================================================================
     pub miner_hotkey: String,
     pub signature: String,
     pub name: Option<String>,
@@ -180,10 +117,14 @@ pub struct SubmitAgentResponse {
 
 /// POST /api/v1/submit - Submit a new agent
 ///
+/// Supports two submission modes:
+/// 1. Single file: `source_code` field with Python code
+/// 2. Package: `package` field with base64-encoded ZIP/TAR.GZ archive
+///
 /// Requires:
 /// - Valid SS58 miner_hotkey
-/// - Valid signature of "submit_agent:<sha256_of_source_code>"
-/// - Rate limit: 1 agent per 3 epochs per miner
+/// - Valid signature of "submit_agent:<sha256_of_content>"
+/// - Rate limit: 1 submission per 3.6 hours per miner
 /// - Unique agent name (or auto-version if same miner reuses name)
 pub async fn submit_agent(
     State(state): State<Arc<ApiState>>,
@@ -214,9 +155,109 @@ pub async fn submit_agent(
         ));
     }
 
+    // ========================================================================
+    // Determine submission mode and validate content
+    // ========================================================================
+
+    let (is_package, source_code, package_data, package_format, entry_point, content_for_hash) =
+        match (&req.source_code, &req.package) {
+            // Mode 1: Single file submission
+            (Some(code), None) => {
+                // Validate with Python whitelist
+                let whitelist = PythonWhitelist::new(WhitelistConfig::default());
+                let validation = whitelist.verify(code);
+                if !validation.valid {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(err_response(format!(
+                            "Code validation failed: {}",
+                            validation.errors.join(", ")
+                        ))),
+                    ));
+                }
+
+                (false, code.clone(), None, None, None, code.clone())
+            }
+
+            // Mode 2: Package submission
+            (None, Some(pkg_base64)) => {
+                // Decode base64
+                let pkg_data = match base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    pkg_base64,
+                ) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            Json(err_response(format!("Invalid base64 package: {}", e))),
+                        ));
+                    }
+                };
+
+                let format = req.package_format.as_deref().unwrap_or("zip");
+                let entry = req.entry_point.as_deref().unwrap_or("agent.py");
+
+                // Validate package
+                let validator = PackageValidator::new();
+                let validation = match validator.validate(&pkg_data, format, entry) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            Json(err_response(format!("Package validation error: {}", e))),
+                        ));
+                    }
+                };
+
+                if !validation.valid {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(err_response(format!(
+                            "Package validation failed: {}",
+                            validation.errors.join(", ")
+                        ))),
+                    ));
+                }
+
+                // Log warnings
+                for warning in &validation.warnings {
+                    warn!("Package warning: {}", warning);
+                }
+
+                (
+                    true,
+                    String::new(), // Empty source_code for packages
+                    Some(pkg_data),
+                    Some(format.to_string()),
+                    Some(entry.to_string()),
+                    pkg_base64.clone(), // Hash the base64 for signature
+                )
+            }
+
+            // Error: Both provided
+            (Some(_), Some(_)) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(err_response(
+                        "Cannot provide both source_code and package. Choose one.".to_string(),
+                    )),
+                ));
+            }
+
+            // Error: Neither provided
+            (None, None) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(err_response(
+                        "Must provide either source_code (single file) or package (multi-file archive).".to_string(),
+                    )),
+                ));
+            }
+        };
+
     // Verify signature
-    let expected_message = create_submit_message(&req.source_code);
-    // Skip signature verification in test mode (SKIP_AUTH=1)
+    let expected_message = create_submit_message(&content_for_hash);
     let skip_auth = std::env::var("SKIP_AUTH")
         .map(|v| v == "1")
         .unwrap_or(false);
@@ -257,7 +298,6 @@ pub async fn submit_agent(
             }
             Err(e) => {
                 warn!("Failed to check rate limit: {:?}", e);
-                // SECURITY: Fail closed - reject submission if rate limit check fails
                 return Err((
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(err_response(
@@ -268,10 +308,10 @@ pub async fn submit_agent(
         }
     }
 
-    // Get current epoch (still needed for submission record)
+    // Get current epoch
     let epoch = state.storage.get_current_epoch().await.unwrap_or(0);
 
-    // Check agent name uniqueness (must not be taken by another miner)
+    // Check agent name uniqueness
     if let Some(ref name) = req.name {
         match state
             .storage
@@ -284,7 +324,7 @@ pub async fn submit_agent(
                     return Err((
                         StatusCode::CONFLICT,
                         Json(err_response(format!(
-                            "Agent name '{}' is already taken by another miner. Choose a different name.",
+                            "Agent name '{}' is already taken by another miner.",
                             name
                         ))),
                     ));
@@ -296,7 +336,7 @@ pub async fn submit_agent(
         }
     }
 
-    // Get next version for this agent name
+    // Get next version
     let version = state
         .storage
         .get_next_version(&req.miner_hotkey, req.name.as_deref())
@@ -310,7 +350,7 @@ pub async fn submit_agent(
         .clamp(0.0, MAX_COST_LIMIT_USD);
 
     // Compute hashes
-    let source_hash = hex::encode(Sha256::digest(req.source_code.as_bytes()));
+    let source_hash = hex::encode(Sha256::digest(content_for_hash.as_bytes()));
     let agent_hash = format!(
         "{}{}",
         &hex::encode(Sha256::digest(req.miner_hotkey.as_bytes()))[..16],
@@ -323,9 +363,9 @@ pub async fn submit_agent(
         id: submission_id.clone(),
         agent_hash: agent_hash.clone(),
         miner_hotkey: req.miner_hotkey.clone(),
-        source_code: req.source_code,
+        source_code,
         source_hash,
-        name: req.name,
+        name: req.name.clone(),
         version,
         epoch,
         status: "pending".to_string(),
@@ -334,27 +374,29 @@ pub async fn submit_agent(
         cost_limit_usd: cost_limit,
         total_cost_usd: 0.0,
         created_at: chrono::Utc::now().timestamp(),
-        // Compilation fields - start as pending
+        // Compilation fields
         binary: None,
         binary_size: 0,
         compile_status: "pending".to_string(),
         compile_error: None,
         compile_time_ms: 0,
-        llm_approved: false,
         flagged: false,
         flag_reason: None,
+        // Package fields
+        is_package,
+        package_data,
+        package_format,
+        entry_point,
     };
 
     // Store submission
     if let Err(e) = state.storage.create_submission(&submission).await {
         warn!("Failed to create submission: {:?}", e);
         tracing::error!(
-            "Submission error details - id: {}, agent_hash: {}, miner: {}, epoch: {}, version: {}, error: {:?}",
+            "Submission error - id: {}, agent_hash: {}, is_package: {}, error: {:?}",
             submission.id,
             submission.agent_hash,
-            submission.miner_hotkey,
-            submission.epoch,
-            submission.version,
+            submission.is_package,
             e
         );
         return Err((
@@ -363,122 +405,49 @@ pub async fn submit_agent(
         ));
     }
 
-    // Queue submission for evaluation by validators
-    // In test mode, add default test validators to whitelist
+    // Add test validators in test mode
     if skip_auth {
         let test_validators = [
-            "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty", // Bob
-            "5FLSigC9HGRKVhB9FiEo4Y3koPsNmBmLJbpXg2mp1hXcS59Y", // Charlie
-            "5DAAnrj7VHTznn2AWBemMuyBwZWs6FNFjdyVXUeYum3PTXFy", // Dave
-            "5HGjWAeFDfFCWPsjFQdVV2Msvz2XtMktvgocEZcCj68kUMaw", // Eve
+            "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty",
+            "5FLSigC9HGRKVhB9FiEo4Y3koPsNmBmLJbpXg2mp1hXcS59Y",
+            "5DAAnrj7VHTznn2AWBemMuyBwZWs6FNFjdyVXUeYum3PTXFy",
+            "5HGjWAeFDfFCWPsjFQdVV2Msvz2XtMktvgocEZcCj68kUMaw",
         ];
         for v in test_validators {
             state.auth.add_validator(v).await;
         }
     }
 
-    // Queue submission for evaluation (validator_count will be set after compilation)
+    // Queue submission for evaluation
     if let Err(e) = state
         .storage
-        .queue_submission_for_evaluation(
-            &submission_id,
-            &agent_hash,
-            &req.miner_hotkey,
-            0, // Validators are assigned by compile_worker after successful compilation
-        )
+        .queue_submission_for_evaluation(&submission_id, &agent_hash, &req.miner_hotkey, 0)
         .await
     {
         warn!("Failed to queue submission for evaluation: {:?}", e);
     }
 
-    // Note: Validators and tasks are assigned by compile_worker after successful compilation
-    // This ensures assignments are fresh and based on current platform state
-
+    let submission_type = if is_package { "package" } else { "single-file" };
     info!(
-        "Agent submitted: {} v{} from {} (epoch {}, cost_limit: ${:.2})",
+        "Agent submitted: {} v{} ({}) from {} (epoch {}, cost: ${:.2})",
         &agent_hash[..16],
         version,
-        &submission.miner_hotkey[..16.min(submission.miner_hotkey.len())],
+        submission_type,
+        &req.miner_hotkey[..16.min(req.miner_hotkey.len())],
         epoch,
         cost_limit
     );
 
-    // Spawn background task for LLM review (compilation handled by compile_worker)
-    // LLM review happens immediately, compilation is queued
-    {
-        let storage = state.storage.clone();
-        let source_code = submission.source_code.clone();
-        let agent_hash_clone = agent_hash.clone();
-        let api_key = submission.api_key.clone();
-        let api_provider = submission.api_provider.clone();
-
-        tokio::spawn(async move {
-            // LLM Security Review - use miner's API key directly
-            let mut approved = true;
-            let mut flagged = false;
-            let mut flag_reason: Option<String> = None;
-
-            // Only do LLM review if miner provided an API key
-            if let Some(ref key) = api_key {
-                if !key.is_empty() {
-                    let review_result = do_llm_security_review(
-                        key,
-                        api_provider.as_deref().unwrap_or("openrouter"),
-                        &source_code,
-                    )
-                    .await;
-
-                    match review_result {
-                        Ok((is_approved, reason)) => {
-                            approved = is_approved;
-                            if !approved {
-                                flagged = true;
-                                flag_reason = Some(reason.clone());
-                                warn!(
-                                    "Agent {} flagged for manual review: {}",
-                                    &agent_hash_clone[..16],
-                                    reason
-                                );
-                            } else {
-                                info!("Agent {} passed LLM review", &agent_hash_clone[..16]);
-                            }
-                        }
-                        Err(e) => {
-                            warn!("LLM review failed for {}: {}", &agent_hash_clone[..16], e);
-                            // On error, flag for manual review
-                            flagged = true;
-                            flag_reason = Some(format!("LLM review unavailable: {}", e));
-                        }
-                    }
-                }
-            } else {
-                // No API key provided, skip LLM review
-                debug!(
-                    "No API key for LLM review, skipping for {}",
-                    &agent_hash_clone[..16]
-                );
-            }
-
-            // Store LLM review result
-            if let Err(e) = storage
-                .set_llm_review_result(&agent_hash_clone, approved, flagged, flag_reason.as_deref())
-                .await
-            {
-                error!("Failed to store LLM review result: {}", e);
-            }
-        });
-    }
-
-    // Broadcast "new_submission" event to all validators via platform-server WebSocket
+    // Broadcast "new_submission" event to validators
     {
         let platform_url = state.platform_url.clone();
         let challenge_id = state.challenge_id.clone();
         let broadcast_submission_id = submission_id.clone();
         let broadcast_agent_hash = agent_hash.clone();
         let broadcast_miner_hotkey = req.miner_hotkey.clone();
-        let broadcast_source_code = submission.source_code.clone();
-        let broadcast_name = submission.name.clone();
+        let broadcast_name = req.name.clone();
         let broadcast_epoch = epoch;
+        let broadcast_is_package = is_package;
 
         tokio::spawn(async move {
             let client = reqwest::Client::builder()
@@ -486,14 +455,13 @@ pub async fn submit_agent(
                 .build()
                 .unwrap_or_default();
 
-            // Event payload contains everything validators need to evaluate
             let event_payload = serde_json::json!({
                 "submission_id": broadcast_submission_id,
                 "agent_hash": broadcast_agent_hash,
                 "miner_hotkey": broadcast_miner_hotkey,
-                "source_code": broadcast_source_code,
                 "name": broadcast_name,
                 "epoch": broadcast_epoch,
+                "is_package": broadcast_is_package,
             });
 
             let broadcast_request = serde_json::json!({
@@ -502,7 +470,6 @@ pub async fn submit_agent(
                 "payload": event_payload,
             });
 
-            // Get broadcast secret from environment
             let broadcast_secret = std::env::var("BROADCAST_SECRET").unwrap_or_default();
 
             match client
@@ -515,7 +482,7 @@ pub async fn submit_agent(
                 Ok(response) => {
                     if response.status().is_success() {
                         info!(
-                            "Broadcast new_submission event for agent {} to validators",
+                            "Broadcast new_submission event for agent {}",
                             &broadcast_agent_hash[..16]
                         );
                     } else {
@@ -523,14 +490,11 @@ pub async fn submit_agent(
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to broadcast event to platform-server: {}", e);
+                    warn!("Failed to broadcast event: {}", e);
                 }
             }
         });
     }
-
-    // Note: WebSocket notification to validators happens after compilation
-    // in compile_worker via notify_validators_binary_ready()
 
     Ok(Json(SubmitAgentResponse {
         success: true,
@@ -2095,7 +2059,7 @@ pub struct PendingSubmissionsResponse {
 ///
 /// No authentication required. Does NOT include source code, API keys, or binaries.
 /// Shows: agent_hash, miner_hotkey, name, version, epoch, status, compile_status,
-///        llm_approved, flagged, created_at, validators_completed, total_validators
+///        flagged, created_at, validators_completed, total_validators
 pub async fn get_pending_submissions(
     State(state): State<Arc<ApiState>>,
     Query(query): Query<PendingSubmissionsQuery>,

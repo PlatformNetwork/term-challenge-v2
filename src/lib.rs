@@ -53,6 +53,7 @@ pub mod evaluator;
 pub mod llm_client;
 pub mod llm_review;
 pub mod metagraph_cache;
+pub mod package_validator;
 pub mod platform_llm;
 pub mod python_whitelist;
 pub mod reward_decay;

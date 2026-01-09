@@ -1,13 +1,14 @@
 //! External agent runner - executes Python agents inside Docker containers
 //!
 //! ARCHITECTURE: The agent runs as a persistent HTTP server inside Docker.
-//! The harness sends HTTP POST requests for each step.
+//! The harness sends HTTP requests to control agent execution.
 //! The agent maintains state across all steps in a task.
 //!
-//! Communication protocol:
+//! Communication protocol (SDK 2.0):
 //! - Harness starts agent HTTP server on container startup
-//! - POST /step sends JSON request, receives JSON response
 //! - GET /health checks if agent is ready
+//! - POST /start sends instruction, agent runs autonomously in background
+//! - GET /status polls for completion (status: running/completed/failed)
 //!
 //! SECURITY: All agent code runs INSIDE non-privileged Docker containers.
 //! Agent code NEVER executes on the host machine.
@@ -43,64 +44,20 @@ const AGENT_BASE_IMAGE: &str = "ghcr.io/platformnetwork/term-challenge:latest";
 /// HTTP port for agent communication
 const AGENT_HTTP_PORT: u16 = 8765;
 
-/// A single step in the conversation history
-#[derive(Debug, Clone, Serialize)]
-pub struct HistoryEntry {
-    pub step: u32,
-    pub command: Option<String>,
-    pub output: Option<String>,
-    pub exit_code: Option<i32>,
-}
-
-/// Request sent to external agent (matches SDK Request format)
+/// Request sent to external agent (SDK 2.0 format)
 #[derive(Debug, Serialize)]
 pub struct AgentRequest {
     pub instruction: String,
-    pub step: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_command: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
-    #[serde(default = "default_cwd")]
-    pub cwd: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub history: Vec<HistoryEntry>,
-}
-
-fn default_cwd() -> String {
-    "/app".to_string()
+    /// Timeout in seconds for agent execution
+    pub timeout_secs: u64,
 }
 
 impl AgentRequest {
-    pub fn new(instruction: String, step: u32) -> Self {
+    pub fn new(instruction: String, timeout_secs: u64) -> Self {
         Self {
             instruction,
-            step,
-            last_command: None,
-            output: None,
-            exit_code: None,
-            cwd: "/app".to_string(),
-            history: Vec::new(),
+            timeout_secs,
         }
-    }
-
-    pub fn with_output(
-        mut self,
-        last_command: Option<String>,
-        output: Option<String>,
-        exit_code: Option<i32>,
-    ) -> Self {
-        self.last_command = last_command;
-        self.output = output;
-        self.exit_code = exit_code;
-        self
-    }
-
-    pub fn with_history(mut self, history: Vec<HistoryEntry>) -> Self {
-        self.history = history;
-        self
     }
 }
 
@@ -108,8 +65,9 @@ impl AgentRequest {
 struct DockerAgentState {
     container_id: Option<String>,
     container_ip: Option<String>,
-    history: Vec<HistoryEntry>,
     agent_started: bool,
+    /// Whether the task has been executed (SDK 2.0 runs once)
+    task_executed: bool,
 }
 
 /// External agent that runs inside a Docker container
@@ -178,8 +136,8 @@ impl ExternalAgent {
             state: Mutex::new(DockerAgentState {
                 container_id: None,
                 container_ip: None,
-                history: Vec::new(),
                 agent_started: false,
+                task_executed: false,
             }),
             env_vars: vec![],
             show_logs: Arc::new(AtomicBool::new(true)),
@@ -214,8 +172,8 @@ impl ExternalAgent {
             state: Mutex::new(DockerAgentState {
                 container_id: None,
                 container_ip: None,
-                history: Vec::new(),
                 agent_started: false,
+                task_executed: false,
             }),
             env_vars: vec![],
             show_logs: Arc::new(AtomicBool::new(true)),
@@ -519,11 +477,18 @@ impl ExternalAgent {
         Ok((success, output))
     }
 
-    /// Execute one step via HTTP
-    async fn execute_step(&self, request: &AgentRequest) -> Result<AgentResponse> {
+    /// Execute agent using SDK 2.0 protocol
+    ///
+    /// SDK 2.0 Protocol:
+    /// 1. POST /start with instruction - agent runs autonomously in background
+    /// 2. Poll GET /status until status is "completed" or "failed"
+    ///
+    /// The agent executes commands internally via ctx.shell(), so we don't
+    /// need to return individual commands to the harness.
+    async fn execute_task(&self, request: &AgentRequest) -> Result<AgentResponse> {
         let container_id = self.start_container().await?;
 
-        // Start agent server on first step
+        // Start agent server
         {
             let state = self.state.lock().await;
             if !state.agent_started {
@@ -539,107 +504,118 @@ impl ExternalAgent {
             state.container_ip.clone().unwrap()
         };
 
-        let url = format!("http://{}:{}/step", ip, AGENT_HTTP_PORT);
-        let request_json = serde_json::to_string(request)?;
+        // Send POST /start with instruction and timeout
+        let start_url = format!("http://{}:{}/start", ip, AGENT_HTTP_PORT);
+        let start_request = serde_json::json!({
+            "instruction": request.instruction,
+            "timeout_secs": request.timeout_secs,
+        });
 
-        debug!("POST {} (step {})", url, request.step);
+        info!(
+            "POST /start (SDK 2.0) - timeout={}s, instruction: {}...",
+            request.timeout_secs,
+            &request.instruction.chars().take(100).collect::<String>()
+        );
 
-        // Send HTTP request with retry
-        let mut last_error = None;
-        let mut response = None;
-
-        for attempt in 0..3 {
-            match self
-                .http_client
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .body(request_json.clone())
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    response = Some(resp);
-                    break;
-                }
-                Err(e) => {
-                    last_error = Some(e);
-                    if attempt < 2 {
-                        debug!("Request failed, retrying... (attempt {})", attempt + 1);
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                    }
-                }
-            }
-        }
-
-        let response = match response {
-            Some(r) => r,
-            None => {
-                // Get agent logs for debugging
-                let stderr = self
-                    .exec_in_container(&container_id, &["cat", "/agent/stderr.log"])
-                    .await
-                    .map(|(_, s)| s)
-                    .unwrap_or_default();
-                let stdout = self
-                    .exec_in_container(&container_id, &["cat", "/agent/stdout.log"])
-                    .await
-                    .map(|(_, s)| s)
-                    .unwrap_or_default();
-
-                // Check if agent process is still running
-                let ps_out = self
-                    .exec_in_container(&container_id, &["pgrep", "-f", "python"])
-                    .await
-                    .map(|(_, s)| s)
-                    .unwrap_or_default();
-
-                let process_status = if ps_out.trim().is_empty() {
-                    "Agent process NOT running (crashed?)"
-                } else {
-                    "Agent process is running"
-                };
-
-                bail!(
-                    "Failed to send request to agent (step {}): {}\n{}\nStderr: {}\nStdout: {}",
-                    request.step,
-                    last_error.map(|e| e.to_string()).unwrap_or_default(),
-                    process_status,
-                    stderr,
-                    stdout
-                );
-            }
-        };
-
-        // Get stderr logs (agent logging)
-        let (_, stderr) = self
-            .exec_in_container(&container_id, &["cat", "/agent/stderr.log"])
-            .await?;
-        if !stderr.is_empty() && self.show_logs.load(Ordering::SeqCst) {
-            for line in stderr.lines() {
-                eprintln!("\x1b[90m[{}]\x1b[0m {}", self.name, line);
-            }
-            // Clear log for next step
-            let _ = self
-                .exec_in_container(&container_id, &["sh", "-c", "echo -n > /agent/stderr.log"])
-                .await;
-        }
+        let response = self
+            .http_client
+            .post(&start_url)
+            .header("Content-Type", "application/json")
+            .json(&start_request)
+            .send()
+            .await
+            .context("Failed to send /start request")?;
 
         if !response.status().is_success() {
-            bail!("Agent returned error: {}", response.status());
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            bail!("Agent /start failed ({}): {}", status, body);
         }
 
-        let body = response.text().await?;
-        let harness_response = crate::terminal_harness::parse_agent_response(&body)
-            .context("Failed to parse agent response")?;
+        info!("Agent started, polling /status...");
 
-        Ok(AgentResponse {
-            command: harness_response.command,
-            text: None,
-            task_complete: harness_response.task_complete,
-            analysis: None,
-            plan: None,
-            commands: vec![],
-        })
+        // Poll /status until completion (use task timeout + buffer)
+        let status_url = format!("http://{}:{}/status", ip, AGENT_HTTP_PORT);
+        let poll_interval = Duration::from_millis(1000);
+        let max_poll_time = Duration::from_secs(request.timeout_secs + 60); // task timeout + 1 min buffer
+        let poll_start = std::time::Instant::now();
+
+        loop {
+            // Check timeout
+            if poll_start.elapsed() > max_poll_time {
+                bail!("Agent execution timeout ({}s)", max_poll_time.as_secs());
+            }
+
+            // Get and display agent logs
+            let (_, stderr) = self
+                .exec_in_container(&container_id, &["cat", "/agent/stderr.log"])
+                .await?;
+            if !stderr.is_empty() && self.show_logs.load(Ordering::SeqCst) {
+                for line in stderr.lines() {
+                    eprintln!("\x1b[90m[{}]\x1b[0m {}", self.name, line);
+                }
+                // Clear log
+                let _ = self
+                    .exec_in_container(&container_id, &["sh", "-c", "echo -n > /agent/stderr.log"])
+                    .await;
+            }
+
+            // Poll status
+            let response = match self.http_client.get(&status_url).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("Status poll failed: {}, retrying...", e);
+                    tokio::time::sleep(poll_interval).await;
+                    continue;
+                }
+            };
+
+            if !response.status().is_success() {
+                warn!("Status returned {}, retrying...", response.status());
+                tokio::time::sleep(poll_interval).await;
+                continue;
+            }
+
+            let body = response.text().await?;
+            let status: serde_json::Value =
+                serde_json::from_str(&body).context(format!("Invalid status JSON: {}", body))?;
+
+            let status_str = status["status"].as_str().unwrap_or("unknown");
+            let steps = status["steps"].as_u64().unwrap_or(0);
+            let elapsed = status["elapsed_secs"].as_u64().unwrap_or(0);
+
+            debug!(
+                "Status: {} (steps={}, elapsed={}s)",
+                status_str, steps, elapsed
+            );
+
+            match status_str {
+                "completed" => {
+                    info!("Agent completed in {} steps, {}s", steps, elapsed);
+                    return Ok(AgentResponse {
+                        command: None,
+                        text: Some(format!("Agent completed in {} steps", steps)),
+                        task_complete: true,
+                        analysis: None,
+                        plan: None,
+                        commands: vec![],
+                    });
+                }
+                "failed" => {
+                    let error = status["error"].as_str().unwrap_or("Unknown error");
+                    error!("Agent failed: {}", error);
+                    bail!("Agent failed: {}", error);
+                }
+                "running" | "idle" => {
+                    // Still running, continue polling
+                    tokio::time::sleep(poll_interval).await;
+                }
+                _ => {
+                    warn!("Unknown status: {}", status_str);
+                    tokio::time::sleep(poll_interval).await;
+                }
+            }
+        }
     }
 
     /// Stop and remove the agent container
@@ -720,10 +696,13 @@ impl ExternalAgent {
         Ok(())
     }
 
-    /// Clear history (called when starting a new task)
-    pub async fn clear_history(&self) {
-        let mut state = self.state.lock().await;
-        state.history.clear();
+    /// Run task with SDK 2.0 protocol
+    ///
+    /// This is the main entry point for running an agent task.
+    /// The agent executes autonomously and this method blocks until completion.
+    pub async fn run_task(&self, instruction: &str, timeout_secs: u64) -> Result<AgentResponse> {
+        let request = AgentRequest::new(instruction.to_string(), timeout_secs);
+        self.execute_task(&request).await
     }
 }
 
@@ -735,43 +714,38 @@ impl Agent for ExternalAgent {
 
     async fn setup(&self, _session: &TmuxSession) -> Result<()> {
         self.start_container().await?;
-        info!("External agent ready: {} (Docker, HTTP)", self.name);
+        info!("External agent ready: {} (Docker, SDK 2.0)", self.name);
         Ok(())
     }
 
-    async fn step(&self, instruction: &str, screen: &str, step: u32) -> Result<AgentResponse> {
-        let history = {
+    /// SDK 2.0: Run the entire task on first call, return task_complete immediately
+    ///
+    /// Note: The step parameter is ignored in SDK 2.0 since the agent runs autonomously.
+    /// The timeout is derived from a default (300s) - for custom timeouts use run_task() directly.
+    async fn step(&self, instruction: &str, _screen: &str, _step: u32) -> Result<AgentResponse> {
+        // SDK 2.0: Only execute once, subsequent calls return immediately
+        {
             let state = self.state.lock().await;
-            state.history.clone()
-        };
+            if state.task_executed {
+                return Ok(AgentResponse {
+                    command: None,
+                    text: Some("Task already executed (SDK 2.0)".to_string()),
+                    task_complete: true,
+                    analysis: None,
+                    plan: None,
+                    commands: vec![],
+                });
+            }
+        }
 
-        let request = AgentRequest::new(instruction.to_string(), step)
-            .with_output(
-                None,
-                if screen.is_empty() {
-                    None
-                } else {
-                    Some(screen.to_string())
-                },
-                Some(0),
-            )
-            .with_history(history);
+        // Execute the full task (default 5 minute timeout for trait usage)
+        let request = AgentRequest::new(instruction.to_string(), 300);
+        let response = self.execute_task(&request).await?;
 
-        let response = self.execute_step(&request).await?;
-
-        // Add to history
+        // Mark as executed
         {
             let mut state = self.state.lock().await;
-            state.history.push(HistoryEntry {
-                step,
-                command: response.command.clone(),
-                output: if screen.is_empty() {
-                    None
-                } else {
-                    Some(screen.to_string())
-                },
-                exit_code: Some(0),
-            });
+            state.task_executed = true;
         }
 
         Ok(response)

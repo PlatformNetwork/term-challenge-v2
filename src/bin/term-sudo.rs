@@ -102,7 +102,6 @@ struct PendingSubmission {
     epoch: i64,
     status: String,
     compile_status: String,
-    llm_approved: bool,
     flagged: bool,
     created_at: i64,
     validators_completed: i32,
@@ -307,7 +306,6 @@ fn display_pending(submissions: &[PendingSubmission]) {
             Cell::new("Name").fg(Color::Cyan),
             Cell::new("Status").fg(Color::Cyan),
             Cell::new("Compile").fg(Color::Cyan),
-            Cell::new("LLM").fg(Color::Cyan),
             Cell::new("Flagged").fg(Color::Cyan),
             Cell::new("Validators").fg(Color::Cyan),
         ]);
@@ -325,11 +323,6 @@ fn display_pending(submissions: &[PendingSubmission]) {
             Cell::new(s.name.as_deref().unwrap_or("-")).fg(Color::Green),
             Cell::new(&s.status).fg(status_color),
             Cell::new(&s.compile_status),
-            Cell::new(if s.llm_approved { "Y" } else { "N" }).fg(if s.llm_approved {
-                Color::Green
-            } else {
-                Color::Red
-            }),
             Cell::new(if s.flagged { "Y" } else { "N" }).fg(if s.flagged {
                 Color::Red
             } else {
