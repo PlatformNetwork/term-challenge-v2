@@ -352,8 +352,10 @@ class Terminus2Agent(Agent):
             {"role": "user", "content": prompt},
         ]
         
-        # Main agent loop
-        while ctx.remaining_steps > 0:
+        # Main agent loop (agent manages its own step limit)
+        max_iterations = 200
+        iteration = 0
+        while iteration < max_iterations:
             # Get LLM response
             try:
                 response = self.llm.chat(
@@ -453,8 +455,7 @@ class Terminus2Agent(Agent):
         outputs = []
         
         for cmd in commands:
-            if ctx.remaining_steps <= 0:
-                break
+            iteration += 1
             
             ctx.log(f"$ {cmd.keystrokes[:80]}")
             

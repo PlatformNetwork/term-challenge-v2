@@ -445,8 +445,6 @@ async fn run_agent_in_container(
     let instruction = task.instruction()?;
     let start_request = serde_json::json!({
         "instruction": instruction,
-        "timeout_secs": config.timeout_secs,
-        "max_steps": config.max_steps,
     });
 
     info!("Sending /start request...");

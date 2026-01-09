@@ -52,8 +52,6 @@ except ImportError:
 # ============================================================================
 
 DEFAULT_PORT = 8765
-DEFAULT_MAX_STEPS = 200
-DEFAULT_TIMEOUT_SECS = 300
 
 # ============================================================================
 # Logging
@@ -111,19 +109,12 @@ class AgentRunner:
         self.thread: Optional[threading.Thread] = None
         self.start_time: Optional[float] = None
     
-    def start(
-        self,
-        instruction: str,
-        max_steps: int = DEFAULT_MAX_STEPS,
-        timeout_secs: int = DEFAULT_TIMEOUT_SECS,
-    ) -> bool:
+    def start(self, instruction: str) -> bool:
         """
         Start agent execution in background thread.
         
         Args:
             instruction: Task instruction
-            max_steps: Maximum shell commands allowed
-            timeout_secs: Global timeout
         
         Returns:
             True if started, False if already running
@@ -134,11 +125,7 @@ class AgentRunner:
         self.status = "running"
         self.error = None
         self.start_time = time.time()
-        self.ctx = AgentContext(
-            instruction=instruction,
-            max_steps=max_steps,
-            timeout_secs=timeout_secs,
-        )
+        self.ctx = AgentContext(instruction=instruction)
         
         self.thread = threading.Thread(target=self._run_agent, daemon=True)
         self.thread.start()
@@ -264,21 +251,19 @@ class AgentHandler(BaseHTTPRequestHandler):
             data = json.loads(body) if body else {}
             
             instruction = data.get("instruction", "")
-            max_steps = data.get("max_steps", DEFAULT_MAX_STEPS)
-            timeout_secs = data.get("timeout_secs", DEFAULT_TIMEOUT_SECS)
             
             if not instruction:
                 self._send_json(400, {"error": "instruction required"})
                 return
             
-            log(f"Received /start: {len(instruction)} chars, max_steps={max_steps}, timeout={timeout_secs}s")
+            log(f"Received /start: {len(instruction)} chars")
             log(f"Instruction preview: {instruction[:200]}...")
             
             if _runner is None:
                 self._send_json(500, {"error": "runner not initialized"})
                 return
             
-            if _runner.start(instruction, max_steps, timeout_secs):
+            if _runner.start(instruction):
                 self._send_json(200, {"status": "started"})
             else:
                 self._send_json(409, {"error": "already running"})
