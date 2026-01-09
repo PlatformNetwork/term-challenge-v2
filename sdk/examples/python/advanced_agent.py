@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Advanced Term Challenge Agent Example
+Advanced Term Challenge Agent Example (SDK 2.0)
 
 Features:
 - Multi-step planning with memory
@@ -9,17 +9,11 @@ Features:
 - Cost tracking
 """
 
-import sys
 import json
 import re
 from dataclasses import dataclass, field
 
-from term_sdk import Agent, Request, Response, LLM, LLMError, run
-
-
-def log(msg: str):
-    """Log to stderr (stdout is reserved for protocol)."""
-    print(f"[agent] {msg}", file=sys.stderr)
+from term_sdk import Agent, AgentContext, LLM, LLMError, run
 
 
 @dataclass
@@ -33,7 +27,7 @@ class Memory:
 
 class AdvancedAgent(Agent):
     """
-    Advanced agent with planning, memory, and error recovery.
+    Advanced agent with planning, memory, streaming, and error recovery.
     """
     
     PLANNER_PROMPT = """You are a planning AI for terminal tasks.
@@ -54,36 +48,88 @@ Task: {task}
 Plan: {plan}
 Completed: {completed}
 Current step: {current_step}
-Last command: {last_command}
-Exit code: {exit_code}
-Output:
+Last output: 
 ```
-{output}
+{last_output}
 ```
 
-Respond with JSON:
-{{"command": "your command here", "task_complete": false}}
-
-If all steps are done:
-{{"command": null, "task_complete": true}}
-
-JSON response:"""
+Respond with a single shell command to execute this step.
+Output ONLY the command, nothing else."""
 
     def setup(self):
         """Initialize agent."""
         self.llm = LLM()
         self.memory = Memory()
-        self.planning_done = False
-        log("Advanced agent initialized")
     
-    def _create_plan(self, task: str) -> list:
+    def run(self, ctx: AgentContext):
+        """Execute the task with planning and error recovery."""
+        ctx.log(f"Task: {ctx.instruction[:100]}...")
+        
+        # Step 1: Create a plan
+        self.memory.plan = self._create_plan(ctx)
+        ctx.log(f"Created plan with {len(self.memory.plan)} steps")
+        
+        # Step 2: Explore the environment
+        result = ctx.shell("ls -la")
+        last_output = result.output
+        
+        # Step 3: Execute plan steps
+        for i, step in enumerate(self.memory.plan):
+            # Check resource limits
+            if ctx.remaining_steps < 5:
+                ctx.log("Low on steps, finishing up")
+                break
+            
+            stats = self.llm.get_stats()
+            if stats["total_cost"] > 1.0:
+                ctx.log(f"Budget limit reached: ${stats['total_cost']:.2f}")
+                break
+            
+            ctx.log(f"Step {i+1}/{len(self.memory.plan)}: {step}")
+            
+            # Get command for this step (with streaming feedback)
+            cmd = self._get_command_for_step(ctx, step, last_output)
+            if not cmd:
+                ctx.log("No command returned, skipping step")
+                continue
+            
+            # Execute command
+            ctx.log(f"Executing: {cmd}")
+            result = ctx.shell(cmd)
+            last_output = result.output
+            
+            # Handle errors
+            if result.failed:
+                ctx.log(f"Command failed (exit {result.exit_code})")
+                self.memory.errors.append(f"Step {i+1}: {cmd}")
+                
+                if len(self.memory.errors) > 3:
+                    ctx.log("Too many errors, stopping")
+                    break
+                
+                # Try to recover
+                ctx.log("Attempting recovery...")
+                continue
+            
+            # Track success
+            self.memory.completed_steps.append(step)
+            
+            # Track file creation
+            if '>' in cmd:
+                match = re.search(r'>\s*(\S+)', cmd)
+                if match:
+                    self.memory.files_created.append(match.group(1))
+        
+        ctx.log(f"Completed {len(self.memory.completed_steps)}/{len(self.memory.plan)} steps")
+        ctx.done()
+    
+    def _create_plan(self, ctx: AgentContext) -> list:
         """Create a plan for the task."""
-        log("Creating plan...")
+        ctx.log("Creating plan...")
         
         try:
             response = self.llm.ask(
-                self.PLANNER_PROMPT.format(task=task),
-                model="z-ai/glm-4.5",
+                self.PLANNER_PROMPT.format(task=ctx.instruction),
                 temperature=0.3
             )
             
@@ -91,103 +137,50 @@ JSON response:"""
             match = re.search(r'\[.*\]', response.text, re.DOTALL)
             if match:
                 plan = json.loads(match.group())
-                log(f"Plan created: {len(plan)} steps")
                 return plan
         except (json.JSONDecodeError, LLMError) as e:
-            log(f"Planning error: {e}")
+            ctx.log(f"Planning error: {e}")
         
         # Fallback: simple plan
         return ["Explore directory", "Execute task", "Verify result"]
     
-    def _get_next_command(self, req: Request, current_step: str) -> Response:
+    def _get_command_for_step(self, ctx: AgentContext, step: str, last_output: str) -> str:
         """Get command for the current step using streaming."""
-        log(f"Executing step: {current_step}")
-        
         prompt = self.EXECUTOR_PROMPT.format(
-            task=req.instruction,
+            task=ctx.instruction,
             plan=json.dumps(self.memory.plan),
             completed=json.dumps(self.memory.completed_steps),
-            current_step=current_step,
-            last_command=req.last_command or "None",
-            exit_code=req.exit_code if req.exit_code is not None else "N/A",
-            output=req.get_output(2000)  # Safe truncated access
+            current_step=step,
+            last_output=last_output[-1500:] if len(last_output) > 1500 else last_output
         )
         
         try:
-            # Stream response for real-time feedback
+            # Stream response with progress feedback
             full_text = ""
-            for chunk in self.llm.stream(prompt, model="z-ai/glm-4.5"):
+            for chunk in self.llm.stream(prompt):
                 full_text += chunk
-                # Show progress in logs
                 if len(full_text) % 50 == 0:
-                    log(f"Thinking... ({len(full_text)} chars)")
+                    ctx.log(f"  thinking... ({len(full_text)} chars)")
             
-            log(f"LLM response: {full_text[:100]}...")
-            return Response.from_llm(full_text)
+            # Extract just the command (first line, strip backticks)
+            cmd = full_text.strip().split('\n')[0]
+            cmd = cmd.strip('`').strip()
+            return cmd
             
         except LLMError as e:
-            log(f"LLM error: {e.code} - {e.message}")
-            self.memory.errors.append(str(e))
-            return Response.done()
-    
-    def solve(self, req: Request) -> Response:
-        """Execute one step of the agent."""
-        log(f"Step {req.step}: cwd={req.cwd}")
-        
-        # Handle errors from previous command
-        if req.failed:
-            log(f"Previous command failed (exit {req.exit_code})")
-            self.memory.errors.append(f"Step {req.step}: {req.last_command}")
-            # Try to recover
-            if len(self.memory.errors) > 3:
-                log("Too many errors, giving up")
-                return Response.done()
-        
-        # First step: create plan
-        if not self.planning_done:
-            self.memory.plan = self._create_plan(req.instruction)
-            self.planning_done = True
-            # Start with exploration
-            return Response.cmd("ls -la").with_text("Exploring directory...")
-        
-        # Check budget
-        stats = self.llm.get_stats()
-        if stats["total_cost"] > 1.0:
-            log(f"Budget limit reached: ${stats['total_cost']:.2f}")
-            return Response.done()
-        
-        # Get current step
-        step_idx = len(self.memory.completed_steps)
-        if step_idx >= len(self.memory.plan):
-            log("All planned steps completed!")
-            return Response.done()
-        
-        current_step = self.memory.plan[step_idx]
-        
-        # Get command for this step
-        response = self._get_next_command(req, current_step)
-        
-        # Track completed step
-        if response.command:
-            self.memory.completed_steps.append(current_step)
-            
-            # Track file creation
-            if '>' in response.command:
-                match = re.search(r'>\s*(\S+)', response.command)
-                if match:
-                    self.memory.files_created.append(match.group(1))
-        
-        return response
+            ctx.log(f"LLM error: {e.code} - {e.message}")
+            return None
     
     def cleanup(self):
         """Report stats."""
         stats = self.llm.get_stats()
-        log("=== Agent Report ===")
-        log(f"Steps: {len(self.memory.completed_steps)}/{len(self.memory.plan)}")
-        log(f"Files created: {self.memory.files_created}")
-        log(f"Errors: {len(self.memory.errors)}")
-        log(f"Total cost: ${stats['total_cost']:.4f}")
-        log(f"Total tokens: {stats['total_tokens']}")
+        print("=== Agent Report ===")
+        print(f"Steps: {len(self.memory.completed_steps)}/{len(self.memory.plan)}")
+        print(f"Files created: {self.memory.files_created}")
+        print(f"Errors: {len(self.memory.errors)}")
+        print(f"Total cost: ${stats['total_cost']:.4f}")
+        print(f"Total tokens: {stats['total_tokens']}")
+        self.llm.close()
 
 
 if __name__ == "__main__":

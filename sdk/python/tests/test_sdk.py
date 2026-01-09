@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Tests for term_sdk."""
+"""Tests for term_sdk (SDK 2.0)."""
 
 import json
 import pytest
-from term_sdk import Agent, Request, Response, run
+from unittest.mock import patch, MagicMock
+from term_sdk import Agent, AgentContext, Request, Response, run
+from term_sdk.shell import ShellResult
 
 
 class TestResponse:
-    """Test Response class."""
+    """Test Response class (SDK 1.x compatibility)."""
     
     def test_cmd(self):
         r = Response.cmd("ls -la")
@@ -71,7 +73,7 @@ class TestResponse:
 
 
 class TestRequest:
-    """Test Request class."""
+    """Test Request class (SDK 1.x compatibility)."""
     
     def test_parse(self):
         data = {
@@ -125,29 +127,80 @@ class TestRequest:
         assert req.failed is True
 
 
-class TestAgent:
-    """Test Agent class."""
+class TestAgentSDK2:
+    """Test Agent class with SDK 2.0 run() method."""
     
-    def test_simple_agent(self):
-        """Test creating a simple agent."""
+    @patch('term_sdk.shell.run')
+    def test_simple_agent(self, mock_shell_run):
+        """Test creating and running a simple agent."""
+        mock_shell_run.return_value = ShellResult(
+            command="ls -la",
+            stdout="file1\nfile2",
+            stderr="",
+            exit_code=0,
+            timed_out=False,
+            duration_ms=10,
+        )
+        
         class SimpleAgent(Agent):
-            def solve(self, req: Request) -> Response:
-                if req.first:
-                    return Response.cmd("ls -la")
-                return Response.done()
+            def run(self, ctx: AgentContext) -> None:
+                result = ctx.shell("ls -la")
+                if result.ok:
+                    ctx.log("Found files")
+                ctx.done()
         
         agent = SimpleAgent()
+        ctx = AgentContext(instruction="test", max_steps=10)
+        agent.run(ctx)
         
-        # First request
-        req1 = Request.parse({"instruction": "test", "step": 1})
-        resp1 = agent.solve(req1)
-        assert resp1.command == "ls -la"
-        assert resp1.task_complete is False
-        
-        # Second request
-        req2 = Request.parse({"instruction": "test", "step": 2, "output": "file1\nfile2"})
-        resp2 = agent.solve(req2)
-        assert resp2.task_complete is True
+        assert ctx.is_done is True
+        assert ctx.step == 1
+        assert len(ctx.history) == 1
+
+
+class TestShellResult:
+    """Test ShellResult class."""
+    
+    def test_ok_property(self):
+        result = ShellResult(
+            command="test", stdout="out", stderr="",
+            exit_code=0, timed_out=False, duration_ms=0
+        )
+        assert result.ok is True
+        assert result.failed is False
+    
+    def test_failed_property(self):
+        result = ShellResult(
+            command="test", stdout="", stderr="error",
+            exit_code=1, timed_out=False, duration_ms=0
+        )
+        assert result.ok is False
+        assert result.failed is True
+    
+    def test_output_combined(self):
+        result = ShellResult(
+            command="test", stdout="out", stderr="err",
+            exit_code=0, timed_out=False, duration_ms=0
+        )
+        assert "out" in result.output
+        assert "err" in result.output
+    
+    def test_has_pattern(self):
+        result = ShellResult(
+            command="test", stdout="Hello World", stderr="",
+            exit_code=0, timed_out=False, duration_ms=0
+        )
+        assert result.has("hello") is True
+        assert result.has("WORLD") is True
+        assert result.has("foo") is False
+    
+    def test_timeout(self):
+        result = ShellResult(
+            command="test", stdout="", stderr="timeout",
+            exit_code=-1, timed_out=True, duration_ms=60000
+        )
+        assert result.timed_out is True
+        assert result.failed is True
 
 
 if __name__ == "__main__":

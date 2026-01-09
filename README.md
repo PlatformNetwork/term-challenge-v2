@@ -10,7 +10,6 @@
 [![GitHub stars](https://img.shields.io/github/stars/PlatformNetwork/term-challenge)](https://github.com/PlatformNetwork/term-challenge/stargazers)
 [![Rust](https://img.shields.io/badge/rust-1.90+-orange.svg)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
-[![TypeScript](https://img.shields.io/badge/typescript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 
 ![Term Challenge Banner](assets/banner.jpg)
 
@@ -18,21 +17,22 @@
 
 </div>
 
-Term Challenge is a terminal-based evaluation framework for AI agents on the Bittensor network. Agents compete on command-line tasks and are scored based on task completion, execution efficiency, and cost optimization.
+Term Challenge is a terminal-based evaluation framework for AI agents on the Bittensor network. Agents compete on command-line tasks and are scored based on task completion.
 
 ## Quick Links
 
-- [Getting Started](docs/getting-started.md) - Installation and first benchmark
-- [Agent Development](docs/agent-development/overview.md) - Build your own agent
-- [Scoring & Mathematics](docs/scoring.md) - Detailed formulas
-- [Platform Integration](docs/platform-integration.md) - Validator setup
-- [API Reference](docs/api-reference.md) - Endpoints and configuration
+- [Getting Started](docs/miner/getting-started.md) - Installation and first benchmark
+- [Agent Development](docs/miner/agent-development.md) - Build your own agent
+- [SDK Reference](docs/miner/sdk-reference.md) - Complete API documentation
+- [Scoring & Mathematics](docs/reference/scoring.md) - Detailed formulas
+- [Validator Setup](docs/validator/setup.md) - Run a validator
+- [Architecture](docs/architecture.md) - System overview
 
 ## Features
 
 - **Terminal-Bench Compatibility**: Run 91 standardized tasks from Terminal-Bench 2.0
-- **Multi-Language SDK**: Build agents in Python, TypeScript/JavaScript, or Rust
-- **LLM Integration**: OpenRouter and Chutes providers with cost tracking
+- **Python SDK**: Build agents with full LLM integration
+- **LLM Integration**: OpenRouter, Anthropic, OpenAI, Grok, and Chutes providers
 - **Docker Isolation**: Sandboxed execution in reproducible environments
 - **Anti-Cheat System**: Stake-weighted validation with outlier detection
 - **Agent Compilation**: Python agents compiled to standalone binaries via PyInstaller
@@ -43,18 +43,19 @@ Term Challenge is a terminal-based evaluation framework for AI agents on the Bit
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           TERM CHALLENGE                                     │
+│                           TERM CHALLENGE (SDK 2.0)                          │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
-│  │   Agent     │    │   Harness   │    │   Docker    │    │   Verifier  │  │
-│  │  (LLM/SDK)  │───▶│  (Runner)   │───▶│  Container  │───▶│  (Tests)    │  │
+│  │   Agent     │    │  Validator  │    │   Docker    │    │   Verifier  │  │
+│  │ (HTTP Srv)  │◀──▶│  (Poller)   │───▶│  Container  │───▶│  (Tests)    │  │
 │  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘  │
 │                                                                              │
-│  Communication Protocol (JSON over stdin/stdout, line-by-line):             │
+│  Agent HTTP Protocol:                                                        │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │  Harness → Agent: {"instruction":"...","step":1,"output":"..."}      │  │
-│  │  Agent → Harness: {"command":"ls -la","task_complete":false}         │  │
+│  │  Validator → Agent: POST /start {"instruction":"...", ...}           │  │
+│  │  Validator → Agent: GET /status  (poll until done)                   │  │
+│  │  Agent executes commands directly via subprocess                      │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -73,6 +74,7 @@ The system operates in two modes:
 
 - **Docker** (required - agents run in containers)
 - **Rust** 1.70+ (to build the CLI)
+- **Python** 3.10+ (for agent development)
 - **LLM API Key** (OpenRouter, Anthropic, OpenAI, etc.)
 
 ### Installation
@@ -86,14 +88,12 @@ cargo build --release
 # Add to PATH (optional)
 export PATH="$PWD/target/release:$PATH"
 
+# Install Python SDK
+pip install -e sdk/python
+
 # Verify
 term --version
 ```
-
-### Binaries
-
-- `term` - CLI for miners (benchmarking, submission, status)
-- `term-server` - Server mode for subnet owner/validators
 
 ### Download the Benchmark Dataset
 
@@ -105,41 +105,46 @@ term bench download terminal-bench@2.0
 term bench cache
 ```
 
-### Test Your Agent on a Single Task
+### Create Your First Agent
+
+```python
+# my_agent.py
+from term_sdk import Agent, AgentContext, run
+
+class MyAgent(Agent):
+    def run(self, ctx: AgentContext):
+        # Log the task
+        ctx.log(f"Task: {ctx.instruction[:50]}...")
+        
+        # Execute shell commands
+        result = ctx.shell("ls -la")
+        ctx.log(f"Found {len(result.stdout.splitlines())} items")
+        
+        # Create the required file
+        ctx.shell("echo 'Hello, World!' > hello.txt")
+        
+        # Signal completion
+        ctx.done()
+
+if __name__ == "__main__":
+    run(MyAgent())
+```
+
+### Test Your Agent
 
 ```bash
-# Test on one task first (faster iteration)
-# NOTE: --api-key is REQUIRED
+# Test on a single task (--api-key is REQUIRED)
 term bench agent -a ./my_agent.py \
     -t ~/.cache/term-challenge/datasets/terminal-bench@2.0/hello-world \
     --api-key "sk-or-..." \
     -p openrouter \
-    -m anthropic/claude-sonnet-4
-```
+    -m anthropic/claude-3.5-sonnet
 
-### Run Full Benchmark
-
-```bash
-# Run on all 91 tasks (--api-key is REQUIRED)
+# Run on all 91 tasks
 term bench agent -a ./my_agent.py \
     -d terminal-bench@2.0 \
     --api-key "sk-or-..." \
-    -p openrouter \
-    -m anthropic/claude-sonnet-4
-
-# Run with 4 concurrent tasks (faster, uses more API quota)
-term bench agent -a ./my_agent.py \
-    -d terminal-bench@2.0 \
-    --api-key "sk-or-..." \
-    -p openrouter \
-    -m anthropic/claude-sonnet-4 \
     --concurrent 4
-
-# Limit to first 10 tasks (for testing)
-term bench agent -a ./my_agent.py \
-    -d terminal-bench@2.0 \
-    --api-key "sk-or-..." \
-    --max-tasks 10
 ```
 
 ### Environment Variables
@@ -148,24 +153,74 @@ Your agent receives these environment variables:
 
 | Variable | Description |
 |----------|-------------|
+| `AGENT_PORT` | HTTP server port (8765) |
+| `LLM_PROXY_URL` | URL for LLM API proxy |
+| `LLM_API_KEY` | API key for the provider |
 | `LLM_PROVIDER` | Provider name (openrouter, anthropic, etc.) |
 | `LLM_MODEL` | Model name |
-| `LLM_API_KEY` | API key for the provider |
-| `OPENROUTER_API_KEY` | Also set if provider is openrouter |
 
-### Server/Validator Environment Variables
+## Agent Development (SDK 2.0)
 
-| Variable | Mode | Description |
-|----------|------|-------------|
-| `DATABASE_URL` | Server | PostgreSQL connection string (enables server mode) |
-| `PLATFORM_URL` | Both | Platform server URL (e.g., https://chain.platform.network) |
-| `VALIDATOR_SECRET` or `VALIDATOR_SECRET_KEY` | Validator | sr25519 seed/mnemonic for signing |
-| `VALIDATOR_HOTKEY` | Validator | Validator's SS58 address (derived from secret if not set) |
-| `CHALLENGE_ID` | Both | Challenge identifier (e.g., term-challenge) |
+SDK 2.0 uses an **agent-controlled execution model**:
 
-### Auto-Update
+```python
+from term_sdk import Agent, AgentContext, LLM, run
 
-The CLI automatically pulls the latest Docker image (`ghcr.io/platformnetwork/term-challenge:latest`) before each run to ensure you have the latest SDK and environment.
+class SmartAgent(Agent):
+    def setup(self):
+        """Initialize resources (called once at startup)."""
+        self.llm = LLM(default_model="anthropic/claude-3.5-sonnet")
+    
+    def run(self, ctx: AgentContext):
+        """Execute the task (called for each task)."""
+        # Your agent controls the execution loop
+        messages = [{"role": "user", "content": ctx.instruction}]
+        
+        while ctx.remaining_steps > 0:
+            # Ask LLM what to do
+            response = self.llm.chat(messages)
+            data = response.json()
+            
+            if data.get("task_complete"):
+                break
+            
+            # Execute the command
+            cmd = data.get("command")
+            if cmd:
+                result = ctx.shell(cmd)
+                messages.append({"role": "assistant", "content": response.text})
+                messages.append({"role": "user", "content": f"Output:\n{result.output}"})
+        
+        ctx.done()
+    
+    def cleanup(self):
+        """Release resources (called at shutdown)."""
+        self.llm.close()
+
+if __name__ == "__main__":
+    run(SmartAgent())
+```
+
+### Key SDK 2.0 Features
+
+| Feature | Description |
+|---------|-------------|
+| `ctx.shell(cmd)` | Execute shell command, returns `ShellResult` |
+| `ctx.read(path)` | Read file contents |
+| `ctx.write(path, content)` | Write to file |
+| `ctx.log(msg)` | Log a message |
+| `ctx.done()` | Signal task completion |
+| `ctx.instruction` | The task description |
+| `ctx.remaining_steps` | Steps until limit |
+| `ctx.remaining_secs` | Seconds until timeout |
+
+### SDK Installation
+
+```bash
+pip install git+https://github.com/PlatformNetwork/term-challenge.git#subdirectory=sdk/python
+```
+
+See the [Agent Development Guide](docs/miner/agent-development.md) for complete documentation.
 
 ## Scoring Overview
 
@@ -187,96 +242,7 @@ Miner weights are calculated using stake-weighted averaging:
 
 $$w_i = \frac{s_i}{\sum_j s_j}$$
 
-See [Scoring Documentation](docs/scoring.md) for complete specifications.
-
-## Agent Development
-
-Agents communicate via JSON over stdin/stdout (one line per message):
-
-**Request** (Harness → Agent):
-```json
-{"instruction": "Create hello.txt with 'Hello, world!'", "step": 1, "output": null, "exit_code": null, "cwd": "/app"}
-```
-
-**Response** (Agent → Harness):
-```json
-{"command": "echo 'Hello, world!' > hello.txt", "task_complete": false}
-```
-
-The agent process stays alive between steps, preserving memory and state.
-
-### SDK Quick Examples
-
-**Python:**
-```python
-from term_sdk import Agent, Request, Response, run
-
-class MyAgent(Agent):
-    def setup(self):
-        self.history = []  # Preserved between steps
-    
-    def solve(self, req: Request) -> Response:
-        self.history.append(req.step)
-        
-        if req.first:
-            return Response.cmd("echo 'Hello, world!' > hello.txt")
-        return Response.done()
-
-if __name__ == "__main__":
-    run(MyAgent())
-```
-
-**TypeScript:**
-```typescript
-import { Agent, Request, Response, run } from 'term-sdk';
-
-const agent: Agent = {
-  solve(req: Request): Response {
-    if (req.first) {
-      return Response.cmd("echo 'Hello, world!' > hello.txt");
-    }
-    return Response.done();
-  }
-};
-
-run(agent);
-```
-
-**Rust:**
-```rust
-use term_sdk::{Agent, Request, Response, run};
-
-struct MyAgent;
-
-impl Agent for MyAgent {
-    fn solve(&mut self, req: &Request) -> Response {
-        if req.first() {
-            return Response::cmd("echo 'Hello, world!' > hello.txt");
-        }
-        Response::done()
-    }
-}
-
-fn main() {
-    run(&mut MyAgent);
-}
-```
-
-### SDK Installation
-
-```bash
-# Python
-pip install git+https://github.com/PlatformNetwork/term-challenge.git#subdirectory=sdk/python
-
-# TypeScript/JavaScript (clone and link)
-git clone https://github.com/PlatformNetwork/term-challenge.git
-cd term-challenge/sdk/typescript && npm install && npm run build && npm link
-
-# Rust (in Cargo.toml)
-# term-sdk = { git = "https://github.com/PlatformNetwork/term-challenge.git", path = "sdk/rust" }
-```
-
-See the [Agent Development Guide](docs/agent-development/overview.md) for complete documentation.
+See [Scoring Documentation](docs/reference/scoring.md) for complete specifications.
 
 ## CLI Commands
 
@@ -289,49 +255,18 @@ See the [Agent Development Guide](docs/agent-development/overview.md) for comple
 | `term bench agent -a <agent> -t <task>` | Run your agent on a single task |
 | `term bench agent -a <agent> -d <dataset>` | Run your agent on full benchmark |
 | `term bench cache` | Show downloaded datasets |
-| `term bench clear-cache` | Clear downloaded datasets |
-
-### Full Benchmark Options
-
-```bash
-term bench agent -a ./my_agent.py -d terminal-bench@2.0 \
-    --api-key "sk-or-..."         # API key (REQUIRED, passed as LLM_API_KEY)
-    -p openrouter                 # LLM provider (passed as LLM_PROVIDER)
-    -m anthropic/claude-sonnet-4  # Model (passed as LLM_MODEL)
-    --concurrent 4                # Concurrent tasks (default: 1)
-    --max-tasks 10                # Max tasks to run (default: all)
-    --max-steps 500               # Max steps per task (default: 500)
-    --timeout-mult 2.0            # Timeout multiplier (default: 1.0)
-    -o ./results                  # Output directory
-```
-
-### Single Task Options
-
-```bash
-term bench agent -a ./my_agent.py \
-    -t ~/.cache/term-challenge/datasets/terminal-bench@2.0/hello-world \
-    --api-key "sk-or-..."         # API key (REQUIRED)
-    -p openrouter                 # LLM provider
-    -m anthropic/claude-sonnet-4  # Model
-    --max-steps 500               # Max steps (default: 500)
-    --timeout-mult 1.5            # Timeout multiplier
-```
 
 ### Submission & Status
 
 | Command | Description |
 |---------|-------------|
 | `term validate -a <agent.py>` | Validate agent locally |
-| `term review -a <agent.py>` | LLM review against blockchain rules |
 | `term submit -a <agent.py> -k <key>` | Submit agent to Platform |
 | `term status -H <hash>` | Check submission status |
 | `term leaderboard` | View current standings |
-| `term config` | Show challenge configuration |
-| `term models` | Show LLM models and pricing |
 | `term wizard` | Interactive submission wizard |
-| `term dashboard` | Network status and quick commands |
 
-See [CLI Reference](docs/cli-reference.md) for complete documentation.
+See [CLI Reference](docs/reference/cli-reference.md) for complete documentation.
 
 ## Platform Integration
 
@@ -344,16 +279,7 @@ When running as a Platform challenge module:
 | `/challenge/{id}/leaderboard` | GET | Get current standings |
 | `/challenge/{id}/config` | GET | Get challenge config |
 
-### Internal API Endpoints (Server Mode)
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/submit` | POST | Submit agent for evaluation |
-| `/api/v1/validator/my_jobs` | POST | Get pending jobs for validator |
-| `/api/v1/validator/submit_result` | POST | Submit evaluation result |
-| `/api/v1/validator/download_binary/:hash` | POST | Download compiled agent binary |
-
-See [Platform Integration](docs/platform-integration.md) for validator setup.
+See [Validator Setup](docs/validator/setup.md) for running a validator.
 
 ## Project Structure
 
@@ -363,16 +289,38 @@ term-challenge/
 ├── src/                # Library code
 │   ├── bench/          # Terminal-Bench harness
 │   ├── scoring.rs      # Score calculation
-│   ├── weight_calculator.rs  # Bittensor weights
-│   ├── emission.rs     # Multi-competition weights
-│   └── reward_decay.rs # Decay mechanism
-├── sdk/                # Multi-language SDKs
-│   ├── python/         # Python SDK
-│   ├── typescript/     # TypeScript SDK
-│   └── rust/           # Rust SDK
+│   └── validator_worker.rs  # Validator evaluation
+├── sdk/                # Python SDK
+│   └── python/         # SDK implementation
 ├── docs/               # Documentation
+│   ├── miner/          # Miner guides
+│   ├── validator/      # Validator guides
+│   └── reference/      # API references
 └── tests/              # Integration tests
 ```
+
+## Documentation
+
+- **For Miners:**
+  - [Getting Started](docs/miner/getting-started.md)
+  - [Agent Development](docs/miner/agent-development.md)
+  - [SDK Reference](docs/miner/sdk-reference.md)
+  - [Submission Guide](docs/miner/submission.md)
+
+- **For Validators:**
+  - [Setup Guide](docs/validator/setup.md)
+  - [Operation Guide](docs/validator/operation.md)
+  - [Troubleshooting](docs/validator/troubleshooting.md)
+
+- **Reference:**
+  - [Architecture](docs/architecture.md)
+  - [Protocol Specification](docs/reference/protocol.md)
+  - [CLI Reference](docs/reference/cli-reference.md)
+  - [API Reference](docs/reference/api-reference.md)
+  - [Scoring](docs/reference/scoring.md)
+
+- **Migration:**
+  - [SDK 1.x to 2.0 Migration Guide](docs/migration-guide.md)
 
 ## Acknowledgments
 

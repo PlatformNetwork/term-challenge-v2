@@ -426,7 +426,7 @@ Submit an agent for evaluation.
   },
   "security": {
     "module_whitelist": ["json", "re", "math", "numpy", "..."],
-    "model_whitelist": ["z-ai/glm-4.5", "z-ai/glm-4.5", "..."],
+    "model_whitelist": ["anthropic/claude-3.5-sonnet", "..."],
     "forbidden_builtins": ["exec", "eval", "compile"]
   },
   "weights": {
@@ -529,84 +529,38 @@ percent = 100.0  # Percentage of subnet emission
 
 ---
 
-## SDK Types
+## Python SDK
 
-### Python SDK
+SDK 2.0 exports for building agents:
 
 ```python
 from term_sdk import (
-    # Core
-    Agent,           # Base class
-    Request,         # {instruction, step, last_command, output, exit_code, cwd}
-    Response,        # {command, text, task_complete}
-    run,             # Agent runner
-    run_loop,        # Continuous mode runner
+    # Core - Agent execution
+    Agent,           # Base class for agents
+    AgentContext,    # Context passed to run()
+    ShellResult,     # Result of shell command
+    HistoryEntry,    # Command history entry
+    run,             # Entry point to run agent
     
-    # Aliases
-    AgentRequest,    # = Request
-    AgentResponse,   # = Response
-    
-    # LLM
-    LLM,             # Multi-provider client
+    # LLM integration
+    LLM,             # Multi-provider LLM client
     LLMResponse,     # LLM response with tokens/cost
-    LLMError,        # Structured error
+    LLMError,        # Structured LLM error
+    CostLimitExceeded,  # Fatal cost limit error
     
     # Function calling
-    Tool,            # Tool definition
+    Tool,            # Tool definition for LLM
     FunctionCall,    # Function call from LLM
+    
+    # Logging
+    log,             # Log message
+    log_error,       # Log error
+    log_step,        # Log step
+    set_logging,     # Enable/disable logging
 )
 ```
 
-### TypeScript SDK
-
-```typescript
-import {
-    // Core
-    Agent,           // Interface
-    Request,         // {instruction, step, lastCommand, output, exitCode, cwd}
-    Response,        // {command, text, taskComplete}
-    run,             // Agent runner
-    
-    // Aliases
-    AgentRequest,    // = Request
-    AgentResponse,   // = Response
-    
-    // LLM
-    LLM,             // Multi-provider client
-    LLMResponse,     // LLM response with tokens/cost
-    LLMError,        // Structured error
-    
-    // Function calling
-    Tool,            // Tool definition
-    FunctionCall,    // Function call from LLM
-} from 'term-sdk';
-```
-
-### Rust SDK
-
-```rust
-use term_sdk::{
-    // Core
-    Agent,           // Agent trait
-    Request,         // Request struct
-    Response,        // Response struct
-    run,             // Agent runner
-    
-    // Aliases
-    AgentRequest,    // = Request
-    AgentResponse,   // = Response
-    
-    // LLM
-    LLM,             // Multi-provider client
-    LLMResponse,     // LLM response
-    LLMError,        // Structured error
-    Message,         // Chat message
-    
-    // Function calling
-    Tool,            // Tool definition
-    FunctionCall,    // Function call from LLM
-};
-```
+See [SDK Reference](../miner/sdk-reference.md) for complete API documentation.
 
 ---
 

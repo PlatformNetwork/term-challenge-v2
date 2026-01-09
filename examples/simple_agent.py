@@ -1,61 +1,59 @@
 #!/usr/bin/env python3
 """
-Simple Test Agent for Term Challenge
+Simple Test Agent for Term Challenge (SDK 2.0)
 
 A minimal agent that demonstrates the required structure for the SDK.
-This agent doesn't use an LLM - it just echoes basic commands.
+This agent doesn't use an LLM - it just performs basic file operations.
 """
 
-from term_sdk import Agent, AgentResponse, Command, run, log
+from term_sdk import Agent, AgentContext, run
 
 
 class SimpleAgent(Agent):
     """Simple agent that handles basic file operations."""
 
-    async def setup(self) -> None:
-        log.info("Simple agent initialized")
+    def setup(self):
+        """Initialize agent (called once at startup)."""
+        pass
 
-    async def step(self, instruction: str, screen: str, step: int) -> AgentResponse:
-        log.info(f"Step {step}: Analyzing screen")
-        log.debug(f"Instruction: {instruction}")
+    def run(self, ctx: AgentContext):
+        """Execute the task."""
+        ctx.log(f"Task: {ctx.instruction[:100]}...")
+        
+        instruction_lower = ctx.instruction.lower()
+
+        # Start by exploring the environment
+        result = ctx.shell("ls -la")
+        ctx.log(f"Found {len(result.stdout.splitlines())} items")
 
         # Simple pattern matching for common tasks
-        instruction_lower = instruction.lower()
-
-        # Check if task is complete (look for success indicators)
-        if "hello.txt" in screen and "Hello" in screen:
-            log.success("Task appears complete!")
-            return AgentResponse(
-                analysis="The file hello.txt exists with the correct content.",
-                plan="Task is complete.",
-                commands=[],
-                task_complete=True,
-            )
-
-        # Generate command based on instruction
         if "hello" in instruction_lower and "file" in instruction_lower:
-            log.info("Detected: Create hello.txt task")
-            return AgentResponse(
-                analysis="Need to create a file called hello.txt with greeting content.",
-                plan="Use echo with redirection to create the file.",
-                commands=[
-                    Command(keystrokes='echo "Hello, world!" > hello.txt\n', duration=1.0),
-                    Command(keystrokes='cat hello.txt\n', duration=1.0),
-                ],
-                task_complete=False,
-            )
+            ctx.log("Detected: Create hello.txt task")
+            ctx.shell('echo "Hello, world!" > hello.txt')
+            verify = ctx.shell('cat hello.txt')
+            if verify.has("Hello"):
+                ctx.log("Task complete: hello.txt created successfully")
+        
+        elif "list" in instruction_lower or "find" in instruction_lower:
+            ctx.log("Detected: File search task")
+            ctx.shell("find . -type f 2>/dev/null | head -20")
+        
+        elif "create" in instruction_lower and "directory" in instruction_lower:
+            ctx.log("Detected: Create directory task")
+            ctx.shell("mkdir -p output")
+            ctx.shell("ls -la")
+        
+        else:
+            # Default: explore more
+            ctx.log("Unknown task, exploring...")
+            ctx.shell("pwd")
+            ctx.shell("cat README.md 2>/dev/null || echo 'No README'")
 
-        # Default: just list files
-        log.warning("Unknown task, listing files")
-        return AgentResponse(
-            analysis=f"Received instruction: {instruction}",
-            plan="List current directory to understand state.",
-            commands=[Command(keystrokes="ls -la\n", duration=1.0)],
-            task_complete=False,
-        )
+        ctx.done()
 
-    async def cleanup(self) -> None:
-        log.info("Simple agent cleanup")
+    def cleanup(self):
+        """Cleanup (called at shutdown)."""
+        pass
 
 
 if __name__ == "__main__":

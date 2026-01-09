@@ -1,23 +1,36 @@
 #!/usr/bin/env python3
-"""Simple test agent - 5 steps with different commands."""
+"""Simple test agent for SDK 2.0 - executes 5 commands."""
 
-from term_sdk import Agent, Request, Response, run
+from term_sdk import Agent, AgentContext, run
+
 
 class TestAgent(Agent):
-    def solve(self, req: Request) -> Response:
+    """Simple agent that runs a sequence of commands."""
+    
+    def run(self, ctx: AgentContext) -> None:
         commands = [
             "echo 'Step 1: Hello'",
             "ls -la",
             "pwd",
             "date",
-            None  # Done
+            "echo 'Done!'",
         ]
         
-        idx = req.step - 1
-        if idx >= len(commands) or commands[idx] is None:
-            return Response.done()
+        ctx.log(f"Starting test agent with {len(commands)} commands")
+        ctx.log(f"Instruction: {ctx.instruction[:100]}...")
         
-        return Response.cmd(commands[idx])
+        for i, cmd in enumerate(commands, 1):
+            ctx.log(f"Executing command {i}/{len(commands)}: {cmd}")
+            result = ctx.shell(cmd)
+            
+            if result.ok:
+                ctx.log(f"Command {i} succeeded: {result.output[:50]}...")
+            else:
+                ctx.log(f"Command {i} failed with exit code {result.exit_code}")
+        
+        ctx.log("Test agent complete")
+        ctx.done()
+
 
 if __name__ == "__main__":
     run(TestAgent())

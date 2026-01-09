@@ -1,15 +1,22 @@
 """
-Term Challenge SDK - Build agents that solve terminal tasks.
+Term Challenge SDK 2.0 - Build agents that solve terminal tasks.
+
+SDK 2.0 uses an agent-controlled execution model where your agent:
+- Receives the instruction once via the context
+- Executes commands directly via subprocess (ctx.shell())
+- Manages its own loop and LLM calls
+- Signals completion with ctx.done()
 
 Quick Start:
     ```python
-    from term_sdk import Agent, Request, Response, run
+    from term_sdk import Agent, AgentContext, run
 
     class MyAgent(Agent):
-        def solve(self, req: Request) -> Response:
-            if req.step == 1:
-                return Response.cmd("ls -la")
-            return Response.done()
+        def run(self, ctx: AgentContext):
+            result = ctx.shell("ls -la")
+            if result.has("file.txt"):
+                ctx.shell("cat file.txt")
+            ctx.done()
 
     if __name__ == "__main__":
         run(MyAgent())
@@ -17,65 +24,92 @@ Quick Start:
 
 With LLM:
     ```python
-    from term_sdk import Agent, Request, Response, LLM, run
+    from term_sdk import Agent, AgentContext, LLM, run
 
     class LLMAgent(Agent):
         def setup(self):
-            self.llm = LLM(model="z-ai/glm-4.5")
+            self.llm = LLM(model="deepseek/deepseek-chat")
 
-        def solve(self, req: Request) -> Response:
-            # Use get_output() for safe truncated access, or output_text for safe string
-            result = self.llm.ask(f"Task: {req.instruction}\\nOutput: {req.get_output(3000)}")
-            return Response.from_llm(result.text)
+        def run(self, ctx: AgentContext):
+            ctx.log(f"Task: {ctx.instruction[:100]}...")
+            
+            # Explore
+            result = ctx.shell("ls -la")
+            
+            # Use LLM to decide next action
+            response = self.llm.ask(
+                f"Task: {ctx.instruction}\\n"
+                f"Files: {result.stdout[:2000]}\\n"
+                "What command should I run?"
+            )
+            
+            # Execute LLM suggestion
+            ctx.shell(response.text)
+            ctx.done()
 
     if __name__ == "__main__":
         run(LLMAgent())
     ```
 
-With Function Calling:
+Agent Loop Pattern:
     ```python
-    from term_sdk import Agent, Request, Response, LLM, Tool, run
+    from term_sdk import Agent, AgentContext, LLM, run
 
-    class ToolAgent(Agent):
+    class LoopAgent(Agent):
         def setup(self):
-            self.llm = LLM(model="z-ai/glm-4.5")
-            self.llm.register_function("search", self.search)
+            self.llm = LLM()
 
-        def search(self, query: str) -> str:
-            return f"Results for {query}"
-
-        def solve(self, req: Request) -> Response:
-            tools = [Tool(name="search", description="Search", parameters={})]
-            result = self.llm.chat_with_functions(
-                [{"role": "user", "content": req.instruction}],
-                tools=tools
-            )
-            return Response.from_llm(result.text)
+        def run(self, ctx: AgentContext):
+            messages = [{"role": "user", "content": ctx.instruction}]
+            
+            while ctx.remaining_steps > 0:
+                # Get LLM response
+                response = self.llm.chat(messages)
+                
+                # Parse command from response
+                cmd = self.parse_command(response.text)
+                if not cmd:
+                    ctx.done()
+                    return
+                
+                # Execute and add to messages
+                result = ctx.shell(cmd)
+                messages.append({"role": "assistant", "content": response.text})
+                messages.append({"role": "user", "content": f"Output: {result.stdout[-3000:]}"})
+                
+                if self.is_task_complete(result):
+                    ctx.done()
+                    return
+            
+            ctx.done()  # Ran out of steps
 
     if __name__ == "__main__":
-        run(ToolAgent())
+        run(LoopAgent())
     ```
 """
 
-__version__ = "1.1.0"
+__version__ = "2.0.0"
 
-from .types import Request, Response, Tool, FunctionCall, HistoryEntry
-from .agent import Agent
+# Core agent classes
+from .agent import Agent, AgentContext, ShellResult, HistoryEntry
+
+# Runner
 from .runner import run, log, log_error, log_step, set_logging
+
+# LLM
 from .llm import LLM, LLMResponse, LLMError, CostLimitExceeded
 
-# Aliases for compatibility
-AgentRequest = Request
-AgentResponse = Response
+# Legacy types (for backwards compatibility if needed)
+from .types import Request, Response, Tool, FunctionCall
 
 __all__ = [
-    # Core types
-    "Request",
-    "Response",
-    "HistoryEntry",
+    # SDK 2.0 core
     "Agent",
+    "AgentContext", 
+    "ShellResult",
+    "HistoryEntry",
+    # Runner
     "run",
-    # Logging
     "log",
     "log_error",
     "log_step",
@@ -85,10 +119,9 @@ __all__ = [
     "LLMResponse",
     "LLMError",
     "CostLimitExceeded",
-    # Function calling
+    # Legacy (SDK 1.x compatibility)
+    "Request",
+    "Response",
     "Tool",
     "FunctionCall",
-    # Aliases
-    "AgentRequest",
-    "AgentResponse",
 ]

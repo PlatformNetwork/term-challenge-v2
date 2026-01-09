@@ -41,14 +41,17 @@ class Request:
     history: List[HistoryEntry] = field(default_factory=list)
     
     @classmethod
-    def parse(cls, data: str | dict) -> Request:
+    def parse(cls, data: str | Dict[str, Any]) -> Request:
         """Parse request from JSON string or dict."""
+        parsed: Dict[str, Any]
         if isinstance(data, str):
-            data = json.loads(data)
+            parsed = json.loads(data)
+        else:
+            parsed = data
         
         # Parse history entries
         history = []
-        for entry in data.get("history", []):
+        for entry in parsed.get("history", []):
             history.append(HistoryEntry(
                 step=entry.get("step", 0),
                 command=entry.get("command"),
@@ -57,12 +60,12 @@ class Request:
             ))
         
         return cls(
-            instruction=data.get("instruction", ""),
-            step=data.get("step", 1),
-            last_command=data.get("last_command"),
-            output=data.get("output"),
-            exit_code=data.get("exit_code"),
-            cwd=data.get("cwd", "/app"),
+            instruction=parsed.get("instruction", ""),
+            step=parsed.get("step", 1),
+            last_command=parsed.get("last_command"),
+            output=parsed.get("output"),
+            exit_code=parsed.get("exit_code"),
+            cwd=parsed.get("cwd", "/app"),
             history=history,
         )
     

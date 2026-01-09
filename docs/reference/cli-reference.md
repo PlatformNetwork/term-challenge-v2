@@ -138,12 +138,6 @@ Runs a task using your own agent script.
 | `--timeout-mult <N>` | Timeout multiplier (default: 1.0) |
 | `-o, --output <DIR>` | Output directory |
 
-**Supported languages:**
-- Python (`.py`)
-- JavaScript/TypeScript (`.js`, `.mjs`, `.ts`)
-- Rust (`.rs` - compiled automatically)
-- Binary (no extension)
-
 **Examples:**
 ```bash
 # Run Python agent (--api-key is REQUIRED)
@@ -223,9 +217,9 @@ Validates an agent locally (syntax, security checks, allowed modules).
 ```bash
 term validate -a ./my_agent.py
 # Output:
-#   ✓ Syntax valid
-#   ✓ No forbidden imports
-#   ✓ Agent ready for submission
+#   Syntax valid
+#   No forbidden imports
+#   Agent ready for submission
 ```
 
 ### Submit Agent
@@ -439,16 +433,15 @@ term bench download terminal-bench@2.0
 term bench run -t ~/.cache/term-challenge/datasets/terminal-bench@2.0/hello-world \
     -m anthropic/claude-sonnet-4
 
-# 4. Create your agent (see SDK docs)
+# 4. Create your agent (SDK 2.0)
 cat > my_agent.py << 'EOF'
 #!/usr/bin/env python3
-from term_sdk import Agent, Request, Response, run
+from term_sdk import Agent, AgentContext, run
 
 class MyAgent(Agent):
-    def solve(self, req: Request) -> Response:
-        if req.first:
-            return Response.cmd('echo "Hello, world!" > hello.txt')
-        return Response.done()
+    def run(self, ctx: AgentContext):
+        ctx.shell('echo "Hello, world!" > hello.txt')
+        ctx.done()
 
 if __name__ == "__main__":
     run(MyAgent())
@@ -500,12 +493,12 @@ ls -la /var/run/docker.sock
 sudo usermod -aG docker $USER
 ```
 
-### "Agent response timeout"
+### "Agent timeout"
 
-Your agent may be waiting for input. Ensure it:
-1. Reads stdin line-by-line (not `stdin.read()`)
-2. Outputs JSON on stdout with flush
-3. Uses stderr for logging
+Your agent may be taking too long. Check:
+1. LLM response times
+2. Infinite loops in agent logic
+3. Commands that hang
 
 ### "Invalid mount path"
 
@@ -526,6 +519,8 @@ curl -H "Authorization: Bearer $OPENROUTER_API_KEY" \
 
 ## See Also
 
-- [Agent Development](agent-development/overview.md) - Build your own agent
-- [SDK Protocol](../sdk/PROTOCOL.md) - Communication protocol details
+- [Getting Started](../miner/getting-started.md) - Quick start guide
+- [Agent Development](../miner/agent-development.md) - Build your own agent
+- [SDK Reference](../miner/sdk-reference.md) - Python SDK documentation
+- [Protocol Reference](protocol.md) - HTTP protocol specification
 - [Scoring](scoring.md) - How scores are calculated

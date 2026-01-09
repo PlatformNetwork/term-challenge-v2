@@ -973,10 +973,12 @@ impl ValidatorWorker {
         })
     }
 
-    /// Run the agent binary in a loop until completion or timeout
+    /// Run the agent binary using SDK 2.0 architecture
     ///
-    /// NEW ARCHITECTURE: The agent runs as an HTTP server inside the task container.
-    /// Communication happens via HTTP POST /step requests instead of stdin/stdout.
+    /// SDK 2.0: The agent runs autonomously and executes commands via subprocess.
+    /// Communication:
+    ///   - POST /start - Send instruction, max_steps, timeout_secs to start execution
+    ///   - GET /status - Poll for execution status (running/completed/failed)
     ///
     /// If `container_endpoint` is provided (container name for Docker DNS resolution),
     /// HTTP requests are made directly. Otherwise, falls back to using docker exec with bash /dev/tcp.
@@ -996,12 +998,12 @@ impl ValidatorWorker {
     ) -> Result<(bool, String, i32)> {
         const AGENT_PORT: u16 = 8765;
         const MAX_STEPS: usize = 500;
-        const MAX_CONSECUTIVE_EMPTY_STEPS: usize = 3;
+        const STATUS_POLL_INTERVAL_MS: u64 = 500;
         const AGENT_STARTUP_TIMEOUT_MS: u64 = 15000; // 15 seconds to start
 
         let short_hash = &agent_hash[..16.min(agent_hash.len())];
         info!(
-            "Starting agent loop for {} on task {} (HTTP mode)",
+            "Starting agent (SDK 2.0) for {} on task {} (HTTP mode)",
             short_hash, task_id
         );
 
@@ -1160,236 +1162,247 @@ impl ValidatorWorker {
             ));
         }
 
-        // Step 4: Main evaluation loop - communicate via HTTP
-        let mut last_output = String::new();
-        let mut last_exit_code = 0i32;
-        let mut consecutive_empty_steps: usize = 0;
-        let mut last_error_command: Option<String> = None;
-        let mut consecutive_error_commands: usize = 0;
+        // Step 4: SDK 2.0 - Send /start request then poll /status
         let loop_start = std::time::Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
 
-        for step in 1..=MAX_STEPS {
+        // Build the /start request body
+        let start_body = serde_json::json!({
+            "instruction": instruction,
+            "max_steps": MAX_STEPS,
+            "timeout_secs": timeout_secs,
+        });
+
+        info!(
+            "Sending POST /start to agent (instruction: {} chars)",
+            instruction.len()
+        );
+
+        // Send /start request
+        let start_success = if let Some(ref base_url) = agent_base_url {
+            // Direct HTTP request
+            let start_result = tokio::time::timeout(
+                Duration::from_secs(10),
+                self.http_client
+                    .post(format!("{}/start", base_url))
+                    .json(&start_body)
+                    .send(),
+            )
+            .await;
+
+            match start_result {
+                Ok(Ok(resp)) if resp.status().is_success() => {
+                    info!("Agent acknowledged /start request");
+                    true
+                }
+                Ok(Ok(resp)) => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    error!("Agent /start failed: {} - {}", status, body);
+                    false
+                }
+                Ok(Err(e)) => {
+                    error!("Agent /start request error: {}", e);
+                    false
+                }
+                Err(_) => {
+                    error!("Agent /start timeout");
+                    false
+                }
+            }
+        } else {
+            // Fallback: exec with bash /dev/tcp
+            let request_json = start_body.to_string();
+            let escaped_json = request_json.replace('\\', "\\\\").replace('"', "\\\"");
+            let http_cmd = format!(
+                r#"exec 3<>/dev/tcp/127.0.0.1/{port} && echo -e "POST /start HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n{body}" >&3 && cat <&3 | tail -1"#,
+                port = AGENT_PORT,
+                len = request_json.len(),
+                body = escaped_json
+            );
+
+            match task_container.exec(&["bash", "-c", &http_cmd]).await {
+                Ok(result) if result.success() && result.stdout.contains("started") => {
+                    info!("Agent acknowledged /start request (exec mode)");
+                    true
+                }
+                Ok(result) => {
+                    error!(
+                        "Agent /start failed (exec): exit={}, out={}",
+                        result.exit_code,
+                        result.stdout.trim()
+                    );
+                    false
+                }
+                Err(e) => {
+                    error!("Agent /start exec error: {}", e);
+                    false
+                }
+            }
+        };
+
+        if !start_success {
+            let logs = self.read_agent_logs(task_container).await;
+            return Err(anyhow::anyhow!(
+                "Agent failed to acknowledge /start request.\n\nAgent logs:\n{}",
+                logs
+            ));
+        }
+
+        // Step 5: Poll /status until completion or timeout
+        let mut last_step = 0i32;
+        let mut consecutive_errors = 0usize;
+        const MAX_CONSECUTIVE_ERRORS: usize = 5;
+
+        loop {
             // Check global timeout
             if loop_start.elapsed() > timeout {
                 warn!(
-                    "Task timeout after {} steps ({}s elapsed)",
-                    step - 1,
-                    loop_start.elapsed().as_secs()
+                    "Task timeout after {}s (last step: {})",
+                    loop_start.elapsed().as_secs(),
+                    last_step
                 );
-                break;
+                let logs = self.read_agent_logs(task_container).await;
+                return Ok((false, logs, last_step));
             }
 
-            // Build request JSON
-            let request_body = serde_json::json!({
-                "instruction": instruction,
-                "step": step,
-                "output": last_output,
-                "exit_code": last_exit_code,
-                "cwd": "/app"
-            });
+            // Wait before polling
+            tokio::time::sleep(Duration::from_millis(STATUS_POLL_INTERVAL_MS)).await;
 
-            debug!("Step {}: Sending request to agent...", step);
-
-            // Send step request - prefer direct HTTP if available
-            let response_text = if let Some(ref base_url) = agent_base_url {
-                // Direct HTTP request to container
-                let step_result = tokio::time::timeout(
-                    Duration::from_secs(65),
-                    self.http_client
-                        .post(format!("{}/step", base_url))
-                        .json(&request_body)
-                        .send(),
+            // Poll /status
+            let status_response = if let Some(ref base_url) = agent_base_url {
+                // Direct HTTP request
+                let status_result = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    self.http_client.get(format!("{}/status", base_url)).send(),
                 )
                 .await;
 
-                match step_result {
+                match status_result {
                     Ok(Ok(resp)) if resp.status().is_success() => match resp.text().await {
-                        Ok(text) => text,
+                        Ok(text) => Some(text),
                         Err(e) => {
-                            warn!("Step {} failed to read response: {}", step, e);
-                            consecutive_empty_steps += 1;
-                            if consecutive_empty_steps >= MAX_CONSECUTIVE_EMPTY_STEPS {
-                                warn!(
-                                    "Agent communication failed {} times, aborting",
-                                    consecutive_empty_steps
-                                );
-                                break;
-                            }
-                            continue;
+                            warn!("Failed to read /status response: {}", e);
+                            None
                         }
                     },
                     Ok(Ok(resp)) => {
-                        warn!("Step {} HTTP error: {}", step, resp.status());
-                        consecutive_empty_steps += 1;
-                        if consecutive_empty_steps >= MAX_CONSECUTIVE_EMPTY_STEPS {
-                            warn!(
-                                "Agent communication failed {} times, aborting",
-                                consecutive_empty_steps
-                            );
-                            break;
-                        }
-                        continue;
+                        warn!("Agent /status returned: {}", resp.status());
+                        None
                     }
                     Ok(Err(e)) => {
-                        warn!("Step {} request error: {}", step, e);
-                        consecutive_empty_steps += 1;
-                        if consecutive_empty_steps >= MAX_CONSECUTIVE_EMPTY_STEPS {
-                            warn!(
-                                "Agent communication failed {} times, aborting",
-                                consecutive_empty_steps
-                            );
-                            break;
-                        }
-                        continue;
+                        warn!("Agent /status request error: {}", e);
+                        None
                     }
                     Err(_) => {
-                        warn!("Step {} timeout (65s)", step);
-                        break;
+                        warn!("Agent /status timeout");
+                        None
                     }
                 }
             } else {
                 // Fallback: exec with bash /dev/tcp
-                let request_json = request_body.to_string();
-                let escaped_json = request_json.replace('\\', "\\\\").replace('"', "\\\"");
                 let http_cmd = format!(
-                    r#"exec 3<>/dev/tcp/127.0.0.1/{port} && echo -e "POST /step HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n{body}" >&3 && cat <&3 | sed '1,/^\r$/d'"#,
-                    port = AGENT_PORT,
-                    len = request_json.len(),
-                    body = escaped_json
+                    r#"exec 3<>/dev/tcp/127.0.0.1/{} && echo -e "GET /status HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n" >&3 && cat <&3 | sed '1,/^\r$/d'"#,
+                    AGENT_PORT
                 );
 
-                let step_result = tokio::time::timeout(
-                    Duration::from_secs(65),
-                    task_container.exec(&["bash", "-c", &http_cmd]),
-                )
-                .await;
+                match task_container.exec(&["bash", "-c", &http_cmd]).await {
+                    Ok(result) if result.success() => Some(result.stdout),
+                    Ok(result) => {
+                        warn!("Agent /status exec failed: {}", result.stderr.trim());
+                        None
+                    }
+                    Err(e) => {
+                        warn!("Agent /status exec error: {}", e);
+                        None
+                    }
+                }
+            };
 
-                match step_result {
-                    Ok(Ok(result)) if result.success() => result.stdout,
-                    Ok(Ok(result)) => {
+            // Parse status response
+            let status: serde_json::Value = match status_response {
+                Some(text) => match serde_json::from_str(&text) {
+                    Ok(v) => {
+                        consecutive_errors = 0;
+                        v
+                    }
+                    Err(e) => {
                         warn!(
-                            "Step {} exec failed: exit={}, stderr={}",
-                            step,
-                            result.exit_code,
-                            result.stderr.trim()
+                            "Invalid /status JSON: {} - raw: {}",
+                            e,
+                            &text[..text.len().min(200)]
                         );
-                        consecutive_empty_steps += 1;
-                        if consecutive_empty_steps >= MAX_CONSECUTIVE_EMPTY_STEPS {
-                            warn!(
-                                "Agent communication failed {} times, aborting",
-                                consecutive_empty_steps
-                            );
-                            break;
+                        consecutive_errors += 1;
+                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                            error!("Too many /status errors, aborting");
+                            let logs = self.read_agent_logs(task_container).await;
+                            return Ok((false, logs, last_step));
                         }
                         continue;
                     }
-                    Ok(Err(e)) => {
-                        warn!("Step {} exec error: {}", step, e);
-                        break;
-                    }
-                    Err(_) => {
-                        warn!("Step {} timeout (65s)", step);
-                        break;
-                    }
-                }
-            };
-
-            // Parse JSON response
-            let response: serde_json::Value = match serde_json::from_str(&response_text) {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!(
-                        "Step {} invalid JSON: {} - raw: {}",
-                        step,
-                        e,
-                        &response_text[..response_text.len().min(200)]
-                    );
-                    consecutive_empty_steps += 1;
-                    if consecutive_empty_steps >= MAX_CONSECUTIVE_EMPTY_STEPS {
-                        warn!("Too many invalid responses, aborting");
-                        break;
+                },
+                None => {
+                    consecutive_errors += 1;
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        error!("Too many /status errors, aborting");
+                        let logs = self.read_agent_logs(task_container).await;
+                        return Ok((false, logs, last_step));
                     }
                     continue;
                 }
             };
 
-            consecutive_empty_steps = 0;
+            // Extract status fields
+            let agent_status = status["status"].as_str().unwrap_or("unknown");
+            let steps = status["steps"].as_i64().unwrap_or(0) as i32;
+            let elapsed = status["elapsed_secs"].as_i64().unwrap_or(0);
+            let error_msg = status["error"].as_str();
+            let is_done = status["done"].as_bool().unwrap_or(false);
 
-            // Check if task is complete
-            if response["task_complete"].as_bool().unwrap_or(false)
-                || response["done"].as_bool().unwrap_or(false)
-            {
-                info!("Agent signaled task complete at step {}", step);
-                let logs = self.read_agent_logs(task_container).await;
-                return Ok((true, logs, step as i32));
+            // Update step count
+            if steps > last_step {
+                last_step = steps;
+                debug!(
+                    "Agent at step {}, elapsed {}s, status: {}",
+                    steps, elapsed, agent_status
+                );
             }
 
-            // Get command to execute
-            let command = match response["command"].as_str() {
-                Some(cmd) if !cmd.is_empty() => {
-                    // Check for repeated error commands
-                    if cmd.starts_with("echo 'AGENT ERROR:")
-                        || cmd.starts_with("echo \"AGENT ERROR:")
-                    {
-                        if last_error_command.as_deref() == Some(cmd) {
-                            consecutive_error_commands += 1;
-                            if consecutive_error_commands >= MAX_CONSECUTIVE_EMPTY_STEPS {
-                                warn!(
-                                    "Agent stuck: same error {} times, aborting: {}",
-                                    consecutive_error_commands,
-                                    &cmd[..cmd.len().min(100)]
-                                );
-                                break;
-                            }
-                        } else {
-                            last_error_command = Some(cmd.to_string());
-                            consecutive_error_commands = 1;
-                        }
-                    } else {
-                        // Valid command - reset counters
-                        last_error_command = None;
-                        consecutive_error_commands = 0;
+            // Check completion
+            match agent_status {
+                "completed" => {
+                    info!(
+                        "Agent completed successfully at step {} ({}s)",
+                        steps, elapsed
+                    );
+                    let logs = self.read_agent_logs(task_container).await;
+                    return Ok((true, logs, steps));
+                }
+                "failed" => {
+                    let err = error_msg.unwrap_or("unknown error");
+                    warn!("Agent failed at step {}: {}", steps, err);
+                    let logs = self.read_agent_logs(task_container).await;
+                    return Ok((false, logs, steps));
+                }
+                "running" | "idle" => {
+                    // Still running, continue polling
+                    // Log progress every 10 seconds
+                    if elapsed % 10 == 0 && elapsed > 0 {
+                        info!("Agent running: step {}, elapsed {}s", steps, elapsed);
                     }
-                    cmd.to_string()
                 }
                 _ => {
-                    debug!("Step {} returned no command", step);
-                    continue;
-                }
-            };
-
-            // Log the command being executed
-            info!(
-                "[Step {}] EXEC: {}",
-                step,
-                &command[..command.len().min(120)]
-            );
-
-            // Execute command in task container
-            let exec_result = task_container.exec(&["sh", "-c", &command]).await;
-            match exec_result {
-                Ok(result) => {
-                    last_output = result.combined();
-                    last_exit_code = result.exit_code;
-                    debug!(
-                        "[Step {}] Exit={}, Output={} bytes",
-                        step,
-                        result.exit_code,
-                        last_output.len()
-                    );
-                }
-                Err(e) => {
-                    warn!("[Step {}] Exec error: {}", step, e);
-                    last_output = format!("Error: {}", e);
-                    last_exit_code = 1;
+                    debug!("Unknown agent status: {}", agent_status);
                 }
             }
-        }
 
-        warn!("Agent reached max steps ({}) without completion", MAX_STEPS);
-        let logs = self.read_agent_logs(task_container).await;
-        Ok((false, logs, MAX_STEPS as i32))
+            // Also check done flag (backwards compatibility)
+            if is_done {
+                info!("Agent marked done at step {} ({}s)", steps, elapsed);
+                let logs = self.read_agent_logs(task_container).await;
+                return Ok((true, logs, steps));
+            }
+        }
     }
 
     /// Read a file from the container, returning empty string on error

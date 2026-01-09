@@ -1,29 +1,41 @@
+#!/usr/bin/env python3
 """
-Simple test agent for validating StaticX compilation pipeline.
-This agent performs basic operations and returns simple responses.
+Simple test agent for validating SDK 2.0 and compilation pipeline.
+This agent performs basic operations to verify the agent framework works.
 """
 
-from term_sdk import Agent, Response, Request
+from term_sdk import Agent, AgentContext, run
 
 
 class TestAgent(Agent):
-    """Minimal test agent for compilation verification"""
+    """Minimal test agent for compilation verification."""
     
     def __init__(self):
         super().__init__()
-        self.request_count = 0
+        self.command_count = 0
     
-    def solve(self, request: Request) -> Response:
-        """Process a simple instruction request"""
-        self.request_count += 1
+    def run(self, ctx: AgentContext):
+        """Execute a simple sequence of commands."""
+        ctx.log(f"Task: {ctx.instruction[:50]}...")
         
-        # Echo back the instruction with counter
-        if request.instruction:
-            return Response.cmd(f"echo 'Agent step {request.step}: Processing instruction (count: {self.request_count})'")
-        else:
-            return Response.cmd("echo 'Hello from test agent!'")
+        # Run a few test commands
+        commands = [
+            "echo 'Test agent started'",
+            "ls -la",
+            "pwd",
+            "echo 'Test agent finished'",
+        ]
+        
+        for cmd in commands:
+            self.command_count += 1
+            ctx.log(f"Command {self.command_count}: {cmd}")
+            result = ctx.shell(cmd)
+            if result.failed:
+                ctx.log(f"Command failed: {result.stderr}")
+        
+        ctx.log(f"Executed {self.command_count} commands")
+        ctx.done()
 
 
 if __name__ == "__main__":
-    from term_sdk import run
     run(TestAgent())

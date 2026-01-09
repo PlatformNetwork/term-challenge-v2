@@ -1,78 +1,112 @@
 # Term Challenge SDK
 
-Build agents with streaming LLM support.
+Build AI agents with LLM integration for the Term Challenge benchmark.
 
-## Providers
+## Installation
 
-- **OpenRouter** (default) - Claude, GPT-4, Llama, Mixtral
-- **Chutes** - Llama, Qwen, Mixtral
+```bash
+pip install git+https://github.com/PlatformNetwork/term-challenge.git#subdirectory=sdk/python
+```
 
-## Features
+Or for development:
 
-- **Streaming** - See LLM responses in real-time
-- **Multi-Model** - Use different models per call
-- **Function Calling** - Define custom tools
-- **Structured Errors** - JSON error responses with codes
+```bash
+git clone https://github.com/PlatformNetwork/term-challenge.git
+pip install -e term-challenge/sdk/python
+```
 
-## Quick Start
+## Quick Start (SDK 2.0)
 
 ```python
-from term_sdk import Agent, Request, Response, LLM, LLMError, run
+from term_sdk import Agent, AgentContext, LLM, run
 
 class MyAgent(Agent):
     def setup(self):
-        self.llm = LLM()
+        """Initialize LLM client (called once at startup)."""
+        self.llm = LLM(default_model="anthropic/claude-3.5-sonnet")
     
-    def solve(self, req: Request) -> Response:
-        try:
-            full_text = ""
-            for chunk in self.llm.stream(req.instruction, model="anthropic/claude-3.5-sonnet"):
-                print(chunk, end="", flush=True)
-                full_text += chunk
-            return Response.from_llm(full_text)
-        except LLMError as e:
-            print(f"Error {e.code}: {e.message}")
-            return Response.done()
+    def run(self, ctx: AgentContext):
+        """Execute the task (called for each task)."""
+        # Explore the environment
+        result = ctx.shell("ls -la")
+        ctx.log(f"Found {len(result.stdout.splitlines())} items")
+        
+        # Ask LLM for guidance
+        response = self.llm.ask(
+            f"Task: {ctx.instruction}\n\nFiles:\n{result.stdout}\n\nWhat command should I run?",
+            system="Respond with just the shell command, nothing else."
+        )
+        
+        # Execute the suggested command
+        ctx.shell(response.text.strip())
+        
+        # Signal completion
+        ctx.done()
+    
+    def cleanup(self):
+        """Release resources (called at shutdown)."""
+        self.llm.close()
 
 if __name__ == "__main__":
     run(MyAgent())
 ```
 
+## Features
+
+- **Agent-Controlled Execution**: Your agent runs autonomously, executing commands directly
+- **LLM Integration**: Built-in support for multiple providers with streaming
+- **Shell Execution**: Execute commands via `ctx.shell()` with full output capture
+- **File Operations**: Read and write files via `ctx.read()` and `ctx.write()`
+- **Function Calling**: Define tools for LLM to use
+- **Structured Errors**: JSON error responses with error codes
+
+## LLM Providers
+
+| Provider | Environment Variable | Default Model |
+|----------|---------------------|---------------|
+| OpenRouter | `OPENROUTER_API_KEY` | `anthropic/claude-3.5-sonnet` |
+| Chutes | `CHUTES_API_KEY` | `deepseek-ai/DeepSeek-V3` |
+| OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-20241022` |
+| Grok | `GROK_API_KEY` | `grok-2-latest` |
+
 ## Streaming
 
 ```python
-# Iterator
-for chunk in llm.stream("Question", model="anthropic/claude-3.5-sonnet"):
-    print(chunk, end="")
+# Iterator-based streaming
+for chunk in self.llm.stream("Tell me a story"):
+    print(chunk, end="", flush=True)
 
-# With callback
-result = llm.ask_stream("Question", model="anthropic/claude-3.5-sonnet", on_chunk=lambda c: True)
+# Callback-based streaming
+def on_chunk(chunk):
+    print(chunk, end="", flush=True)
+    return True  # Return False to stop
+
+result = self.llm.ask_stream("Tell me a story", on_chunk=on_chunk)
+print(f"\nTokens used: {result.tokens}")
 ```
 
 ## Error Handling
 
-The SDK returns structured JSON errors:
+```python
+from term_sdk import LLMError, CostLimitExceeded
 
-```json
-{
-  "error": {
-    "code": "rate_limit",
-    "message": "Rate limit exceeded",
-    "details": {
-      "http_status": 429,
-      "model": "anthropic/claude-3.5-sonnet",
-      "provider": "openrouter"
-    }
-  }
-}
+try:
+    response = self.llm.ask("Question")
+except CostLimitExceeded as e:
+    # Fatal: cost limit reached, stop immediately
+    ctx.log(f"Cost limit: ${e.used:.2f} / ${e.limit:.2f}")
+    ctx.done()
+    return
+except LLMError as e:
+    # Recoverable: log and continue
+    ctx.log(f"LLM error ({e.code}): {e.message}")
 ```
 
 ### Error Codes
 
 | Code | HTTP | Description |
 |------|------|-------------|
-| `invalid_provider` | - | Unknown provider |
-| `no_model` | - | No model specified |
 | `authentication_error` | 401 | Invalid API key |
 | `payment_required` | 402 | Insufficient credits |
 | `permission_denied` | 403 | Access denied |
@@ -80,37 +114,65 @@ The SDK returns structured JSON errors:
 | `rate_limit` | 429 | Rate limit exceeded |
 | `server_error` | 500 | Provider error |
 | `service_unavailable` | 503 | Service unavailable |
-| `proxy_error` | 502 | Platform proxy error |
-| `unknown_function` | - | Function not registered |
 
-### Python Error Handling
+## AgentContext API
+
+| Method/Property | Description |
+|-----------------|-------------|
+| `ctx.instruction` | The task description |
+| `ctx.shell(cmd)` | Execute shell command |
+| `ctx.read(path)` | Read file contents |
+| `ctx.write(path, content)` | Write to file |
+| `ctx.log(msg)` | Log a message |
+| `ctx.done()` | Signal task completion |
+| `ctx.step` | Current step number |
+| `ctx.remaining_steps` | Steps until limit |
+| `ctx.remaining_secs` | Seconds until timeout |
+
+## ShellResult API
 
 ```python
-from term_sdk import LLMError
+result = ctx.shell("ls -la")
 
-try:
-    result = llm.ask("Q", model="anthropic/claude-3.5-sonnet")
-except LLMError as e:
-    print(e.code, e.message, e.details)
-    # e.details["http_status"] contains the original HTTP status code
+result.stdout      # Standard output
+result.stderr      # Standard error
+result.output      # Combined stdout + stderr
+result.exit_code   # Exit code (0 = success)
+result.ok          # True if exit_code == 0
+result.failed      # True if exit_code != 0
+result.has("error", "fail")  # Check if output contains patterns
 ```
 
-## Environment Variables
+## Function Calling
 
-| Variable | Description |
-|----------|-------------|
-| `LLM_API_KEY` | API key (primary) |
-| `OPENROUTER_API_KEY` | OpenRouter API key |
-| `CHUTES_API_KEY` | Chutes API key |
-| `LLM_API_URL` | Custom API endpoint |
+```python
+from term_sdk import Tool
 
-## Installation
+tools = [
+    Tool(
+        name="search_files",
+        description="Search for files by pattern",
+        parameters={
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern"}
+            },
+            "required": ["pattern"]
+        }
+    )
+]
 
-```bash
-pip install -e sdk/python
+def search_files(pattern: str) -> str:
+    result = ctx.shell(f"find . -name '{pattern}'")
+    return result.stdout
+
+self.llm.register_function("search_files", search_files)
+response = self.llm.chat_with_functions(messages, tools)
 ```
 
 ## Documentation
 
-- [Python SDK](./python/README.md)
-- [Protocol Specification](./PROTOCOL.md)
+- [Getting Started](../docs/miner/getting-started.md) - Quick start guide
+- [Agent Development](../docs/miner/agent-development.md) - Full development guide
+- [SDK Reference](../docs/miner/sdk-reference.md) - Complete API reference
+- [Migration Guide](../docs/migration-guide.md) - SDK 1.x to 2.0 migration
