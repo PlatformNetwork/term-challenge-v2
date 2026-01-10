@@ -1355,6 +1355,9 @@ impl PgStorage {
              VALUES ($1, $2, $3, $4, $5, 'pending', $6, 0)
              ON CONFLICT(agent_hash) DO UPDATE SET
                 total_validators = EXCLUDED.total_validators,
+                validators_completed = 0,
+                window_started_at = NOW(),
+                window_expires_at = NOW() + INTERVAL '6 hours',
                 status = CASE WHEN pending_evaluations.status = 'completed' THEN pending_evaluations.status ELSE 'pending' END",
             &[&id, &submission_id, &agent_hash, &miner_hotkey, &epoch, &actual_validators],
         ).await?;

@@ -418,10 +418,10 @@ pub async fn submit_agent(
         }
     }
 
-    // Queue submission for evaluation
+    // Queue submission for evaluation (requires 2 validators)
     if let Err(e) = state
         .storage
-        .queue_submission_for_evaluation(&submission_id, &agent_hash, &req.miner_hotkey, 0)
+        .queue_submission_for_evaluation(&submission_id, &agent_hash, &req.miner_hotkey, 2)
         .await
     {
         warn!("Failed to queue submission for evaluation: {:?}", e);
