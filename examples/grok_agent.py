@@ -38,7 +38,7 @@ class GrokAgent(Agent):
         last_output = result.output
         
         # Main execution loop
-        while ctx.remaining_steps > 0:
+        while ctx.step < 100:  # Limit to 100 steps
             user_msg = f"""TASK: {ctx.instruction}
 
 STEP: {ctx.step}

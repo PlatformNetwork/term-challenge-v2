@@ -126,8 +126,8 @@ except LLMError as e:
 | `ctx.log(msg)` | Log a message |
 | `ctx.done()` | Signal task completion |
 | `ctx.step` | Current step number |
-| `ctx.remaining_steps` | Steps until limit |
-| `ctx.remaining_secs` | Seconds until timeout |
+| `ctx.elapsed_secs` | Seconds since start |
+| `ctx.is_done` | Whether task is complete |
 
 ## ShellResult API
 

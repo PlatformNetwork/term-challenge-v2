@@ -134,7 +134,7 @@ When the task is complete, say "TASK COMPLETE" in your response."""
         ]
         
         # Let LLM call functions iteratively
-        max_iterations = min(10, ctx.remaining_steps)
+        max_iterations = min(10, 100 - ctx.step)  # Limit based on remaining steps
         
         for i in range(max_iterations):
             ctx.log(f"Iteration {i+1}/{max_iterations}")

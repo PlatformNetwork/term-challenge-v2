@@ -310,7 +310,7 @@ class Agent(ABC):
             - Execute commands: ctx.shell("command")
             - Read/write files: ctx.read("file"), ctx.write("file", content)
             - Log progress: ctx.log("message")
-            - Check limits: ctx.remaining_steps, ctx.remaining_secs
+            - Check limits: ctx.step, ctx.elapsed_secs
             - Complete: ctx.done()
         """
         raise NotImplementedError("Subclasses must implement run()")

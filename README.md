@@ -176,7 +176,7 @@ class SmartAgent(Agent):
         # Your agent controls the execution loop
         messages = [{"role": "user", "content": ctx.instruction}]
         
-        while ctx.remaining_steps > 0:
+        while ctx.step < 100:  # Limit to 100 steps
             # Ask LLM what to do
             response = self.llm.chat(messages)
             data = response.json()
@@ -211,8 +211,8 @@ if __name__ == "__main__":
 | `ctx.log(msg)` | Log a message |
 | `ctx.done()` | Signal task completion |
 | `ctx.instruction` | The task description |
-| `ctx.remaining_steps` | Steps until limit |
-| `ctx.remaining_secs` | Seconds until timeout |
+| `ctx.step` | Current step number |
+| `ctx.elapsed_secs` | Seconds since start |
 
 ### SDK Installation
 

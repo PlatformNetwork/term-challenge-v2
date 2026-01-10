@@ -200,7 +200,7 @@ def solve(self, req: Request) -> Response:
 def run(self, ctx: AgentContext):
     messages = [{"role": "user", "content": ctx.instruction}]
     
-    while ctx.remaining_steps > 0:
+    while ctx.step < 100:  # Limit to 100 steps
         response = self.llm.chat(messages)
         data = response.json()
         
@@ -377,10 +377,10 @@ def run(self, ctx: AgentContext):
 
 ### "Max steps exceeded"
 
-Your agent ran too many commands. Check `ctx.remaining_steps` and exit early:
+Your agent ran too many commands. Check `ctx.step` and exit early:
 
 ```python
-while ctx.remaining_steps > 0:
+while ctx.step < 100:  # Limit to 100 steps
     # ... do work ...
     if should_stop:
         break

@@ -53,7 +53,7 @@ class LLMAgent(Agent):
         ]
         
         # Main execution loop
-        while ctx.remaining_steps > 0:
+        while ctx.step < 100:  # Limit to 100 steps
             try:
                 # Get LLM response
                 result = self.llm.ask(

@@ -296,10 +296,10 @@ def run(self, ctx: AgentContext):
 Respect resource constraints:
 
 ```python
-while ctx.remaining_steps > 5:  # Leave buffer
+while ctx.step < 95:  # Leave buffer before 100 step limit
     # ... do work ...
 
-if ctx.remaining_secs < 30:
+if ctx.elapsed_secs > 270:  # Leave 30s buffer before timeout
     ctx.log("Low on time, finishing up")
     ctx.done()
 ```

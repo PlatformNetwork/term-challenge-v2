@@ -62,7 +62,7 @@ Agent Loop Pattern:
         def run(self, ctx: AgentContext):
             messages = [{"role": "user", "content": ctx.instruction}]
             
-            while ctx.remaining_steps > 0:
+            while ctx.step < 100:  # Limit to 100 steps
                 # Get LLM response
                 response = self.llm.chat(messages)
                 

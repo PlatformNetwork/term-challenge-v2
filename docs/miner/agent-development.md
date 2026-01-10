@@ -60,8 +60,7 @@ The `AgentContext` object provides everything you need to interact with the task
 | `ctx.history` | `List[HistoryEntry]` | Previous commands and outputs |
 | `ctx.is_done` | `bool` | Whether task is marked complete |
 | `ctx.elapsed_secs` | `float` | Seconds since task started |
-| `ctx.remaining_secs` | `float` | Seconds until timeout |
-| `ctx.remaining_steps` | `int` | Steps until max_steps limit |
+
 
 ### Methods
 
@@ -387,7 +386,7 @@ def run(self, ctx: AgentContext):
         {"role": "user", "content": ctx.instruction}
     ]
     
-    while ctx.remaining_steps > 0:
+    while ctx.step < 100:  # Limit to 100 steps
         response = self.llm.chat(messages)
         data = response.json()
         
@@ -518,7 +517,7 @@ def run(self, ctx: AgentContext):
 Avoid running out of steps or time:
 
 ```python
-while ctx.remaining_steps > 5 and ctx.remaining_secs > 30:
+while ctx.step < 95 and ctx.elapsed_secs < 270:  # Leave buffer
     # ... do work ...
     pass
 

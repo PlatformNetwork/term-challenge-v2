@@ -219,7 +219,7 @@ curl http://localhost:8080/evaluations
 **Agent fix:**
 ```python
 def run(self, ctx: AgentContext):
-    while ctx.remaining_steps > 0:
+    while ctx.step < 100:  # Limit to 100 steps
         # ... work ...
         if should_stop:
             break
@@ -233,7 +233,7 @@ def run(self, ctx: AgentContext):
 **Agent fix:**
 ```python
 def run(self, ctx: AgentContext):
-    if ctx.remaining_secs < 30:
+    if ctx.elapsed_secs > 270:  # Leave 30s buffer
         ctx.log("Low on time, finishing")
         ctx.done()
         return

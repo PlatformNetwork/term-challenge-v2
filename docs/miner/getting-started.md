@@ -168,7 +168,7 @@ class SmartAgent(Agent):
             {"role": "user", "content": f"Task: {ctx.instruction}"}
         ]
         
-        while ctx.remaining_steps > 0:
+        while ctx.step < 100:  # Limit to 100 steps
             # Ask the LLM what to do
             response = self.llm.chat(messages)
             data = response.json()

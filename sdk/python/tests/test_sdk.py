@@ -150,7 +150,7 @@ class TestAgentSDK2:
                 ctx.done()
         
         agent = SimpleAgent()
-        ctx = AgentContext(instruction="test", max_steps=10)
+        ctx = AgentContext(instruction="test")
         agent.run(ctx)
         
         assert ctx.is_done is True

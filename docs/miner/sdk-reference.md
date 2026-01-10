@@ -178,24 +178,6 @@ Seconds elapsed since context creation.
 ctx.log(f"Running for {ctx.elapsed_secs:.1f}s")
 ```
 
-#### `remaining_secs: float`
-
-Seconds remaining until timeout.
-
-```python
-if ctx.remaining_secs < 30:
-    ctx.log("Running low on time!")
-```
-
-#### `remaining_steps: int`
-
-Steps remaining until max_steps limit.
-
-```python
-while ctx.remaining_steps > 0:
-    # ... do work ...
-```
-
 ### Methods
 
 #### `shell(cmd, timeout=60, cwd=None) -> ShellResult`

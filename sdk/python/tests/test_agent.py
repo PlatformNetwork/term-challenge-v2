@@ -45,14 +45,8 @@ class TestAgentContext:
     """Test AgentContext functionality."""
     
     def test_context_initialization(self):
-        ctx = AgentContext(
-            instruction="Test task",
-            max_steps=100,
-            timeout_secs=60,
-        )
+        ctx = AgentContext(instruction="Test task")
         assert ctx.instruction == "Test task"
-        assert ctx.max_steps == 100
-        assert ctx.timeout_secs == 60
         assert ctx.step == 0
         assert ctx.is_done is False
         assert len(ctx.history) == 0
@@ -63,11 +57,11 @@ class TestAgentContext:
         ctx.done()
         assert ctx.is_done is True
     
-    def test_context_remaining_steps(self):
-        ctx = AgentContext(instruction="Test", max_steps=10)
-        assert ctx.remaining_steps == 10
-        ctx.step = 3
-        assert ctx.remaining_steps == 7
+    def test_context_step_increments(self):
+        ctx = AgentContext(instruction="Test")
+        assert ctx.step == 0
+        ctx.shell("echo test")
+        assert ctx.step == 1
     
     def test_context_log(self):
         ctx = AgentContext(instruction="Test")
@@ -156,7 +150,7 @@ class TestAgentWithContext:
             duration_ms=10,
         )
         
-        ctx = AgentContext(instruction="Test", max_steps=10)
+        ctx = AgentContext(instruction="Test")
         
         # Execute commands
         ctx.shell("cmd1")
@@ -166,23 +160,6 @@ class TestAgentWithContext:
         assert ctx.history[0].step == 1
         assert ctx.history[1].step == 2
         assert ctx.step == 2
-    
-    def test_agent_max_steps_limit(self):
-        """Test that max_steps is enforced."""
-        ctx = AgentContext(instruction="Test", max_steps=2)
-        
-        with patch('term_sdk.shell.run') as mock_run:
-            mock_run.return_value = ShellResult(
-                command="test", stdout="", stderr="",
-                exit_code=0, timed_out=False, duration_ms=0
-            )
-            
-            ctx.shell("cmd1")
-            ctx.shell("cmd2")
-            
-            # Third command should raise
-            with pytest.raises(RuntimeError, match="Max steps"):
-                ctx.shell("cmd3")
     
     def test_agent_cannot_shell_after_done(self):
         """Test that shell() fails after done()."""

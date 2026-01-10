@@ -76,7 +76,7 @@ Output ONLY the command, nothing else."""
         # Step 3: Execute plan steps
         for i, step in enumerate(self.memory.plan):
             # Check resource limits
-            if ctx.remaining_steps < 5:
+            if ctx.step > 95:  # Leave buffer before 100 step limit
                 ctx.log("Low on steps, finishing up")
                 break
             
