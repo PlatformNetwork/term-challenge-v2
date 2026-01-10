@@ -2228,9 +2228,10 @@ impl PgStorage {
         let client = self.pool.get().await?;
 
         // Get agents with expired windows that haven't been completed
+        // Include validators_completed and total_validators to check minimum requirement
         let rows = client
             .query(
-                "SELECT agent_hash FROM pending_evaluations 
+                "SELECT agent_hash, validators_completed, total_validators FROM pending_evaluations 
              WHERE status != 'completed' AND window_expires_at < NOW()",
                 &[],
             )
@@ -2239,35 +2240,53 @@ impl PgStorage {
         let mut expired_count = 0u64;
         for row in rows {
             let agent_hash: String = row.get(0);
+            let validators_completed: i32 = row.get(1);
+            let total_validators: i32 = row.get(2);
 
-            // Calculate consensus with whatever evaluations we have
-            match self.calculate_and_store_consensus(&agent_hash).await {
-                Ok(score) => {
-                    info!(
-                        "Expired window for agent {} - consensus score: {:.4}",
-                        &agent_hash[..16],
-                        score
-                    );
-                    expired_count += 1;
+            // Only calculate consensus if all validators have evaluated
+            // (at least total_validators, minimum 2)
+            let min_required = total_validators.max(2);
+            if validators_completed >= min_required {
+                match self.calculate_and_store_consensus(&agent_hash).await {
+                    Ok(score) => {
+                        info!(
+                            "Expired window for agent {} - consensus score: {:.4} ({}/{} validators)",
+                            &agent_hash[..16],
+                            score,
+                            validators_completed,
+                            total_validators
+                        );
+                        expired_count += 1;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to calculate consensus for agent {}: {}",
+                            &agent_hash[..16],
+                            e
+                        );
+                    }
                 }
-                Err(e) => {
-                    // No evaluations yet - mark as failed
-                    debug!(
-                        "No evaluations for expired agent {}: {}",
-                        &agent_hash[..16],
-                        e
-                    );
-                    client.execute(
+            } else {
+                // Not enough validators - mark as expired (incomplete)
+                info!(
+                    "Agent {} expired with insufficient evaluations ({}/{} validators, need {})",
+                    &agent_hash[..16],
+                    validators_completed,
+                    total_validators,
+                    min_required
+                );
+                client
+                    .execute(
                         "UPDATE pending_evaluations SET status = 'expired' WHERE agent_hash = $1",
                         &[&agent_hash],
-                    ).await?;
-                    expired_count += 1;
-                }
+                    )
+                    .await?;
+                expired_count += 1;
             }
         }
 
         if expired_count > 0 {
-            info!("Expired {} evaluation windows", expired_count);
+            info!("Processed {} expired evaluation windows", expired_count);
         }
 
         Ok(expired_count)

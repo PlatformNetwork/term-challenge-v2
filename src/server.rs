@@ -1485,6 +1485,20 @@ pub async fn run_server_with_mode(
             warn!("Initial metagraph cache refresh failed: {} (will retry)", e);
         }
 
+        // Start periodic maintenance task (every 60 seconds)
+        // This expires old evaluation windows and marks submissions as completed
+        let maintenance_pg = pg.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                if let Err(e) = maintenance_pg.run_maintenance().await {
+                    tracing::warn!("Periodic maintenance error: {:?}", e);
+                }
+            }
+        });
+        info!("Started periodic maintenance task (every 60s)");
+
         // Clone storage for API state
         let api_state = Arc::new(ApiState {
             storage: pg.clone(),
