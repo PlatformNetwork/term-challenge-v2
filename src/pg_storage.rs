@@ -1139,6 +1139,68 @@ impl PgStorage {
         Ok(row.get(0))
     }
 
+    /// Get LLM cost for a specific task (from llm_usage table)
+    pub async fn get_task_llm_cost(
+        &self,
+        agent_hash: &str,
+        validator_hotkey: &str,
+        task_id: &str,
+    ) -> Result<f64> {
+        let client = self.pool.get().await?;
+
+        let row = client
+            .query_one(
+                "SELECT COALESCE(SUM(cost_usd), 0.0)::FLOAT8 
+                 FROM llm_usage 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2 AND task_id = $3",
+                &[&agent_hash, &validator_hotkey, &task_id],
+            )
+            .await?;
+
+        Ok(row.get(0))
+    }
+
+    /// Get total LLM cost for a validator's evaluation of an agent
+    pub async fn get_validator_evaluation_cost(
+        &self,
+        agent_hash: &str,
+        validator_hotkey: &str,
+    ) -> Result<f64> {
+        let client = self.pool.get().await?;
+
+        let row = client
+            .query_one(
+                "SELECT COALESCE(SUM(cost_usd), 0.0)::FLOAT8 
+                 FROM llm_usage 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?;
+
+        Ok(row.get(0))
+    }
+
+    /// Update task_logs.cost_usd with calculated cost from llm_usage
+    pub async fn update_task_log_cost(
+        &self,
+        agent_hash: &str,
+        validator_hotkey: &str,
+        task_id: &str,
+        cost_usd: f64,
+    ) -> Result<()> {
+        let client = self.pool.get().await?;
+
+        client
+            .execute(
+                "UPDATE task_logs SET cost_usd = $1 
+                 WHERE agent_hash = $2 AND validator_hotkey = $3 AND task_id = $4",
+                &[&(cost_usd as f32), &agent_hash, &validator_hotkey, &task_id],
+            )
+            .await?;
+
+        Ok(())
+    }
+
     /// Get API key for a submission (for inference bridge)
     /// The API key is decrypted server-side - validators never see the raw key
     /// They call the server's bridge endpoint which uses this internally

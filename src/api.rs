@@ -1335,6 +1335,45 @@ pub async fn log_task(
         ));
     }
 
+    // Calculate and update cost from llm_usage table
+    // This aggregates all LLM calls made during this task execution
+    match state
+        .storage
+        .get_task_llm_cost(&req.agent_hash, &req.validator_hotkey, &req.task_id)
+        .await
+    {
+        Ok(calculated_cost) if calculated_cost > 0.0 => {
+            if let Err(e) = state
+                .storage
+                .update_task_log_cost(
+                    &req.agent_hash,
+                    &req.validator_hotkey,
+                    &req.task_id,
+                    calculated_cost,
+                )
+                .await
+            {
+                warn!(
+                    "Failed to update task cost for {}/{}: {}",
+                    &req.agent_hash[..16.min(req.agent_hash.len())],
+                    &req.task_id,
+                    e
+                );
+            } else {
+                debug!(
+                    "Updated task {} cost to ${:.4} from llm_usage",
+                    &req.task_id, calculated_cost
+                );
+            }
+        }
+        Ok(_) => {
+            // No LLM usage recorded for this task (agent might not use LLM)
+        }
+        Err(e) => {
+            warn!("Failed to get task LLM cost: {}", e);
+        }
+    }
+
     // Get current progress
     let summary = state
         .storage
@@ -1571,6 +1610,26 @@ pub async fn submit_result(
             )
         })?;
 
+    // Calculate total cost from llm_usage table (more accurate than validator-reported cost)
+    let calculated_cost = state
+        .storage
+        .get_validator_evaluation_cost(&req.agent_hash, &req.validator_hotkey)
+        .await
+        .unwrap_or(0.0);
+
+    // Use calculated cost if available, otherwise fall back to reported cost
+    let total_cost_usd = if calculated_cost > 0.0 {
+        debug!(
+            "Using calculated LLM cost ${:.4} for {}/{}",
+            calculated_cost,
+            &req.agent_hash[..16.min(req.agent_hash.len())],
+            &req.validator_hotkey[..16.min(req.validator_hotkey.len())]
+        );
+        calculated_cost
+    } else {
+        req.total_cost_usd
+    };
+
     // Create evaluation record
     let eval = crate::pg_storage::ValidatorEvaluation {
         id: uuid::Uuid::new_v4().to_string(),
@@ -1582,7 +1641,7 @@ pub async fn submit_result(
         tasks_passed: req.tasks_passed,
         tasks_total: req.tasks_total,
         tasks_failed: req.tasks_failed,
-        total_cost_usd: req.total_cost_usd,
+        total_cost_usd,
         execution_time_ms: req.execution_time_ms,
         task_results: req.task_results,
         epoch: submission.epoch,
