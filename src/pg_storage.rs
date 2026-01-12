@@ -845,8 +845,8 @@ impl PgStorage {
     /// Criteria:
     /// - manually_validated = true
     /// - minimum 2 validators have evaluated
-    /// - minimum 8 tasks passed per validator
-    /// - winner = most total tasks passed, ties broken by earliest submission
+    /// - minimum 8 tasks passed total (across all validators)
+    /// - winner = best success rate (tasks_passed/tasks_total), ties broken by earliest submission
     pub async fn get_eligible_winner(&self) -> Result<Option<WinnerEntry>> {
         let client = self.pool.get().await?;
 
@@ -867,7 +867,7 @@ impl PgStorage {
                   AND s.status NOT IN ('banned', 'failed')
                 GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.created_at, s.disable_decay
                 HAVING COUNT(DISTINCT ve.validator_hotkey) >= 2
-                   AND MIN(ve.tasks_passed) >= 8
+                   AND SUM(ve.tasks_passed) >= 8
                 ORDER BY (SUM(ve.tasks_passed)::FLOAT / NULLIF(SUM(ve.tasks_total), 0)) DESC NULLS LAST, s.created_at ASC
                 LIMIT 1",
                 &[],

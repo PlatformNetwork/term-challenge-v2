@@ -226,11 +226,14 @@ pub struct WeightEntry {
 }
 
 /// GET /get_weights - Deterministic weight calculation
-/// Winner-takes-all: The best eligible agent gets weight based on time decay
-/// Eligibility requirements:
+///
+/// If forced_weights table has active entries, those are used instead.
+/// Otherwise, winner-takes-all: The best eligible agent gets weight based on time decay
+///
+/// Eligibility requirements (for winner-takes-all):
 /// - manually_validated = true
 /// - At least 2 validators have evaluated
-/// - At least 8 tasks passed per validator
+/// - At least 8 tasks passed total (across all validators)
 ///
 /// Time decay:
 /// - Grace period: 40 epochs (~48 hours) - no decay
