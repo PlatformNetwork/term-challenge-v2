@@ -105,6 +105,9 @@ flate2 = "1.0"
 tar = "0.4"
 zip = "2.2"
 
+# Directory traversal for package upload
+walkdir = "2.5"
+
 # Directories for cache
 dirs = "5.0"
 

@@ -5,9 +5,13 @@ use console::{style, Term};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
 use sha2::{Digest, Sha256};
 use sp_core::{crypto::Ss58Codec, sr25519, Pair};
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 use term_challenge::{PythonWhitelist, WhitelistConfig};
+use walkdir::WalkDir;
+use zip::write::FileOptions;
+use zip::CompressionMethod;
 
 pub async fn run_submit_wizard(platform_url: &str) -> Result<()> {
     let term = Term::stdout();
@@ -25,23 +29,34 @@ pub async fn run_submit_wizard(platform_url: &str) -> Result<()> {
     );
     println!();
 
-    // Step 1: Select agent file
-    let agent_path = select_agent_file()?;
-    let source = std::fs::read_to_string(&agent_path)?;
-    let default_name = agent_path
-        .file_stem()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "agent".to_string())
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect::<String>();
+    // Step 1: Select submission type
+    let submission = select_submission_source()?;
+    let default_name = submission.default_name();
 
     println!();
-    println!(
-        "  {} Selected: {}",
-        style("✓").green(),
-        style(agent_path.file_name().unwrap_or_default().to_string_lossy()).cyan()
-    );
+    match &submission {
+        SubmissionSource::SingleFile { path, .. } => {
+            println!(
+                "  {} Selected file: {}",
+                style("✓").green(),
+                style(path.file_name().unwrap_or_default().to_string_lossy()).cyan()
+            );
+        }
+        SubmissionSource::Package {
+            path, entry_point, ..
+        } => {
+            println!(
+                "  {} Selected folder: {}",
+                style("✓").green(),
+                style(path.file_name().unwrap_or_default().to_string_lossy()).cyan()
+            );
+            println!(
+                "  {} Entry point: {}",
+                style("✓").green(),
+                style(entry_point).cyan()
+            );
+        }
+    }
 
     // Step 1b: Choose agent name
     println!();
@@ -100,7 +115,7 @@ pub async fn run_submit_wizard(platform_url: &str) -> Result<()> {
     // Step 3: Validate agent
     println!();
     println!("  {} Validating agent...", style("→").cyan());
-    validate_agent(&source)?;
+    validate_submission(&submission)?;
     println!("  {} Validation passed", style("✓").green());
 
     // Step 4: Configure API key
@@ -128,9 +143,9 @@ pub async fn run_submit_wizard(platform_url: &str) -> Result<()> {
 
     // Step 7: Submit
     println!();
-    let (submission_id, hash, version) = submit_agent(
+    let (submission_id, hash, version) = submit_agent_from_source(
         platform_url,
-        &source,
+        &submission,
         &signing_key,
         &miner_hotkey,
         &agent_name,
@@ -179,8 +194,65 @@ fn print_banner() {
     );
 }
 
-fn select_agent_file() -> Result<PathBuf> {
-    println!("  {}", style("Step 1: Select Agent File").bold());
+/// Submission source - either a single file or a package folder
+enum SubmissionSource {
+    SingleFile {
+        path: PathBuf,
+        source: String,
+    },
+    Package {
+        path: PathBuf,
+        entry_point: String,
+        zip_data: Vec<u8>,
+    },
+}
+
+impl SubmissionSource {
+    fn default_name(&self) -> String {
+        match self {
+            SubmissionSource::SingleFile { path, .. } => path
+                .file_stem()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "agent".to_string())
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect(),
+            SubmissionSource::Package { path, .. } => path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "agent".to_string())
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect(),
+        }
+    }
+}
+
+fn select_submission_source() -> Result<SubmissionSource> {
+    println!("  {}", style("Step 1: Select Submission Type").bold());
+    println!();
+
+    let types = vec![
+        "Single Python file (.py)",
+        "Project folder (will be packaged as ZIP)",
+    ];
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("  Submission type")
+        .items(&types)
+        .default(0)
+        .interact()?;
+
+    println!();
+
+    match selection {
+        0 => select_single_file(),
+        1 => select_folder_package(),
+        _ => select_single_file(),
+    }
+}
+
+fn select_single_file() -> Result<SubmissionSource> {
     println!(
         "  {}",
         style("Enter the path to your Python agent file").dim()
@@ -201,7 +273,134 @@ fn select_agent_file() -> Result<PathBuf> {
         })
         .interact_text()?;
 
-    Ok(PathBuf::from(path_str))
+    let path = PathBuf::from(&path_str);
+    let source = std::fs::read_to_string(&path)?;
+
+    Ok(SubmissionSource::SingleFile { path, source })
+}
+
+fn select_folder_package() -> Result<SubmissionSource> {
+    println!("  {}", style("Enter the path to your project folder").dim());
+    println!(
+        "  {}",
+        style("The folder will be packaged as a ZIP archive").dim()
+    );
+    println!();
+
+    let path_str: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("  Project folder path")
+        .validate_with(|input: &String| -> Result<(), String> {
+            let path = PathBuf::from(input);
+            if !path.exists() {
+                return Err(format!("Folder not found: {}", input));
+            }
+            if !path.is_dir() {
+                return Err("Path must be a directory".to_string());
+            }
+            Ok(())
+        })
+        .interact_text()?;
+
+    let path = PathBuf::from(&path_str);
+
+    // Find Python files in the folder
+    let mut py_files: Vec<String> = Vec::new();
+    for entry in WalkDir::new(&path).max_depth(3).into_iter().flatten() {
+        if entry.file_type().is_file() {
+            if let Some(ext) = entry.path().extension() {
+                if ext == "py" {
+                    if let Ok(rel) = entry.path().strip_prefix(&path) {
+                        py_files.push(rel.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if py_files.is_empty() {
+        return Err(anyhow::anyhow!("No Python files found in folder"));
+    }
+
+    // Sort and select entry point
+    py_files.sort();
+
+    // Default to agent.py or main.py if present
+    let default_idx = py_files
+        .iter()
+        .position(|f| f == "agent.py" || f == "main.py")
+        .unwrap_or(0);
+
+    println!();
+    println!(
+        "  {} Found {} Python files",
+        style("ℹ").blue(),
+        py_files.len()
+    );
+    println!();
+
+    let entry_idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("  Select entry point (main agent file)")
+        .items(&py_files)
+        .default(default_idx)
+        .interact()?;
+
+    let entry_point = py_files[entry_idx].clone();
+
+    // Create ZIP archive
+    println!();
+    println!("  {} Creating ZIP archive...", style("→").cyan());
+
+    let zip_data = create_zip_archive(&path)?;
+
+    println!(
+        "  {} Archive created ({} bytes, {} files)",
+        style("✓").green(),
+        zip_data.len(),
+        py_files.len()
+    );
+
+    Ok(SubmissionSource::Package {
+        path,
+        entry_point,
+        zip_data,
+    })
+}
+
+fn create_zip_archive(folder: &PathBuf) -> Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buffer));
+        let options = FileOptions::<()>::default()
+            .compression_method(CompressionMethod::Deflated)
+            .unix_permissions(0o644);
+
+        for entry in WalkDir::new(folder).into_iter().flatten() {
+            let path = entry.path();
+            let name = path.strip_prefix(folder).unwrap_or(path);
+
+            // Skip hidden files and common non-essential directories
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.')
+                || name_str.contains("__pycache__")
+                || name_str.contains(".git")
+                || name_str.contains("node_modules")
+                || name_str.contains(".venv")
+                || name_str.contains("venv")
+            {
+                continue;
+            }
+
+            if path.is_file() {
+                zip.start_file(name.to_string_lossy(), options)?;
+                let content = std::fs::read(path)?;
+                zip.write_all(&content)?;
+            }
+        }
+
+        zip.finish()?;
+    }
+
+    Ok(buffer)
 }
 
 fn check_existing_agent(agent_name: &str) -> Result<bool> {
@@ -298,7 +497,34 @@ fn enter_miner_key() -> Result<(sr25519::Pair, String)> {
     ))
 }
 
-fn validate_agent(source: &str) -> Result<()> {
+fn validate_submission(submission: &SubmissionSource) -> Result<()> {
+    match submission {
+        SubmissionSource::SingleFile { source, .. } => {
+            validate_source_code(source)?;
+        }
+        SubmissionSource::Package {
+            path, entry_point, ..
+        } => {
+            // Validate entry point file
+            let entry_path = path.join(entry_point);
+            if entry_path.exists() {
+                let source = std::fs::read_to_string(&entry_path)?;
+                validate_source_code(&source)?;
+            }
+            // Check for requirements.txt
+            let req_path = path.join("requirements.txt");
+            if req_path.exists() {
+                println!(
+                    "  {} requirements.txt found (will be installed during compilation)",
+                    style("ℹ").blue()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_code(source: &str) -> Result<()> {
     // Check for forbidden patterns
     let forbidden = ["subprocess", "os.system", "eval(", "exec("];
     for f in forbidden {
@@ -490,9 +716,9 @@ fn print_review(agent_name: &str, miner_hotkey: &str, provider: &str, cost_limit
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn submit_agent(
+async fn submit_agent_from_source(
     platform_url: &str,
-    source: &str,
+    submission: &SubmissionSource,
     signing_key: &sr25519::Pair,
     miner_hotkey: &str,
     name: &str,
@@ -504,42 +730,92 @@ async fn submit_agent(
 
     let client = reqwest::Client::new();
 
-    // Compute source code hash
-    let mut hasher = Sha256::new();
-    hasher.update(source.as_bytes());
-    let source_hash = hex::encode(hasher.finalize());
+    match submission {
+        SubmissionSource::SingleFile { source, .. } => {
+            // Compute source code hash
+            let mut hasher = Sha256::new();
+            hasher.update(source.as_bytes());
+            let source_hash = hex::encode(hasher.finalize());
 
-    // Create message to sign: "submit_agent:<sha256_of_source_code>"
-    // This proves the miner owns this hotkey and is submitting this specific code
-    let message = format!("submit_agent:{}", source_hash);
+            // Create message to sign
+            let message = format!("submit_agent:{}", source_hash);
+            let signature = signing_key.sign(message.as_bytes());
+            let signature_hex = hex::encode(signature.0);
 
-    // Sign the message (not the source code directly)
-    let signature = signing_key.sign(message.as_bytes());
-    let signature_hex = hex::encode(signature.0);
+            let agent_hash = source_hash[..32].to_string();
 
-    // Compute agent hash (first 16 bytes of source hash)
-    let agent_hash = source_hash[..32].to_string();
+            let request = serde_json::json!({
+                "source_code": source,
+                "miner_hotkey": miner_hotkey,
+                "signature": signature_hex,
+                "name": name,
+                "api_key": api_key,
+                "api_provider": provider,
+                "cost_limit_usd": cost_limit_usd,
+            });
 
-    let request = serde_json::json!({
-        "source_code": source,
-        "miner_hotkey": miner_hotkey,  // SS58 format
-        "signature": signature_hex,     // No 0x prefix
-        "name": name,
-        "api_key": api_key,
-        "api_provider": provider,
-        "cost_limit_usd": cost_limit_usd,
-    });
+            let url = format!("{}/api/v1/bridge/term-challenge/submit", platform_url);
 
-    // Use bridge route: /api/v1/bridge/{challenge}/submit
-    let url = format!("{}/api/v1/bridge/term-challenge/submit", platform_url);
+            let response = client
+                .post(&url)
+                .json(&request)
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await?;
 
-    let response = client
-        .post(&url)
-        .json(&request)
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await?;
+            parse_submission_response(response, agent_hash).await
+        }
+        SubmissionSource::Package {
+            zip_data,
+            entry_point,
+            ..
+        } => {
+            // Compute package hash
+            let mut hasher = Sha256::new();
+            hasher.update(zip_data);
+            let package_hash = hex::encode(hasher.finalize());
 
+            // Create message to sign
+            let message = format!("submit_agent:{}", package_hash);
+            let signature = signing_key.sign(message.as_bytes());
+            let signature_hex = hex::encode(signature.0);
+
+            let agent_hash = package_hash[..32].to_string();
+
+            // Base64 encode the ZIP data
+            use base64::Engine;
+            let package_base64 = base64::engine::general_purpose::STANDARD.encode(zip_data);
+
+            let request = serde_json::json!({
+                "package_data": package_base64,
+                "package_format": "zip",
+                "entry_point": entry_point,
+                "miner_hotkey": miner_hotkey,
+                "signature": signature_hex,
+                "name": name,
+                "api_key": api_key,
+                "api_provider": provider,
+                "cost_limit_usd": cost_limit_usd,
+            });
+
+            let url = format!("{}/api/v1/bridge/term-challenge/submit", platform_url);
+
+            let response = client
+                .post(&url)
+                .json(&request)
+                .timeout(Duration::from_secs(60))
+                .send()
+                .await?;
+
+            parse_submission_response(response, agent_hash).await
+        }
+    }
+}
+
+async fn parse_submission_response(
+    response: reqwest::Response,
+    default_hash: String,
+) -> Result<(String, String, i32)> {
     if response.status().is_success() {
         let resp: serde_json::Value = response.json().await?;
         let submission_id = resp["submission_id"]
@@ -549,7 +825,7 @@ async fn submit_agent(
         let hash = resp["agent_hash"]
             .as_str()
             .map(|s| s.to_string())
-            .unwrap_or(agent_hash);
+            .unwrap_or(default_hash);
         let version = resp["version"].as_i64().unwrap_or(1) as i32;
         Ok((submission_id, hash, version))
     } else {
