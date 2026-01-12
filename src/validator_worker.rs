@@ -581,25 +581,14 @@ impl ValidatorWorker {
             result.tasks_total
         );
 
-        // 3. Submit result
-        info!("Submitting result...");
-        if let Err(e) = self.submit_result(agent_hash, &result).await {
-            error!("Submit result failed for agent {}: {:?}", short_hash, e);
-            // Log global failure to server for visibility
-            if let Err(log_err) = self
-                .log_global_failure(
-                    agent_hash,
-                    "submit_result",
-                    &format!("{}", e),
-                    &format!("{:?}", e),
-                )
-                .await
-            {
-                warn!("Failed to log submit failure: {}", log_err);
-            }
-            return Err(e);
-        }
-        info!("Result submitted for agent {}", short_hash);
+        // NOTE: submit_result has been removed - the server auto-detects completion
+        // when all tasks are logged via log_task_result() calls above.
+        // The server creates ValidatorEvaluation records automatically when
+        // completed_tasks == total_tasks for this validator.
+        info!(
+            "Evaluation complete for agent {} - all {} tasks logged, server will auto-complete",
+            short_hash, result.tasks_total
+        );
 
         Ok(())
     }
@@ -1843,45 +1832,8 @@ impl ValidatorWorker {
         }
     }
 
-    /// Submit result via bridge
-    async fn submit_result(&self, agent_hash: &str, result: &EvalResult) -> Result<()> {
-        let url = format!(
-            "{}/api/v1/bridge/{}/api/v1/validator/submit_result",
-            self.platform_url, self.challenge_id
-        );
-
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs() as i64;
-
-        let message = format!("submit_result:{}:{}", agent_hash, timestamp);
-        let signature = self.sign_message(&message);
-
-        let response = self
-            .http_client
-            .post(&url)
-            .json(&serde_json::json!({
-                "agent_hash": agent_hash,
-                "validator_hotkey": self.validator_hotkey,
-                "score": result.score,
-                "tasks_passed": result.tasks_passed,
-                "tasks_total": result.tasks_total,
-                "tasks_failed": result.tasks_failed,
-                "total_cost_usd": result.total_cost,
-                "timestamp": timestamp,
-                "signature": signature,
-            }))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Submit result failed: {} - {}", status, text);
-        }
-
-        Ok(())
-    }
+    // NOTE: submit_result has been removed - server auto-detects completion
+    // when all tasks are logged via log_task_result()
 
     /// Sign message with validator keypair
     fn sign_message(&self, message: &str) -> String {

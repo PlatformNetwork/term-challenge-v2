@@ -1700,6 +1700,118 @@ impl PgStorage {
         Ok(result as usize)
     }
 
+    /// Clear all task logs for an agent
+    /// Used before recompilation to ensure fresh evaluation
+    pub async fn clear_task_logs(&self, agent_hash: &str) -> Result<usize> {
+        let client = self.pool.get().await?;
+        let result = client
+            .execute(
+                "DELETE FROM task_logs WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        if result > 0 {
+            info!(
+                "Cleared {} task logs for agent {}",
+                result,
+                &agent_hash[..16.min(agent_hash.len())]
+            );
+        }
+        Ok(result as usize)
+    }
+
+    /// Clear all validator evaluations for an agent
+    /// Used before recompilation to ensure fresh evaluation
+    pub async fn clear_validator_evaluations(&self, agent_hash: &str) -> Result<usize> {
+        let client = self.pool.get().await?;
+        let result = client
+            .execute(
+                "DELETE FROM validator_evaluations WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        if result > 0 {
+            info!(
+                "Cleared {} validator evaluations for agent {}",
+                result,
+                &agent_hash[..16.min(agent_hash.len())]
+            );
+        }
+        Ok(result as usize)
+    }
+
+    /// Cleanup all evaluation data for an agent before recompilation
+    /// This ensures a fresh start when an agent is resubmitted/recompiled
+    pub async fn cleanup_agent_for_recompilation(&self, agent_hash: &str) -> Result<()> {
+        let short_hash = &agent_hash[..16.min(agent_hash.len())];
+        info!("Cleaning up agent {} for recompilation", short_hash);
+
+        // Use a transaction to ensure all cleanups happen atomically
+        let mut client = self.pool.get().await?;
+        let transaction = client.transaction().await?;
+
+        // 1. Clear task logs
+        let task_logs_cleared = transaction
+            .execute(
+                "DELETE FROM task_logs WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // 2. Clear validator evaluations
+        let evals_cleared = transaction
+            .execute(
+                "DELETE FROM validator_evaluations WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // 3. Clear evaluation tasks
+        let tasks_cleared = transaction
+            .execute(
+                "DELETE FROM evaluation_tasks WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // 4. Clear validator assignments
+        let assignments_cleared = transaction
+            .execute(
+                "DELETE FROM validator_assignments WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // 5. Clear validator claims
+        let claims_cleared = transaction
+            .execute(
+                "DELETE FROM validator_claims WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // 6. Reset pending_evaluations counter (don't delete, just reset)
+        transaction
+            .execute(
+                "UPDATE pending_evaluations 
+                 SET validators_completed = 0, status = 'pending'
+                 WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        transaction.commit().await?;
+
+        info!(
+            "Cleanup complete for agent {}: {} task_logs, {} evaluations, {} tasks, {} assignments, {} claims",
+            short_hash, task_logs_cleared, evals_cleared, tasks_cleared, assignments_cleared, claims_cleared
+        );
+
+        Ok(())
+    }
+
     /// Check if a validator is assigned to evaluate an agent
     pub async fn is_validator_assigned(
         &self,
@@ -2278,6 +2390,160 @@ impl PgStorage {
         );
 
         Ok((false, false, None))
+    }
+
+    /// Auto-complete a validator's evaluation when all their assigned tasks are logged
+    /// This is called from log_task() when completed_tasks == total_tasks
+    /// Returns (consensus_reached, final_score)
+    pub async fn auto_complete_validator_evaluation(
+        &self,
+        agent_hash: &str,
+        validator_hotkey: &str,
+        summary: &TaskLogSummary,
+    ) -> Result<(bool, Option<f64>)> {
+        let short_hash = &agent_hash[..16.min(agent_hash.len())];
+        let short_validator = &validator_hotkey[..16.min(validator_hotkey.len())];
+
+        // Calculate score as ratio of passed/total tasks
+        let score = if summary.total_tasks > 0 {
+            summary.passed_tasks as f64 / summary.total_tasks as f64
+        } else {
+            0.0
+        };
+
+        info!(
+            "Auto-completing evaluation for validator {} on agent {}: score={:.4} ({}/{} passed)",
+            short_validator, short_hash, score, summary.passed_tasks, summary.total_tasks
+        );
+
+        let mut client = self.pool.get().await?;
+        let transaction = client.transaction().await?;
+
+        // Get submission info and lock pending_evaluations row
+        let pending_row = transaction
+            .query_opt(
+                "SELECT pe.submission_id, s.miner_hotkey, s.epoch, 
+                        pe.validators_completed, pe.total_validators, pe.window_expires_at < NOW() as expired
+                 FROM pending_evaluations pe
+                 JOIN submissions s ON s.agent_hash = pe.agent_hash
+                 WHERE pe.agent_hash = $1 FOR UPDATE",
+                &[&agent_hash],
+            )
+            .await?;
+
+        let (
+            submission_id,
+            miner_hotkey,
+            epoch,
+            validators_completed,
+            total_validators,
+            is_expired,
+        ): (String, String, i64, i32, i32, bool) = match pending_row {
+            Some(r) => (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5)),
+            None => {
+                transaction.rollback().await?;
+                return Err(anyhow::anyhow!(
+                    "Agent {} not found in pending evaluations",
+                    short_hash
+                ));
+            }
+        };
+
+        // If window expired, don't allow completion
+        if is_expired {
+            info!(
+                "Validator {} is late for agent {} (window expired), skipping auto-completion",
+                short_validator, short_hash
+            );
+            transaction.rollback().await?;
+            return Ok((false, None));
+        }
+
+        // Check if this validator already has an evaluation (avoid double-counting)
+        let already_submitted = transaction
+            .query_opt(
+                "SELECT 1 FROM validator_evaluations WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?
+            .is_some();
+
+        // Create the validator evaluation record
+        let eval_id = uuid::Uuid::new_v4().to_string();
+        let score_f32 = score as f32;
+        let cost_f32 = summary.total_cost_usd as f32;
+
+        transaction
+            .execute(
+                "INSERT INTO validator_evaluations 
+                 (id, agent_hash, validator_hotkey, submission_id, miner_hotkey, score, 
+                  tasks_passed, tasks_total, tasks_failed, total_cost_usd, execution_time_ms, epoch)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 ON CONFLICT(agent_hash, validator_hotkey) DO UPDATE SET
+                    score = EXCLUDED.score,
+                    tasks_passed = EXCLUDED.tasks_passed,
+                    tasks_total = EXCLUDED.tasks_total,
+                    tasks_failed = EXCLUDED.tasks_failed,
+                    total_cost_usd = EXCLUDED.total_cost_usd,
+                    execution_time_ms = EXCLUDED.execution_time_ms",
+                &[
+                    &eval_id,
+                    &agent_hash,
+                    &validator_hotkey,
+                    &submission_id,
+                    &miner_hotkey,
+                    &score_f32,
+                    &summary.passed_tasks,
+                    &summary.total_tasks,
+                    &summary.failed_tasks,
+                    &cost_f32,
+                    &summary.total_execution_time_ms,
+                    &epoch,
+                ],
+            )
+            .await?;
+
+        // Update claim status to completed
+        transaction
+            .execute(
+                "UPDATE validator_claims SET status = 'completed' 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?;
+
+        // Only increment counter if this is a NEW submission
+        let new_completed = if !already_submitted {
+            transaction
+                .execute(
+                    "UPDATE pending_evaluations SET validators_completed = validators_completed + 1
+                     WHERE agent_hash = $1",
+                    &[&agent_hash],
+                )
+                .await?;
+            validators_completed + 1
+        } else {
+            validators_completed
+        };
+
+        // Check if all validators have completed
+        let all_done = new_completed >= total_validators;
+
+        // Commit the transaction
+        transaction.commit().await?;
+
+        info!(
+            "Validator {} evaluation saved for agent {} ({}/{} validators done)",
+            short_validator, short_hash, new_completed, total_validators
+        );
+
+        if all_done {
+            // Calculate consensus score and finalize
+            let final_score = self.calculate_and_store_consensus(agent_hash).await?;
+            return Ok((true, Some(final_score)));
+        }
+
+        Ok((false, None))
     }
 
     /// Calculate consensus score from all validator evaluations

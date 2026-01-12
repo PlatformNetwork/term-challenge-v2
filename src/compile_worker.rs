@@ -274,6 +274,20 @@ impl CompileWorker {
                     return;
                 }
 
+                // Cleanup all previous evaluation data for this agent
+                // This ensures a fresh start in case of recompilation
+                if let Err(e) = self
+                    .storage
+                    .cleanup_agent_for_recompilation(agent_hash)
+                    .await
+                {
+                    warn!(
+                        "Failed to cleanup agent {} for recompilation: {}",
+                        short_hash, e
+                    );
+                    // Continue anyway - cleanup is best effort
+                }
+
                 // Wait for ready validators and assign them (waits up to 15 min)
                 if !self.assign_validators(agent_hash).await {
                     // Validators not available - agent already marked as failed
