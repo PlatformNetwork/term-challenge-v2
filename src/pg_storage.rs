@@ -3308,11 +3308,12 @@ impl PgStorage {
     ) -> Result<EvaluationProgress> {
         let client = self.pool.get().await?;
 
-        // Get all assigned tasks for this agent
+        // Get tasks assigned to THIS validator for this agent (not all 30 tasks)
         let assigned_rows = client
             .query(
-                "SELECT task_id, task_name FROM evaluation_tasks WHERE agent_hash = $1",
-                &[&agent_hash],
+                "SELECT task_id, task_name FROM evaluation_tasks 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &validator_hotkey],
             )
             .await?;
 
@@ -3483,17 +3484,22 @@ impl PgStorage {
             )
             .await?;
 
-        // Get assigned tasks count
-        // Fixed task count - validators always evaluate 30 tasks from terminal-bench@2.0
-        const TASKS_PER_EVALUATION: i64 = 30;
-        let total_tasks: i64 = TASKS_PER_EVALUATION;
-
         let mut results = Vec::new();
 
         for assignment in assignments {
             let validator_hotkey: String = assignment.get("validator_hotkey");
             let assignment_status: String = assignment.get("status");
             let assigned_at: Option<i64> = assignment.try_get("assigned_at").ok();
+
+            // Get actual assigned tasks count for THIS validator
+            let total_tasks: i64 = client
+                .query_one(
+                    "SELECT COUNT(*)::BIGINT FROM evaluation_tasks 
+                     WHERE agent_hash = $1 AND validator_hotkey = $2",
+                    &[&agent_hash, &validator_hotkey],
+                )
+                .await?
+                .get(0);
 
             // Get task log summary for this validator (exclude internal failure markers)
             let summary = client
@@ -3515,9 +3521,7 @@ impl PgStorage {
             let failed: i64 = summary.get("failed");
             let last_update: Option<i64> = summary.try_get("last_update").ok().flatten();
 
-            // Calculate remaining based on completed count vs total (30)
-            // Note: We don't track individual task IDs for remaining since evaluation_tasks
-            // uses placeholder IDs while task_logs use real terminal-bench IDs
+            // Calculate remaining based on completed count vs assigned tasks for this validator
             let remaining = (total_tasks - completed).max(0);
             let remaining_task_ids: Vec<String> = Vec::new(); // Not tracking individual IDs
 
