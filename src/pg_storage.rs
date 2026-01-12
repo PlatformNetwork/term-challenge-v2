@@ -256,6 +256,14 @@ pub struct Submission {
     pub package_format: Option<String>,
     /// Entry point file path within the package (e.g., "agent.py" or "src/main.py")
     pub entry_point: Option<String>,
+
+    // ========================================================================
+    // CODE VISIBILITY & DECAY
+    // ========================================================================
+    /// When true, code is never made public (admin-controlled)
+    pub disable_public_code: bool,
+    /// When true, time decay is not applied to this agent (admin-controlled)
+    pub disable_decay: bool,
 }
 
 /// Submission without source code (for listings)
@@ -339,6 +347,8 @@ pub struct AgentLeaderboardEntry {
     pub manually_validated: bool,
     pub total_cost_usd: f64,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// When true, time decay is not applied to this agent
+    pub disable_decay: bool,
 }
 
 /// Pending evaluation - one per agent, ALL validators must evaluate
@@ -813,11 +823,12 @@ impl PgStorage {
                     COALESCE(SUM(ve.tasks_passed), 0)::INTEGER as total_tasks_passed,
                     COALESCE(SUM(ve.tasks_total), 0)::INTEGER as total_tasks,
                     COUNT(DISTINCT ve.validator_hotkey)::INTEGER as num_validators,
-                    COALESCE(SUM(ve.total_cost_usd), 0.0)::FLOAT8 as total_cost_usd
+                    COALESCE(SUM(ve.total_cost_usd), 0.0)::FLOAT8 as total_cost_usd,
+                    COALESCE(s.disable_decay, false) as disable_decay
                 FROM submissions s
                 LEFT JOIN validator_evaluations ve ON s.agent_hash = ve.agent_hash
                 WHERE s.status = 'completed'
-                GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.status, s.created_at, s.manually_validated
+                GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.status, s.created_at, s.manually_validated, s.disable_decay
                 HAVING COUNT(DISTINCT ve.validator_hotkey) >= 1
                 ORDER BY SUM(ve.tasks_passed) DESC NULLS LAST, s.created_at ASC
                 LIMIT $1",
@@ -838,6 +849,7 @@ impl PgStorage {
                 total_tasks: r.get(7),
                 num_validators: r.get(8),
                 total_cost_usd: r.get(9),
+                disable_decay: r.get(10),
             })
             .collect())
     }
@@ -858,11 +870,12 @@ impl PgStorage {
                     COALESCE(SUM(ve.tasks_passed), 0)::INTEGER as total_tasks_passed,
                     COALESCE(SUM(ve.tasks_total), 0)::INTEGER as total_tasks,
                     COUNT(DISTINCT ve.validator_hotkey)::INTEGER as num_validators,
-                    COALESCE(SUM(ve.total_cost_usd), 0.0)::FLOAT8 as total_cost_usd
+                    COALESCE(SUM(ve.total_cost_usd), 0.0)::FLOAT8 as total_cost_usd,
+                    COALESCE(s.disable_decay, false) as disable_decay
                 FROM submissions s
                 LEFT JOIN validator_evaluations ve ON s.agent_hash = ve.agent_hash
                 WHERE s.agent_hash = $1
-                GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.status, s.created_at, s.manually_validated",
+                GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.status, s.created_at, s.manually_validated, s.disable_decay",
                 &[&agent_hash],
             )
             .await?;
@@ -878,6 +891,7 @@ impl PgStorage {
             total_tasks: r.get(7),
             num_validators: r.get(8),
             total_cost_usd: r.get(9),
+            disable_decay: r.get(10),
         }))
     }
 
@@ -1292,7 +1306,9 @@ impl PgStorage {
                 "SELECT id, agent_hash, miner_hotkey, source_code, source_hash, name, 
                     COALESCE(version, 1), epoch, status, api_key, 
                     COALESCE(api_provider, 'openrouter'), COALESCE(cost_limit_usd, 80.0)::FLOAT8, 
-                    COALESCE(total_cost_usd, 0.0)::FLOAT8, EXTRACT(EPOCH FROM created_at)::BIGINT
+                    COALESCE(total_cost_usd, 0.0)::FLOAT8, EXTRACT(EPOCH FROM created_at)::BIGINT,
+                    COALESCE(is_package, false), package_data, package_format, entry_point,
+                    COALESCE(disable_public_code, false), COALESCE(disable_decay, false)
              FROM submissions WHERE agent_hash = $1",
                 &[&agent_hash],
             )
@@ -1313,7 +1329,15 @@ impl PgStorage {
             cost_limit_usd: r.get(11),
             total_cost_usd: r.get(12),
             created_at: r.get(13),
-            // New fields - defaults for backwards compatibility
+            // Package fields
+            is_package: r.get(14),
+            package_data: r.get(15),
+            package_format: r.get(16),
+            entry_point: r.get(17),
+            // Code visibility & decay
+            disable_public_code: r.get(18),
+            disable_decay: r.get(19),
+            // Compilation fields - defaults (not fetched in this query)
             binary: None,
             binary_size: 0,
             compile_status: "pending".to_string(),
@@ -1321,11 +1345,6 @@ impl PgStorage {
             compile_time_ms: 0,
             flagged: false,
             flag_reason: None,
-            // Package fields - defaults for single-file submissions
-            is_package: false,
-            package_data: None,
-            package_format: None,
-            entry_point: None,
         }))
     }
 

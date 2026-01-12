@@ -387,6 +387,9 @@ pub async fn submit_agent(
         package_data,
         package_format,
         entry_point,
+        // Code visibility & decay (defaults)
+        disable_public_code: false,
+        disable_decay: false,
     };
 
     // Store submission
@@ -628,12 +631,19 @@ pub async fn get_leaderboard(
         .into_iter()
         .enumerate()
         .map(|(i, e)| {
-            // Calculate decay info for this entry
+            // Calculate decay info for this entry (skip if decay is disabled)
             let decay_info = crate::time_decay::calculate_decay_info(e.created_at, &decay_config);
 
-            // Weight is decay_multiplier for the winner (winner-takes-all with decay), 0.0 for others
-            let weight = if Some(&e.agent_hash) == winner_hash.as_ref() {
+            // Apply decay multiplier only if decay is enabled for this agent
+            let effective_multiplier = if e.disable_decay {
+                1.0 // No decay
+            } else {
                 decay_info.multiplier
+            };
+
+            // Weight is effective_multiplier for the winner (winner-takes-all with decay), 0.0 for others
+            let weight = if Some(&e.agent_hash) == winner_hash.as_ref() {
+                effective_multiplier
             } else {
                 0.0
             };
