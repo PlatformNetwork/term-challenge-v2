@@ -430,4 +430,197 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("ping"));
     }
+
+    #[test]
+    fn test_broadcast_serialization() {
+        let msg = OutgoingMessage::Broadcast {
+            event: EventPayload {
+                event_type: "test_event".to_string(),
+                payload: serde_json::json!({"key": "value"}),
+            },
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("broadcast"));
+        assert!(json.contains("test_event"));
+        assert!(json.contains("key"));
+    }
+
+    #[test]
+    fn test_event_payload_construction() {
+        let payload = EventPayload {
+            event_type: "binary_ready".to_string(),
+            payload: serde_json::json!({
+                "agent_hash": "abc123",
+                "challenge_id": "term-challenge",
+            }),
+        };
+
+        assert_eq!(payload.event_type, "binary_ready");
+        assert_eq!(payload.payload["agent_hash"], "abc123");
+        assert_eq!(payload.payload["challenge_id"], "term-challenge");
+    }
+
+    #[test]
+    fn test_server_response_pong_deserialization() {
+        let json = r#"{"type": "pong"}"#;
+        let response: ServerResponse = serde_json::from_str(json).unwrap();
+        assert!(matches!(response, ServerResponse::Pong));
+    }
+
+    #[test]
+    fn test_server_response_ack_deserialization() {
+        let json = r#"{"type": "ack", "delivered_count": 5}"#;
+        let response: ServerResponse = serde_json::from_str(json).unwrap();
+        match response {
+            ServerResponse::Ack { delivered_count } => {
+                assert_eq!(delivered_count, 5);
+            }
+            _ => panic!("Expected Ack response"),
+        }
+    }
+
+    #[test]
+    fn test_server_response_error_deserialization() {
+        let json = r#"{"type": "error", "message": "Something went wrong"}"#;
+        let response: ServerResponse = serde_json::from_str(json).unwrap();
+        match response {
+            ServerResponse::Error { message } => {
+                assert_eq!(message, "Something went wrong");
+            }
+            _ => panic!("Expected Error response"),
+        }
+    }
+
+    #[test]
+    fn test_notify_validators_message_structure() {
+        let msg = OutgoingMessage::NotifyValidators {
+            target_validators: vec![
+                "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
+                "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+            ],
+            event: EventPayload {
+                event_type: "new_submission_assigned".to_string(),
+                payload: serde_json::json!({
+                    "agent_hash": "abc123",
+                    "miner_hotkey": "5GrwvaEF...",
+                    "submission_id": "uuid-123",
+                    "challenge_id": "term-challenge",
+                    "download_endpoint": "/api/v1/validator/download_binary/abc123"
+                }),
+            },
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["type"], "notify_validators");
+        assert_eq!(parsed["target_validators"].as_array().unwrap().len(), 2);
+        assert_eq!(parsed["event"]["event_type"], "new_submission_assigned");
+        assert_eq!(parsed["event"]["payload"]["agent_hash"], "abc123");
+    }
+
+    #[test]
+    fn test_url_encoding_special_characters() {
+        // This tests the URL encoding logic used in connect()
+        let secret = "my-secret!@#$%^&*()";
+        let encoded: String = secret
+            .chars()
+            .map(|c| match c {
+                'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+                _ => format!("%{:02X}", c as u8),
+            })
+            .collect();
+
+        assert!(encoded.contains("my-secret"));
+        assert!(encoded.contains("%21")); // !
+        assert!(encoded.contains("%40")); // @
+        assert!(encoded.contains("%23")); // #
+        assert!(encoded.contains("%24")); // $
+        assert!(encoded.contains("%25")); // %
+    }
+
+    #[test]
+    fn test_url_encoding_preserves_safe_chars() {
+        let secret = "safe-secret_123.test~value";
+        let encoded: String = secret
+            .chars()
+            .map(|c| match c {
+                'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+                _ => format!("%{:02X}", c as u8),
+            })
+            .collect();
+
+        // Safe characters should not be encoded
+        assert_eq!(encoded, "safe-secret_123.test~value");
+    }
+
+    #[test]
+    fn test_ws_url_conversion_https() {
+        let platform_url = "https://chain.platform.network";
+        let ws_url = platform_url
+            .replace("https://", "wss://")
+            .replace("http://", "ws://");
+
+        assert_eq!(ws_url, "wss://chain.platform.network");
+    }
+
+    #[test]
+    fn test_ws_url_conversion_http() {
+        let platform_url = "http://localhost:8080";
+        let ws_url = platform_url
+            .replace("https://", "wss://")
+            .replace("http://", "ws://");
+
+        assert_eq!(ws_url, "ws://localhost:8080");
+    }
+
+    #[test]
+    fn test_event_payload_with_complex_data() {
+        let payload = EventPayload {
+            event_type: "evaluation_complete".to_string(),
+            payload: serde_json::json!({
+                "agent_hash": "abc123",
+                "scores": [0.85, 0.90, 0.95],
+                "metadata": {
+                    "validator": "5Grwva...",
+                    "epoch": 100,
+                    "tasks_passed": 17
+                }
+            }),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["event_type"], "evaluation_complete");
+        assert_eq!(parsed["payload"]["scores"].as_array().unwrap().len(), 3);
+        assert_eq!(parsed["payload"]["metadata"]["tasks_passed"], 17);
+    }
+
+    #[test]
+    fn test_all_message_types_serialize() {
+        // NotifyValidators
+        let notify = OutgoingMessage::NotifyValidators {
+            target_validators: vec!["v1".to_string()],
+            event: EventPayload {
+                event_type: "test".to_string(),
+                payload: serde_json::json!({}),
+            },
+        };
+        assert!(serde_json::to_string(&notify).is_ok());
+
+        // Broadcast
+        let broadcast = OutgoingMessage::Broadcast {
+            event: EventPayload {
+                event_type: "test".to_string(),
+                payload: serde_json::json!({}),
+            },
+        };
+        assert!(serde_json::to_string(&broadcast).is_ok());
+
+        // Ping
+        let ping = OutgoingMessage::Ping;
+        assert!(serde_json::to_string(&ping).is_ok());
+    }
 }

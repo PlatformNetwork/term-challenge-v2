@@ -561,4 +561,258 @@ mod tests {
         sleep(Duration::from_millis(50)).await;
         handle.abort();
     }
+
+    #[test]
+    fn test_assignment_monitor_config_custom() {
+        let config = AssignmentMonitorConfig {
+            poll_interval_secs: 60,
+            stale_timeout_minutes: 15,
+            max_reassignments: 5,
+        };
+        assert_eq!(config.poll_interval_secs, 60);
+        assert_eq!(config.stale_timeout_minutes, 15);
+        assert_eq!(config.max_reassignments, 5);
+    }
+
+    #[test]
+    fn test_validator_info_deserialization() {
+        let json_data = r#"{"hotkey": "val123", "is_active": true}"#;
+        let info: ValidatorInfo = serde_json::from_str(json_data).unwrap();
+        assert_eq!(info.hotkey, "val123");
+        assert!(info.is_active);
+
+        let json_inactive = r#"{"hotkey": "val456", "is_active": false}"#;
+        let info2: ValidatorInfo = serde_json::from_str(json_inactive).unwrap();
+        assert_eq!(info2.hotkey, "val456");
+        assert!(!info2.is_active);
+    }
+
+    #[test]
+    fn test_stale_assignment_sample() {
+        let assignment = sample_assignment("agent_hash_123", "validator_456", 1);
+        assert_eq!(assignment.agent_hash, "agent_hash_123");
+        assert_eq!(assignment.validator_hotkey, "validator_456");
+        assert_eq!(assignment.reassignment_count, 1);
+        assert_eq!(assignment.assigned_at, 0);
+    }
+
+    #[tokio::test]
+    async fn test_fake_storage_default() {
+        let storage = FakeStorage::default();
+
+        let stale = storage.get_stale_assignments(30, 3).await.unwrap();
+        assert!(stale.is_empty());
+
+        let assigned = storage
+            .get_validators_assigned_to_agent("any_agent")
+            .await
+            .unwrap();
+        assert!(assigned.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fake_storage_with_stale() {
+        let stale_list = vec![
+            sample_assignment("agent1", "val1", 0),
+            sample_assignment("agent2", "val2", 1),
+        ];
+        let storage = FakeStorage::with_stale(stale_list);
+
+        let stale = storage.get_stale_assignments(30, 3).await.unwrap();
+        assert_eq!(stale.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_fake_storage_set_assigned() {
+        let storage = FakeStorage::default();
+
+        storage
+            .set_assigned("agent_x", vec!["v1".into(), "v2".into()])
+            .await;
+
+        let assigned = storage
+            .get_validators_assigned_to_agent("agent_x")
+            .await
+            .unwrap();
+        assert_eq!(assigned, vec!["v1".to_string(), "v2".to_string()]);
+
+        // Different agent should return empty
+        let other = storage
+            .get_validators_assigned_to_agent("other_agent")
+            .await
+            .unwrap();
+        assert!(other.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fake_storage_reassign_validator() {
+        let storage = FakeStorage::default();
+
+        storage
+            .reassign_validator("agent1", "old_val", "new_val", "test_reason")
+            .await
+            .unwrap();
+
+        let records = storage.recorded_reassignments().await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0],
+            (
+                "agent1".to_string(),
+                "old_val".to_string(),
+                "new_val".to_string(),
+                "test_reason".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn test_monitor_new() {
+        let storage = Arc::new(FakeStorage::default());
+        let config = AssignmentMonitorConfig {
+            poll_interval_secs: 120,
+            stale_timeout_minutes: 20,
+            max_reassignments: 4,
+        };
+
+        let monitor = AssignmentMonitor::new(storage.clone(), "http://example.com".into(), config);
+
+        assert_eq!(monitor.platform_url, "http://example.com");
+        assert_eq!(monitor.config.poll_interval_secs, 120);
+        assert_eq!(monitor.config.stale_timeout_minutes, 20);
+        assert_eq!(monitor.config.max_reassignments, 4);
+    }
+
+    #[tokio::test]
+    async fn test_check_and_reassign_multiple_stale() {
+        let stale = vec![
+            sample_assignment("agent_a", "validator_a", 0),
+            sample_assignment("agent_b", "validator_b", 1),
+        ];
+        let storage = Arc::new(FakeStorage::with_stale(stale));
+
+        let server = MockServer::start();
+        let _mock = server.mock(|when, then| {
+            when.method(GET).path("/api/v1/validators");
+            then.status(200).json_body(json!([
+                {
+                    "hotkey": "validator_new",
+                    "is_active": true
+                }
+            ]));
+        });
+
+        let monitor = AssignmentMonitor::new(storage.clone(), server.base_url(), short_config());
+        monitor.check_and_reassign_stale().await.unwrap();
+
+        let records = storage.recorded_reassignments().await;
+        assert_eq!(records.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_check_and_reassign_excludes_assigned_validators() {
+        let stale = vec![sample_assignment("agent_a", "validator_old", 0)];
+        let storage = Arc::new(FakeStorage::with_stale(stale));
+        // Mark validator_b as already assigned to this agent
+        storage
+            .set_assigned("agent_a", vec!["validator_b".into()])
+            .await;
+
+        let server = MockServer::start();
+        let _mock = server.mock(|when, then| {
+            when.method(GET).path("/api/v1/validators");
+            then.status(200).json_body(json!([
+                {
+                    "hotkey": "validator_b",
+                    "is_active": true
+                },
+                {
+                    "hotkey": "validator_c",
+                    "is_active": true
+                }
+            ]));
+        });
+
+        let monitor = AssignmentMonitor::new(storage.clone(), server.base_url(), short_config());
+        monitor.check_and_reassign_stale().await.unwrap();
+
+        let records = storage.recorded_reassignments().await;
+        assert_eq!(records.len(), 1);
+        // validator_b is excluded, so it should reassign to validator_c
+        assert_eq!(records[0].2, "validator_c");
+    }
+
+    #[tokio::test]
+    async fn test_short_hash_truncation() {
+        // Test with very short agent_hash and validator_hotkey
+        let stale = vec![sample_assignment("short", "tiny", 0)];
+        let storage = Arc::new(FakeStorage::with_stale(stale));
+
+        let server = MockServer::start();
+        let _mock = server.mock(|when, then| {
+            when.method(GET).path("/api/v1/validators");
+            then.status(200).json_body(json!([{
+                "hotkey": "new_validator",
+                "is_active": true
+            }]));
+        });
+
+        let monitor = AssignmentMonitor::new(storage.clone(), server.base_url(), short_config());
+        // Should not panic with short strings
+        monitor.check_and_reassign_stale().await.unwrap();
+
+        let records = storage.recorded_reassignments().await;
+        assert_eq!(records.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_validators_empty_response() {
+        let storage = Arc::new(FakeStorage::default());
+        let server = MockServer::start();
+        let _mock = server.mock(|when, then| {
+            when.method(GET).path("/api/v1/validators");
+            then.status(200).json_body(json!([]));
+        });
+
+        let monitor = AssignmentMonitor::new(storage, server.base_url(), short_config());
+        let validators = monitor.fetch_active_validators().await.unwrap();
+        assert!(validators.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_validators_all_inactive() {
+        let storage = Arc::new(FakeStorage::default());
+        let server = MockServer::start();
+        let _mock = server.mock(|when, then| {
+            when.method(GET).path("/api/v1/validators");
+            then.status(200).json_body(json!([
+                {"hotkey": "v1", "is_active": false},
+                {"hotkey": "v2", "is_active": false}
+            ]));
+        });
+
+        let monitor = AssignmentMonitor::new(storage, server.base_url(), short_config());
+        let validators = monitor.fetch_active_validators().await.unwrap();
+        assert!(validators.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_validators_multiple_active() {
+        let storage = Arc::new(FakeStorage::default());
+        let server = MockServer::start();
+        let _mock = server.mock(|when, then| {
+            when.method(GET).path("/api/v1/validators");
+            then.status(200).json_body(json!([
+                {"hotkey": "v1", "is_active": true},
+                {"hotkey": "v2", "is_active": true},
+                {"hotkey": "v3", "is_active": false}
+            ]));
+        });
+
+        let monitor = AssignmentMonitor::new(storage, server.base_url(), short_config());
+        let validators = monitor.fetch_active_validators().await.unwrap();
+        assert_eq!(validators.len(), 2);
+        assert!(validators.contains(&"v1".to_string()));
+        assert!(validators.contains(&"v2".to_string()));
+    }
 }
