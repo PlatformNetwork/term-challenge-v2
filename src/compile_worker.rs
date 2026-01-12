@@ -534,15 +534,15 @@ impl CompileWorker {
         let required_validators = VALIDATORS_PER_AGENT;
 
         loop {
-            // Check for ready validators from DB
+            // Check for ready validators from DB with stake verification (>= 10000 TAO)
             let ready_validators = match self
                 .storage
-                .get_ready_validators(required_validators + 2)
+                .get_ready_validators_with_stake(&self.platform_url, required_validators + 2)
                 .await
             {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!("Failed to get ready validators: {}", e);
+                    warn!("Failed to get ready validators with stake check: {}", e);
                     vec![]
                 }
             };
@@ -587,7 +587,7 @@ impl CompileWorker {
             let elapsed = start_time.elapsed().as_secs();
             if elapsed >= MAX_VALIDATOR_WAIT_SECS {
                 error!(
-                    "TIMEOUT: No ready validators available for agent {} after {} seconds. \
+                    "TIMEOUT: No ready validators with sufficient stake (>= 10000 TAO) available for agent {} after {} seconds. \
                      Required: {}, Available: {}. Evaluation FAILED.",
                     short_hash,
                     elapsed,
@@ -600,7 +600,9 @@ impl CompileWorker {
                     .sudo_set_status(
                         agent_hash,
                         "failed",
-                        Some("No ready validators available after 15 minutes"),
+                        Some(
+                            "No ready validators with sufficient stake available after 15 minutes",
+                        ),
                     )
                     .await
                 {

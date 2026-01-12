@@ -91,10 +91,10 @@ impl MetagraphCache {
             .collect()
     }
 
-    /// Minimum stake required to be a validator (1000 TAO = 1e12 RAO)
-    pub const MIN_STAKE_RAO: u64 = 1_000_000_000_000;
+    /// Minimum stake required to be a validator (10000 TAO = 1e13 RAO)
+    pub const MIN_STAKE_RAO: u64 = 10_000_000_000_000;
 
-    /// Check if a hotkey has sufficient stake (>= 1000 TAO)
+    /// Check if a hotkey has sufficient stake (>= 10000 TAO)
     pub fn has_sufficient_stake(&self, hotkey: &str) -> bool {
         let validators = self.validators.read();
 

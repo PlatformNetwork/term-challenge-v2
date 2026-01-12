@@ -5,19 +5,21 @@
 //!
 //! Flow:
 //! 1. Poll DB every 5 minutes for stale assignments (no task_logs after 30 min)
-//! 2. For each stale assignment with < 3 reassignments:
-//!    a. Find available validator (not already assigned to this agent)
-//!    b. Delete old assignment, create new one
+//! 2. For each stale assignment with < 5 reassignments:
+//!    a. Find available validator (not already assigned to this agent, with sufficient stake)
+//!    b. Delete old assignment, create new one, transfer evaluation_tasks
 //!    c. Increment reassignment_count
 //!    d. Log the reassignment (new validator will pick up via manual poll)
 
 use crate::pg_storage::PgStorage;
-use rand::seq::SliceRandom;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
+
+/// Minimum stake required for validator assignment (10000 TAO in RAO)
+const MIN_VALIDATOR_STAKE_RAO: u64 = 10_000_000_000_000;
 
 /// Configuration for the assignment monitor
 pub struct AssignmentMonitorConfig {
@@ -34,15 +36,16 @@ impl Default for AssignmentMonitorConfig {
         Self {
             poll_interval_secs: 300,   // 5 minutes
             stale_timeout_minutes: 30, // 30 minutes
-            max_reassignments: 3,
+            max_reassignments: 5,      // Increased from 3 to 5
         }
     }
 }
 
-/// Validator info from platform-server
+/// Validator info from platform-server (chain.platform.network)
 #[derive(Debug, Deserialize)]
 struct ValidatorInfo {
     hotkey: String,
+    stake: u64,
     is_active: bool,
 }
 
@@ -147,10 +150,8 @@ impl AssignmentMonitor {
                 continue;
             }
 
-            // Select a random validator from available ones
-            use rand::SeedableRng;
-            let mut rng = rand::rngs::StdRng::from_entropy();
-            let new_validator = match available.choose(&mut rng) {
+            // Select the first available validator (list is already sorted by stake/heartbeat)
+            let new_validator = match available.first() {
                 Some(v) => (*v).clone(),
                 None => continue,
             };
@@ -190,7 +191,8 @@ impl AssignmentMonitor {
         Ok(())
     }
 
-    /// Fetch active validators from platform-server
+    /// Fetch active validators from platform-server with sufficient stake (>= 10000 TAO)
+    /// Returns validators sorted by stake (highest first) for priority selection
     async fn fetch_active_validators(&self) -> anyhow::Result<Vec<String>> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -204,16 +206,20 @@ impl AssignmentMonitor {
             anyhow::bail!("Failed to fetch validators: HTTP {}", response.status());
         }
 
-        let validators: Vec<ValidatorInfo> = response.json().await?;
+        let mut validators: Vec<ValidatorInfo> = response.json().await?;
 
+        // Sort by stake (highest first) for priority selection
+        validators.sort_by(|a, b| b.stake.cmp(&a.stake));
+
+        // Filter by is_active AND sufficient stake (>= 10000 TAO)
         let active: Vec<String> = validators
             .into_iter()
-            .filter(|v| v.is_active)
+            .filter(|v| v.is_active && v.stake >= MIN_VALIDATOR_STAKE_RAO)
             .map(|v| v.hotkey)
             .collect();
 
         debug!(
-            "Fetched {} active validators from platform-server",
+            "Fetched {} active validators with sufficient stake (>= 10000 TAO) from platform-server",
             active.len()
         );
 
@@ -242,6 +248,6 @@ mod tests {
         let config = AssignmentMonitorConfig::default();
         assert_eq!(config.poll_interval_secs, 300);
         assert_eq!(config.stale_timeout_minutes, 30);
-        assert_eq!(config.max_reassignments, 3);
+        assert_eq!(config.max_reassignments, 5);
     }
 }

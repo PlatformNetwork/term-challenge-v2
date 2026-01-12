@@ -456,6 +456,18 @@ pub struct ValidatorReadiness {
     pub error_message: Option<String>,
 }
 
+/// Validator info from chain API (for stake verification)
+#[derive(Debug, Deserialize)]
+struct ChainValidatorInfo {
+    hotkey: String,
+    stake: u64,
+    #[allow(dead_code)]
+    is_active: bool,
+}
+
+/// Minimum stake required for validator assignment (10000 TAO in RAO)
+pub const MIN_VALIDATOR_STAKE_RAO: u64 = 10_000_000_000_000;
+
 /// Individual task log from validator (real-time reporting)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskLog {
@@ -1884,10 +1896,11 @@ impl PgStorage {
     }
 
     /// Reassign an agent from one validator to another
-    /// 1. Deletes old assignment
-    /// 2. Creates new assignment
-    /// 3. Increments reassignment_count in submissions
-    /// 4. Records the reassignment in history table
+    /// 1. Transfers evaluation_tasks from old to new validator
+    /// 2. Deletes old assignment
+    /// 3. Creates new assignment
+    /// 4. Increments reassignment_count in submissions
+    /// 5. Records the reassignment in history table
     pub async fn reassign_validator(
         &self,
         agent_hash: &str,
@@ -1895,22 +1908,32 @@ impl PgStorage {
         new_validator: &str,
         reason: &str,
     ) -> Result<()> {
-        let client = self.pool.get().await?;
+        let mut client = self.pool.get().await?;
+        let transaction = client.transaction().await?;
 
-        // Start transaction
         let transaction_id = uuid::Uuid::new_v4().to_string();
 
-        // 1. Delete old assignment
-        client
+        // 1. Transfer evaluation_tasks from old validator to new validator
+        let tasks_transferred = transaction
+            .execute(
+                "UPDATE evaluation_tasks 
+                 SET validator_hotkey = $3 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &old_validator, &new_validator],
+            )
+            .await?;
+
+        // 2. Delete old assignment
+        transaction
             .execute(
                 "DELETE FROM validator_assignments WHERE agent_hash = $1 AND validator_hotkey = $2",
                 &[&agent_hash, &old_validator],
             )
             .await?;
 
-        // 2. Create new assignment
+        // 3. Create new assignment
         let new_id = uuid::Uuid::new_v4().to_string();
-        client
+        transaction
             .execute(
                 "INSERT INTO validator_assignments (id, agent_hash, validator_hotkey, status, assigned_at)
                  VALUES ($1, $2, $3, 'pending', NOW())
@@ -1919,8 +1942,8 @@ impl PgStorage {
             )
             .await?;
 
-        // 3. Increment reassignment_count and get current value
-        let row = client
+        // 4. Increment reassignment_count and get current value
+        let row = transaction
             .query_one(
                 "UPDATE submissions 
                  SET reassignment_count = COALESCE(reassignment_count, 0) + 1 
@@ -1931,9 +1954,9 @@ impl PgStorage {
             .await?;
         let reassignment_number: i32 = row.get(0);
 
-        // 4. Record in history table
+        // 5. Record in history table
         let history_id = uuid::Uuid::new_v4().to_string();
-        client
+        transaction
             .execute(
                 "INSERT INTO reassignment_history 
                  (id, agent_hash, old_validator_hotkey, new_validator_hotkey, reassignment_number, reason)
@@ -1949,12 +1972,16 @@ impl PgStorage {
             )
             .await?;
 
+        // Commit transaction
+        transaction.commit().await?;
+
         info!(
-            "Reassigned agent {} from {} to {} (reassignment #{}), tx={}",
+            "Reassigned agent {} from {} to {} (reassignment #{}, {} tasks transferred), tx={}",
             &agent_hash[..16.min(agent_hash.len())],
             &old_validator[..16.min(old_validator.len())],
             &new_validator[..16.min(new_validator.len())],
             reassignment_number,
+            tasks_transferred,
             &transaction_id[..8]
         );
 
@@ -4682,6 +4709,79 @@ impl PgStorage {
         let ready = self.get_ready_validators(required + 5).await?;
         let ready_count = ready.len();
         Ok((ready_count >= required, ready_count, required))
+    }
+
+    /// Get ready validators with sufficient stake (>= 10000 TAO)
+    /// Fetches stake from chain API and filters validators
+    /// Returns validators sorted by stake (highest first)
+    pub async fn get_ready_validators_with_stake(
+        &self,
+        chain_api_url: &str,
+        limit: usize,
+    ) -> Result<Vec<ValidatorReadiness>> {
+        // First get all ready validators from DB
+        let ready_validators = self.get_ready_validators(limit * 2).await?;
+
+        if ready_validators.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Fetch validator stakes from chain API
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+
+        let url = format!("{}/api/v1/validators", chain_api_url);
+        let response = client.get(&url).send().await?;
+
+        if !response.status().is_success() {
+            warn!(
+                "Failed to fetch validator stakes from chain API: HTTP {}",
+                response.status()
+            );
+            // Fall back to returning ready validators without stake check
+            return Ok(ready_validators.into_iter().take(limit).collect());
+        }
+
+        let chain_validators: Vec<ChainValidatorInfo> = response.json().await?;
+
+        // Create a map of hotkey -> stake for quick lookup
+        let stake_map: std::collections::HashMap<String, u64> = chain_validators
+            .into_iter()
+            .map(|v| (v.hotkey, v.stake))
+            .collect();
+
+        // Filter ready validators by stake and sort by stake (highest first)
+        let mut eligible: Vec<(ValidatorReadiness, u64)> = ready_validators
+            .into_iter()
+            .filter_map(|v| {
+                let stake = stake_map.get(&v.validator_hotkey).copied().unwrap_or(0);
+                if stake >= MIN_VALIDATOR_STAKE_RAO {
+                    Some((v, stake))
+                } else {
+                    debug!(
+                        "Excluding validator {} with insufficient stake: {} TAO (min: 10000 TAO)",
+                        &v.validator_hotkey[..16.min(v.validator_hotkey.len())],
+                        stake / 1_000_000_000
+                    );
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by stake (highest first)
+        eligible.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Take only the requested limit
+        let result: Vec<ValidatorReadiness> =
+            eligible.into_iter().take(limit).map(|(v, _)| v).collect();
+
+        info!(
+            "Found {} ready validators with sufficient stake (>= 10000 TAO)",
+            result.len()
+        );
+
+        Ok(result)
     }
 
     /// Assign tasks to validators for an agent (distributed: 30 tasks / 3 validators = 10 each)

@@ -57,7 +57,7 @@ pub struct ApiState {
 }
 
 impl ApiState {
-    /// Check if a validator is authorized (has >= 1000 TAO stake or is whitelisted)
+    /// Check if a validator is authorized (has >= 10000 TAO stake or is whitelisted)
     pub async fn is_authorized_validator(&self, hotkey: &str) -> bool {
         // First check metagraph cache for stake-based auth (primary method)
         if let Some(ref cache) = self.metagraph_cache {
@@ -1224,7 +1224,7 @@ pub async fn claim_jobs(
         ));
     }
 
-    // Check if validator is authorized (>= 1000 TAO stake or whitelisted)
+    // Check if validator is authorized (>= 10000 TAO stake or whitelisted)
     if !skip_auth {
         if !state.is_authorized_validator(&req.validator_hotkey).await {
             warn!(
@@ -1238,7 +1238,7 @@ pub async fn claim_jobs(
                     jobs: vec![],
                     total_available: 0,
                     error: Some(
-                        "Validator not authorized (requires >= 1000 TAO stake)".to_string(),
+                        "Validator not authorized (requires >= 10000 TAO stake)".to_string(),
                     ),
                 }),
             ));
@@ -1568,7 +1568,7 @@ pub async fn log_task(
         ));
     }
 
-    // Check if validator is authorized (>= 1000 TAO stake or whitelisted)
+    // Check if validator is authorized (>= 10000 TAO stake or whitelisted)
     if !skip_auth && !state.is_authorized_validator(&req.validator_hotkey).await {
         return Err((
             StatusCode::FORBIDDEN,
@@ -1576,7 +1576,7 @@ pub async fn log_task(
                 success: false,
                 tasks_logged: 0,
                 tasks_total: 0,
-                error: Some("Validator not authorized (requires >= 1000 TAO stake)".to_string()),
+                error: Some("Validator not authorized (requires >= 10000 TAO stake)".to_string()),
             }),
         ));
     }
@@ -2009,7 +2009,7 @@ pub async fn get_my_jobs(
         ));
     }
 
-    // Check if validator is authorized (>= 1000 TAO stake or whitelisted)
+    // Check if validator is authorized (>= 10000 TAO stake or whitelisted)
     if !state.is_authorized_validator(&req.validator_hotkey).await {
         return Err((
             StatusCode::FORBIDDEN,
@@ -2017,7 +2017,7 @@ pub async fn get_my_jobs(
                 success: false,
                 pending_jobs: vec![],
                 completed_count: 0,
-                error: Some("Validator not authorized (requires >= 1000 TAO stake)".to_string()),
+                error: Some("Validator not authorized (requires >= 10000 TAO stake)".to_string()),
             }),
         ));
     }
@@ -2236,7 +2236,7 @@ pub async fn get_evaluation_progress(
                 completed_tasks: vec![],
                 remaining_task_ids: vec![],
                 partial_score: 0.0,
-                error: Some("Validator not authorized (requires >= 1000 TAO stake)".to_string()),
+                error: Some("Validator not authorized (requires >= 10000 TAO stake)".to_string()),
             }),
         ));
     }
@@ -2713,7 +2713,7 @@ pub async fn llm_chat_proxy(
         ));
     }
 
-    // Verify validator is authorized (>= 1000 TAO stake or whitelisted)
+    // Verify validator is authorized (>= 10000 TAO stake or whitelisted)
     if !skip_auth && !state.is_authorized_validator(&req.validator_hotkey).await {
         warn!(
             "LLM proxy: unauthorized validator {} (insufficient stake)",
@@ -2722,7 +2722,7 @@ pub async fn llm_chat_proxy(
         return Err((
             StatusCode::FORBIDDEN,
             Json(err_response(
-                "Validator not authorized (requires >= 1000 TAO stake)".to_string(),
+                "Validator not authorized (requires >= 10000 TAO stake)".to_string(),
             )),
         ));
     }
@@ -3260,7 +3260,7 @@ pub async fn llm_chat_proxy_stream(
         return Err((
             StatusCode::FORBIDDEN,
             Json(err_response(
-                "Validator not authorized (requires >= 1000 TAO stake)".to_string(),
+                "Validator not authorized (requires >= 10000 TAO stake)".to_string(),
             )),
         ));
     }
