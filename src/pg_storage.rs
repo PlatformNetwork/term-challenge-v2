@@ -1803,6 +1803,7 @@ impl PgStorage {
              JOIN submissions s ON s.agent_hash = p.agent_hash
              JOIN validator_assignments va ON va.agent_hash = p.agent_hash AND va.validator_hotkey = $1
              WHERE p.status IN ('pending', 'evaluating')
+               AND s.status = 'pending'
                AND p.window_expires_at > NOW()
                AND s.compile_status = 'success'
                AND s.agent_binary IS NOT NULL
@@ -1910,6 +1911,7 @@ impl PgStorage {
 
         // Get all jobs assigned to this validator that haven't been evaluated yet
         // Join with submissions to get compile_status and submission_id
+        // IMPORTANT: Only return jobs where submission status is 'pending' (not 'completed', 'banned', etc.)
         let rows = client
             .query(
                 "SELECT 
@@ -1921,6 +1923,7 @@ impl PgStorage {
                 FROM validator_assignments va
                 JOIN submissions s ON s.agent_hash = va.agent_hash
                 WHERE va.validator_hotkey = $1
+                  AND s.status = 'pending'
                   AND va.agent_hash NOT IN (
                     SELECT agent_hash FROM validator_evaluations 
                     WHERE validator_hotkey = $1
