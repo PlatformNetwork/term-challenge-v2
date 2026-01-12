@@ -2809,12 +2809,13 @@ impl PgStorage {
     pub async fn cleanup_stale_claims(&self, timeout_minutes: i64) -> Result<u64> {
         let client = self.pool.get().await?;
 
+        // Use make_interval() instead of multiplying INTERVAL
         let result = client
             .execute(
                 "DELETE FROM validator_claims 
                  WHERE status = 'claimed' 
-                 AND claimed_at < NOW() - INTERVAL '1 minute' * $1",
-                &[&timeout_minutes],
+                 AND claimed_at < NOW() - make_interval(mins => $1)",
+                &[&(timeout_minutes as i32)],
             )
             .await?;
 
