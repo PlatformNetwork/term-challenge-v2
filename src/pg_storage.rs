@@ -339,6 +339,18 @@ pub struct WinnerEntry {
     pub disable_decay: bool,
 }
 
+/// Forced weight entry - manually set weight overrides
+/// When active entries exist, they replace the normal winner-takes-all logic
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForcedWeightEntry {
+    pub agent_hash: String,
+    pub miner_hotkey: String,
+    pub weight: f64,
+    pub name: Option<String>,
+    pub disable_decay: bool,
+    pub last_evaluation_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// Agent entry for leaderboard display (from submissions + evaluations)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLeaderboardEntry {
@@ -856,7 +868,7 @@ impl PgStorage {
                 GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.created_at, s.disable_decay
                 HAVING COUNT(DISTINCT ve.validator_hotkey) >= 2
                    AND MIN(ve.tasks_passed) >= 8
-                ORDER BY SUM(ve.tasks_passed) DESC, s.created_at ASC
+                ORDER BY (SUM(ve.tasks_passed)::FLOAT / NULLIF(SUM(ve.tasks_total), 0)) DESC NULLS LAST, s.created_at ASC
                 LIMIT 1",
                 &[],
             )
@@ -880,8 +892,57 @@ impl PgStorage {
         }))
     }
 
+    /// Get forced weight overrides from the forced_weights table
+    /// Returns a list of (agent_hash, miner_hotkey, weight) tuples
+    /// These override the normal winner-takes-all logic
+    pub async fn get_forced_weights(&self) -> Result<Vec<ForcedWeightEntry>> {
+        let client = self.pool.get().await?;
+
+        let rows = client
+            .query(
+                "SELECT 
+                    fw.agent_hash,
+                    s.miner_hotkey,
+                    fw.weight,
+                    s.name,
+                    COALESCE(s.disable_decay, false) as disable_decay,
+                    (SELECT MAX(tl.completed_at) FROM task_logs tl WHERE tl.agent_hash = fw.agent_hash) as last_task_at,
+                    s.created_at
+                FROM forced_weights fw
+                JOIN submissions s ON fw.agent_hash = s.agent_hash
+                WHERE fw.active = true
+                ORDER BY fw.weight DESC",
+                &[],
+            )
+            .await;
+
+        // If table doesn't exist or query fails, return empty vec (graceful fallback)
+        match rows {
+            Ok(rows) => Ok(rows
+                .iter()
+                .map(|r| {
+                    let last_task_at: Option<chrono::DateTime<chrono::Utc>> = r.get(5);
+                    let created_at: chrono::DateTime<chrono::Utc> = r.get(6);
+                    ForcedWeightEntry {
+                        agent_hash: r.get(0),
+                        miner_hotkey: r.get(1),
+                        weight: r.get(2),
+                        name: r.get(3),
+                        disable_decay: r.get(4),
+                        last_evaluation_at: last_task_at.unwrap_or(created_at),
+                    }
+                })
+                .collect()),
+            Err(e) => {
+                // Table might not exist yet - log and return empty
+                debug!("forced_weights query failed (table may not exist): {}", e);
+                Ok(vec![])
+            }
+        }
+    }
+
     /// Get leaderboard entries (only fully evaluated agents with status='completed')
-    /// Sorted by total tasks passed descending, then by submission time
+    /// Sorted by success rate descending, then by submission time
     pub async fn get_agent_leaderboard(&self, limit: i64) -> Result<Vec<AgentLeaderboardEntry>> {
         let client = self.pool.get().await?;
 
@@ -904,7 +965,7 @@ impl PgStorage {
                 WHERE s.status = 'completed'
                 GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.status, s.created_at, s.manually_validated, s.disable_decay
                 HAVING COUNT(DISTINCT ve.validator_hotkey) >= 1
-                ORDER BY SUM(ve.tasks_passed) DESC NULLS LAST, s.created_at ASC
+                ORDER BY (SUM(ve.tasks_passed)::FLOAT / NULLIF(SUM(ve.tasks_total), 0)) DESC NULLS LAST, s.created_at ASC
                 LIMIT $1",
                 &[&limit],
             )
