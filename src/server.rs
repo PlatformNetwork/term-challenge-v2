@@ -259,31 +259,41 @@ pub async fn get_weights(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let weights = if let Some(winner) = winner {
-        // Calculate time-based decay multiplier
-        let decay_info = crate::time_decay::calculate_decay_info(winner.created_at, &decay_config);
-        let decayed_weight = decay_info.multiplier;
+        // Calculate time-based decay multiplier based on last task evaluation time
+        // Use last_evaluation_at (last task completed) instead of created_at (submission time)
+        let decay_info =
+            crate::time_decay::calculate_decay_info(winner.last_evaluation_at, &decay_config);
+
+        // Apply decay only if disable_decay is false
+        let final_weight = if winner.disable_decay {
+            1.0 // No decay for this agent
+        } else {
+            decay_info.multiplier
+        };
 
         info!(
-            "Weight winner for epoch {}: {} (hotkey: {}, tasks_passed: {}, validators: {}, decay: {:.2}% after {:.1}h)",
+            "Weight winner for epoch {}: {} (hotkey: {}, tasks_passed: {}, validators: {}, weight: {:.2}%, disable_decay: {})",
             epoch,
             winner.name.as_deref().unwrap_or(&winner.agent_hash[..16]),
             &winner.miner_hotkey[..16],
             winner.total_tasks_passed,
             winner.num_validators,
-            decayed_weight * 100.0,
-            decay_info.age_hours
+            final_weight * 100.0,
+            winner.disable_decay
         );
 
-        if decay_info.decay_active {
+        if !winner.disable_decay && decay_info.decay_active {
             info!(
-                "Time decay active: grace expired, {:.1} days decaying, multiplier={:.4}",
-                decay_info.days_decaying, decay_info.multiplier
+                "Time decay active: {:.1}h since last task, grace expired, {:.1} days decaying, multiplier={:.4}",
+                decay_info.age_hours, decay_info.days_decaying, decay_info.multiplier
             );
+        } else if winner.disable_decay {
+            info!("Time decay DISABLED for this agent");
         }
 
         vec![WeightEntry {
             hotkey: winner.miner_hotkey,
-            weight: decayed_weight,
+            weight: final_weight,
         }]
     } else {
         info!("No eligible winner for epoch {} - no agents meet criteria (validated, >=2 validators, >=8 tasks/validator)", epoch);

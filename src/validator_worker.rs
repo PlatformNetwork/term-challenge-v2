@@ -330,7 +330,10 @@ impl ValidatorWorker {
             "error_message": error_msg
         });
 
-        let url = format!("{}/api/v1/validator/heartbeat", self.platform_url);
+        let url = format!(
+            "{}/api/v1/bridge/{}/api/v1/validator/heartbeat",
+            self.platform_url, self.challenge_id
+        );
 
         match self.http_client.post(&url).json(&body).send().await {
             Ok(resp) if resp.status().is_success() => {

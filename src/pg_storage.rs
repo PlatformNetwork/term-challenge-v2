@@ -331,7 +331,12 @@ pub struct WinnerEntry {
     pub name: Option<String>,
     pub total_tasks_passed: i32,
     pub num_validators: i32,
+    /// Submission creation time
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Last evaluation time (decay starts 48h after this)
+    pub last_evaluation_at: chrono::DateTime<chrono::Utc>,
+    /// When true, time decay is not applied to this agent
+    pub disable_decay: bool,
 }
 
 /// Agent entry for leaderboard display (from submissions + evaluations)
@@ -782,12 +787,14 @@ impl PgStorage {
                     s.name,
                     s.created_at,
                     SUM(ve.tasks_passed)::INTEGER as total_tasks_passed,
-                    COUNT(DISTINCT ve.validator_hotkey)::INTEGER as num_validators
+                    COUNT(DISTINCT ve.validator_hotkey)::INTEGER as num_validators,
+                    COALESCE(s.disable_decay, false) as disable_decay,
+                    (SELECT MAX(tl.completed_at) FROM task_logs tl WHERE tl.agent_hash = s.agent_hash) as last_task_at
                 FROM submissions s
                 JOIN validator_evaluations ve ON s.agent_hash = ve.agent_hash
                 WHERE s.manually_validated = true
                   AND s.status NOT IN ('banned', 'failed')
-                GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.created_at
+                GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.created_at, s.disable_decay
                 HAVING COUNT(DISTINCT ve.validator_hotkey) >= 2
                    AND MIN(ve.tasks_passed) >= 8
                 ORDER BY SUM(ve.tasks_passed) DESC, s.created_at ASC
@@ -796,13 +803,21 @@ impl PgStorage {
             )
             .await?;
 
-        Ok(row.map(|r| WinnerEntry {
-            agent_hash: r.get(0),
-            miner_hotkey: r.get(1),
-            name: r.get(2),
-            created_at: r.get(3),
-            total_tasks_passed: r.get(4),
-            num_validators: r.get(5),
+        Ok(row.map(|r| {
+            // Use last task completion time if available, otherwise fall back to submission created_at
+            let last_evaluation_at: Option<chrono::DateTime<chrono::Utc>> = r.get(7);
+            let created_at: chrono::DateTime<chrono::Utc> = r.get(3);
+
+            WinnerEntry {
+                agent_hash: r.get(0),
+                miner_hotkey: r.get(1),
+                name: r.get(2),
+                created_at,
+                total_tasks_passed: r.get(4),
+                num_validators: r.get(5),
+                disable_decay: r.get(6),
+                last_evaluation_at: last_evaluation_at.unwrap_or(created_at),
+            }
         }))
     }
 
