@@ -1442,8 +1442,7 @@ mod tests {
         // Now registry() should return the existing guard without calling load_tasks
         let result = challenge.registry().await;
         // Should succeed if tasks dir exists
-        if result.is_ok() {
-            let guard = result.unwrap();
+        if let Ok(guard) = result {
             assert!(guard.is_some());
         }
     }

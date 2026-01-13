@@ -442,6 +442,7 @@ pub mod prelude {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default, clippy::clone_on_copy)]
 mod tests {
     use super::*;
 

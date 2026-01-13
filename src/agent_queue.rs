@@ -837,6 +837,7 @@ impl Default for QueueConfig {
 }
 
 #[cfg(test)]
+#[allow(clippy::assertions_on_constants)]
 mod tests {
     use super::*;
 

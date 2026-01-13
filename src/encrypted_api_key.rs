@@ -512,6 +512,7 @@ pub struct SecureSubmitRequest {
 }
 
 #[cfg(test)]
+#[allow(clippy::cloned_ref_to_slice_refs)]
 mod tests {
     use super::*;
     use sp_core::{sr25519, Pair};
