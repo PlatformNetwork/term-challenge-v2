@@ -339,6 +339,18 @@ pub struct WinnerEntry {
     pub disable_decay: bool,
 }
 
+/// Forced weight entry - manually set weight overrides
+/// When active entries exist, they replace the normal winner-takes-all logic
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForcedWeightEntry {
+    pub agent_hash: String,
+    pub miner_hotkey: String,
+    pub weight: f64,
+    pub name: Option<String>,
+    pub disable_decay: bool,
+    pub last_evaluation_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// Agent entry for leaderboard display (from submissions + evaluations)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLeaderboardEntry {
@@ -443,6 +455,18 @@ pub struct ValidatorReadiness {
     pub last_ready_at: Option<i64>,
     pub error_message: Option<String>,
 }
+
+/// Validator info from chain API (for stake verification)
+#[derive(Debug, Deserialize)]
+struct ChainValidatorInfo {
+    hotkey: String,
+    stake: u64,
+    #[allow(dead_code)]
+    is_active: bool,
+}
+
+/// Minimum stake required for validator assignment (10000 TAO in RAO)
+pub const MIN_VALIDATOR_STAKE_RAO: u64 = 10_000_000_000_000;
 
 /// Individual task log from validator (real-time reporting)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -833,8 +857,8 @@ impl PgStorage {
     /// Criteria:
     /// - manually_validated = true
     /// - minimum 2 validators have evaluated
-    /// - minimum 8 tasks passed per validator
-    /// - winner = most total tasks passed, ties broken by earliest submission
+    /// - minimum 8 tasks passed total (across all validators)
+    /// - winner = best success rate (tasks_passed/tasks_total), ties broken by earliest submission
     pub async fn get_eligible_winner(&self) -> Result<Option<WinnerEntry>> {
         let client = self.pool.get().await?;
 
@@ -855,8 +879,8 @@ impl PgStorage {
                   AND s.status NOT IN ('banned', 'failed')
                 GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.created_at, s.disable_decay
                 HAVING COUNT(DISTINCT ve.validator_hotkey) >= 2
-                   AND MIN(ve.tasks_passed) >= 8
-                ORDER BY SUM(ve.tasks_passed) DESC, s.created_at ASC
+                   AND SUM(ve.tasks_passed) >= 8
+                ORDER BY (SUM(ve.tasks_passed)::FLOAT / NULLIF(SUM(ve.tasks_total), 0)) DESC NULLS LAST, s.created_at ASC
                 LIMIT 1",
                 &[],
             )
@@ -880,8 +904,57 @@ impl PgStorage {
         }))
     }
 
+    /// Get forced weight overrides from the forced_weights table
+    /// Returns a list of (agent_hash, miner_hotkey, weight) tuples
+    /// These override the normal winner-takes-all logic
+    pub async fn get_forced_weights(&self) -> Result<Vec<ForcedWeightEntry>> {
+        let client = self.pool.get().await?;
+
+        let rows = client
+            .query(
+                "SELECT 
+                    fw.agent_hash,
+                    s.miner_hotkey,
+                    fw.weight,
+                    s.name,
+                    COALESCE(s.disable_decay, false) as disable_decay,
+                    (SELECT MAX(tl.completed_at) FROM task_logs tl WHERE tl.agent_hash = fw.agent_hash) as last_task_at,
+                    s.created_at
+                FROM forced_weights fw
+                JOIN submissions s ON fw.agent_hash = s.agent_hash
+                WHERE fw.active = true
+                ORDER BY fw.weight DESC",
+                &[],
+            )
+            .await;
+
+        // If table doesn't exist or query fails, return empty vec (graceful fallback)
+        match rows {
+            Ok(rows) => Ok(rows
+                .iter()
+                .map(|r| {
+                    let last_task_at: Option<chrono::DateTime<chrono::Utc>> = r.get(5);
+                    let created_at: chrono::DateTime<chrono::Utc> = r.get(6);
+                    ForcedWeightEntry {
+                        agent_hash: r.get(0),
+                        miner_hotkey: r.get(1),
+                        weight: r.get(2),
+                        name: r.get(3),
+                        disable_decay: r.get(4),
+                        last_evaluation_at: last_task_at.unwrap_or(created_at),
+                    }
+                })
+                .collect()),
+            Err(e) => {
+                // Table might not exist yet - log and return empty
+                debug!("forced_weights query failed (table may not exist): {}", e);
+                Ok(vec![])
+            }
+        }
+    }
+
     /// Get leaderboard entries (only fully evaluated agents with status='completed')
-    /// Sorted by total tasks passed descending, then by submission time
+    /// Sorted by success rate descending, then by submission time
     pub async fn get_agent_leaderboard(&self, limit: i64) -> Result<Vec<AgentLeaderboardEntry>> {
         let client = self.pool.get().await?;
 
@@ -904,7 +977,7 @@ impl PgStorage {
                 WHERE s.status = 'completed'
                 GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.status, s.created_at, s.manually_validated, s.disable_decay
                 HAVING COUNT(DISTINCT ve.validator_hotkey) >= 1
-                ORDER BY SUM(ve.tasks_passed) DESC NULLS LAST, s.created_at ASC
+                ORDER BY (SUM(ve.tasks_passed)::FLOAT / NULLIF(SUM(ve.tasks_total), 0)) DESC NULLS LAST, s.created_at ASC
                 LIMIT $1",
                 &[&limit],
             )
@@ -1639,6 +1712,118 @@ impl PgStorage {
         Ok(result as usize)
     }
 
+    /// Clear all task logs for an agent
+    /// Used before recompilation to ensure fresh evaluation
+    pub async fn clear_task_logs(&self, agent_hash: &str) -> Result<usize> {
+        let client = self.pool.get().await?;
+        let result = client
+            .execute(
+                "DELETE FROM task_logs WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        if result > 0 {
+            info!(
+                "Cleared {} task logs for agent {}",
+                result,
+                &agent_hash[..16.min(agent_hash.len())]
+            );
+        }
+        Ok(result as usize)
+    }
+
+    /// Clear all validator evaluations for an agent
+    /// Used before recompilation to ensure fresh evaluation
+    pub async fn clear_validator_evaluations(&self, agent_hash: &str) -> Result<usize> {
+        let client = self.pool.get().await?;
+        let result = client
+            .execute(
+                "DELETE FROM validator_evaluations WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        if result > 0 {
+            info!(
+                "Cleared {} validator evaluations for agent {}",
+                result,
+                &agent_hash[..16.min(agent_hash.len())]
+            );
+        }
+        Ok(result as usize)
+    }
+
+    /// Cleanup all evaluation data for an agent before recompilation
+    /// This ensures a fresh start when an agent is resubmitted/recompiled
+    pub async fn cleanup_agent_for_recompilation(&self, agent_hash: &str) -> Result<()> {
+        let short_hash = &agent_hash[..16.min(agent_hash.len())];
+        info!("Cleaning up agent {} for recompilation", short_hash);
+
+        // Use a transaction to ensure all cleanups happen atomically
+        let mut client = self.pool.get().await?;
+        let transaction = client.transaction().await?;
+
+        // 1. Clear task logs
+        let task_logs_cleared = transaction
+            .execute(
+                "DELETE FROM task_logs WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // 2. Clear validator evaluations
+        let evals_cleared = transaction
+            .execute(
+                "DELETE FROM validator_evaluations WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // 3. Clear evaluation tasks
+        let tasks_cleared = transaction
+            .execute(
+                "DELETE FROM evaluation_tasks WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // 4. Clear validator assignments
+        let assignments_cleared = transaction
+            .execute(
+                "DELETE FROM validator_assignments WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // 5. Clear validator claims
+        let claims_cleared = transaction
+            .execute(
+                "DELETE FROM validator_claims WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // 6. Reset pending_evaluations counter (don't delete, just reset)
+        transaction
+            .execute(
+                "UPDATE pending_evaluations 
+                 SET validators_completed = 0, status = 'pending'
+                 WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        transaction.commit().await?;
+
+        info!(
+            "Cleanup complete for agent {}: {} task_logs, {} evaluations, {} tasks, {} assignments, {} claims",
+            short_hash, task_logs_cleared, evals_cleared, tasks_cleared, assignments_cleared, claims_cleared
+        );
+
+        Ok(())
+    }
+
     /// Check if a validator is assigned to evaluate an agent
     pub async fn is_validator_assigned(
         &self,
@@ -1711,10 +1896,11 @@ impl PgStorage {
     }
 
     /// Reassign an agent from one validator to another
-    /// 1. Deletes old assignment
-    /// 2. Creates new assignment
-    /// 3. Increments reassignment_count in submissions
-    /// 4. Records the reassignment in history table
+    /// 1. Transfers evaluation_tasks from old to new validator
+    /// 2. Deletes old assignment
+    /// 3. Creates new assignment
+    /// 4. Increments reassignment_count in submissions
+    /// 5. Records the reassignment in history table
     pub async fn reassign_validator(
         &self,
         agent_hash: &str,
@@ -1722,22 +1908,32 @@ impl PgStorage {
         new_validator: &str,
         reason: &str,
     ) -> Result<()> {
-        let client = self.pool.get().await?;
+        let mut client = self.pool.get().await?;
+        let transaction = client.transaction().await?;
 
-        // Start transaction
         let transaction_id = uuid::Uuid::new_v4().to_string();
 
-        // 1. Delete old assignment
-        client
+        // 1. Transfer evaluation_tasks from old validator to new validator
+        let tasks_transferred = transaction
+            .execute(
+                "UPDATE evaluation_tasks 
+                 SET validator_hotkey = $3 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &old_validator, &new_validator],
+            )
+            .await?;
+
+        // 2. Delete old assignment
+        transaction
             .execute(
                 "DELETE FROM validator_assignments WHERE agent_hash = $1 AND validator_hotkey = $2",
                 &[&agent_hash, &old_validator],
             )
             .await?;
 
-        // 2. Create new assignment
+        // 3. Create new assignment
         let new_id = uuid::Uuid::new_v4().to_string();
-        client
+        transaction
             .execute(
                 "INSERT INTO validator_assignments (id, agent_hash, validator_hotkey, status, assigned_at)
                  VALUES ($1, $2, $3, 'pending', NOW())
@@ -1746,8 +1942,8 @@ impl PgStorage {
             )
             .await?;
 
-        // 3. Increment reassignment_count and get current value
-        let row = client
+        // 4. Increment reassignment_count and get current value
+        let row = transaction
             .query_one(
                 "UPDATE submissions 
                  SET reassignment_count = COALESCE(reassignment_count, 0) + 1 
@@ -1758,9 +1954,9 @@ impl PgStorage {
             .await?;
         let reassignment_number: i32 = row.get(0);
 
-        // 4. Record in history table
+        // 5. Record in history table
         let history_id = uuid::Uuid::new_v4().to_string();
-        client
+        transaction
             .execute(
                 "INSERT INTO reassignment_history 
                  (id, agent_hash, old_validator_hotkey, new_validator_hotkey, reassignment_number, reason)
@@ -1776,12 +1972,16 @@ impl PgStorage {
             )
             .await?;
 
+        // Commit transaction
+        transaction.commit().await?;
+
         info!(
-            "Reassigned agent {} from {} to {} (reassignment #{}), tx={}",
+            "Reassigned agent {} from {} to {} (reassignment #{}, {} tasks transferred), tx={}",
             &agent_hash[..16.min(agent_hash.len())],
             &old_validator[..16.min(old_validator.len())],
             &new_validator[..16.min(new_validator.len())],
             reassignment_number,
+            tasks_transferred,
             &transaction_id[..8]
         );
 
@@ -2219,6 +2419,160 @@ impl PgStorage {
         Ok((false, false, None))
     }
 
+    /// Auto-complete a validator's evaluation when all their assigned tasks are logged
+    /// This is called from log_task() when completed_tasks == total_tasks
+    /// Returns (consensus_reached, final_score)
+    pub async fn auto_complete_validator_evaluation(
+        &self,
+        agent_hash: &str,
+        validator_hotkey: &str,
+        summary: &TaskLogSummary,
+    ) -> Result<(bool, Option<f64>)> {
+        let short_hash = &agent_hash[..16.min(agent_hash.len())];
+        let short_validator = &validator_hotkey[..16.min(validator_hotkey.len())];
+
+        // Calculate score as ratio of passed/total tasks
+        let score = if summary.total_tasks > 0 {
+            summary.passed_tasks as f64 / summary.total_tasks as f64
+        } else {
+            0.0
+        };
+
+        info!(
+            "Auto-completing evaluation for validator {} on agent {}: score={:.4} ({}/{} passed)",
+            short_validator, short_hash, score, summary.passed_tasks, summary.total_tasks
+        );
+
+        let mut client = self.pool.get().await?;
+        let transaction = client.transaction().await?;
+
+        // Get submission info and lock pending_evaluations row
+        let pending_row = transaction
+            .query_opt(
+                "SELECT pe.submission_id, s.miner_hotkey, s.epoch, 
+                        pe.validators_completed, pe.total_validators, pe.window_expires_at < NOW() as expired
+                 FROM pending_evaluations pe
+                 JOIN submissions s ON s.agent_hash = pe.agent_hash
+                 WHERE pe.agent_hash = $1 FOR UPDATE",
+                &[&agent_hash],
+            )
+            .await?;
+
+        let (
+            submission_id,
+            miner_hotkey,
+            epoch,
+            validators_completed,
+            total_validators,
+            is_expired,
+        ): (String, String, i64, i32, i32, bool) = match pending_row {
+            Some(r) => (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5)),
+            None => {
+                transaction.rollback().await?;
+                return Err(anyhow::anyhow!(
+                    "Agent {} not found in pending evaluations",
+                    short_hash
+                ));
+            }
+        };
+
+        // If window expired, don't allow completion
+        if is_expired {
+            info!(
+                "Validator {} is late for agent {} (window expired), skipping auto-completion",
+                short_validator, short_hash
+            );
+            transaction.rollback().await?;
+            return Ok((false, None));
+        }
+
+        // Check if this validator already has an evaluation (avoid double-counting)
+        let already_submitted = transaction
+            .query_opt(
+                "SELECT 1 FROM validator_evaluations WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?
+            .is_some();
+
+        // Create the validator evaluation record
+        let eval_id = uuid::Uuid::new_v4().to_string();
+        let score_f32 = score as f32;
+        let cost_f32 = summary.total_cost_usd as f32;
+
+        transaction
+            .execute(
+                "INSERT INTO validator_evaluations 
+                 (id, agent_hash, validator_hotkey, submission_id, miner_hotkey, score, 
+                  tasks_passed, tasks_total, tasks_failed, total_cost_usd, execution_time_ms, epoch)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 ON CONFLICT(agent_hash, validator_hotkey) DO UPDATE SET
+                    score = EXCLUDED.score,
+                    tasks_passed = EXCLUDED.tasks_passed,
+                    tasks_total = EXCLUDED.tasks_total,
+                    tasks_failed = EXCLUDED.tasks_failed,
+                    total_cost_usd = EXCLUDED.total_cost_usd,
+                    execution_time_ms = EXCLUDED.execution_time_ms",
+                &[
+                    &eval_id,
+                    &agent_hash,
+                    &validator_hotkey,
+                    &submission_id,
+                    &miner_hotkey,
+                    &score_f32,
+                    &summary.passed_tasks,
+                    &summary.total_tasks,
+                    &summary.failed_tasks,
+                    &cost_f32,
+                    &summary.total_execution_time_ms,
+                    &epoch,
+                ],
+            )
+            .await?;
+
+        // Update claim status to completed
+        transaction
+            .execute(
+                "UPDATE validator_claims SET status = 'completed' 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?;
+
+        // Only increment counter if this is a NEW submission
+        let new_completed = if !already_submitted {
+            transaction
+                .execute(
+                    "UPDATE pending_evaluations SET validators_completed = validators_completed + 1
+                     WHERE agent_hash = $1",
+                    &[&agent_hash],
+                )
+                .await?;
+            validators_completed + 1
+        } else {
+            validators_completed
+        };
+
+        // Check if all validators have completed
+        let all_done = new_completed >= total_validators;
+
+        // Commit the transaction
+        transaction.commit().await?;
+
+        info!(
+            "Validator {} evaluation saved for agent {} ({}/{} validators done)",
+            short_validator, short_hash, new_completed, total_validators
+        );
+
+        if all_done {
+            // Calculate consensus score and finalize
+            let final_score = self.calculate_and_store_consensus(agent_hash).await?;
+            return Ok((true, Some(final_score)));
+        }
+
+        Ok((false, None))
+    }
+
     /// Calculate consensus score from all validator evaluations
     /// Currently uses simple average (can be extended to stake-weighted)
     /// Uses transaction to ensure atomic consensus calculation
@@ -2496,7 +2850,8 @@ impl PgStorage {
                     COUNT(CASE WHEN NOT passed THEN 1 END)::INTEGER as failed,
                     MIN(EXTRACT(EPOCH FROM started_at))::BIGINT as first_task,
                     MAX(EXTRACT(EPOCH FROM completed_at))::BIGINT as last_task
-                FROM task_logs WHERE agent_hash = $1",
+                FROM task_logs WHERE agent_hash = $1
+                  AND task_id != '__evaluation_failure__'",
                 &[&agent_hash],
             )
             .await?;
@@ -2538,6 +2893,7 @@ impl PgStorage {
                     MIN(EXTRACT(EPOCH FROM started_at))::BIGINT as first_task,
                     MAX(EXTRACT(EPOCH FROM completed_at))::BIGINT as last_task
                 FROM task_logs WHERE agent_hash = $1
+                  AND task_id != '__evaluation_failure__'
                 GROUP BY validator_hotkey",
                 &[&agent_hash],
             )
@@ -3221,13 +3577,17 @@ impl PgStorage {
     ) -> Result<TaskLogSummary> {
         let client = self.pool.get().await?;
 
-        // Fixed task count - validators always evaluate 30 tasks from terminal-bench@2.0
-        // Note: evaluation_tasks table uses placeholder IDs (task_01, task_02, etc.)
-        // while actual task_logs use real terminal-bench task IDs, so we use a constant here.
-        const TASKS_PER_EVALUATION: i64 = 30;
-        let total_tasks: i64 = TASKS_PER_EVALUATION;
+        // Get actual task count from evaluation_tasks for this validator
+        let total_tasks: i64 = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT FROM evaluation_tasks 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?
+            .get(0);
 
-        // Get completed task summary
+        // Get completed task summary (exclude __evaluation_failure__ internal marker)
         let summary_row = client
             .query_one(
                 "SELECT 
@@ -3238,7 +3598,8 @@ impl PgStorage {
                 COALESCE(SUM(cost_usd::FLOAT8), 0.0)::FLOAT8,
                 COALESCE(SUM(execution_time_ms), 0)::BIGINT
              FROM task_logs 
-             WHERE agent_hash = $1 AND validator_hotkey = $2",
+             WHERE agent_hash = $1 AND validator_hotkey = $2
+               AND task_id != '__evaluation_failure__'",
                 &[&agent_hash, &validator_hotkey],
             )
             .await?;
@@ -3300,11 +3661,12 @@ impl PgStorage {
     ) -> Result<EvaluationProgress> {
         let client = self.pool.get().await?;
 
-        // Get all assigned tasks for this agent
+        // Get tasks assigned to THIS validator for this agent (not all 30 tasks)
         let assigned_rows = client
             .query(
-                "SELECT task_id, task_name FROM evaluation_tasks WHERE agent_hash = $1",
-                &[&agent_hash],
+                "SELECT task_id, task_name FROM evaluation_tasks 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &validator_hotkey],
             )
             .await?;
 
@@ -3374,6 +3736,7 @@ impl PgStorage {
                         agent_stderr, agent_stdout, test_output, steps_executed, failure_stage
                  FROM task_logs 
                  WHERE agent_hash = $1
+                   AND task_id != '__evaluation_failure__'
                  ORDER BY validator_hotkey, completed_at DESC",
                 &[&agent_hash],
             )
@@ -3473,11 +3836,6 @@ impl PgStorage {
             )
             .await?;
 
-        // Get assigned tasks count
-        // Fixed task count - validators always evaluate 30 tasks from terminal-bench@2.0
-        const TASKS_PER_EVALUATION: i64 = 30;
-        let total_tasks: i64 = TASKS_PER_EVALUATION;
-
         let mut results = Vec::new();
 
         for assignment in assignments {
@@ -3485,7 +3843,17 @@ impl PgStorage {
             let assignment_status: String = assignment.get("status");
             let assigned_at: Option<i64> = assignment.try_get("assigned_at").ok();
 
-            // Get task log summary for this validator
+            // Get actual assigned tasks count for THIS validator
+            let total_tasks: i64 = client
+                .query_one(
+                    "SELECT COUNT(*)::BIGINT FROM evaluation_tasks 
+                     WHERE agent_hash = $1 AND validator_hotkey = $2",
+                    &[&agent_hash, &validator_hotkey],
+                )
+                .await?
+                .get(0);
+
+            // Get task log summary for this validator (exclude internal failure markers)
             let summary = client
                 .query_one(
                     "SELECT 
@@ -3504,9 +3872,7 @@ impl PgStorage {
             let failed: i64 = summary.get("failed");
             let last_update: Option<i64> = summary.try_get("last_update").ok().flatten();
 
-            // Calculate remaining based on completed count vs total (30)
-            // Note: We don't track individual task IDs for remaining since evaluation_tasks
-            // uses placeholder IDs while task_logs use real terminal-bench IDs
+            // Calculate remaining based on completed count vs assigned tasks for this validator
             let remaining = (total_tasks - completed).max(0);
             let remaining_task_ids: Vec<String> = Vec::new(); // Not tracking individual IDs
 
@@ -4343,6 +4709,79 @@ impl PgStorage {
         let ready = self.get_ready_validators(required + 5).await?;
         let ready_count = ready.len();
         Ok((ready_count >= required, ready_count, required))
+    }
+
+    /// Get ready validators with sufficient stake (>= 10000 TAO)
+    /// Fetches stake from chain API and filters validators
+    /// Returns validators sorted by stake (highest first)
+    pub async fn get_ready_validators_with_stake(
+        &self,
+        chain_api_url: &str,
+        limit: usize,
+    ) -> Result<Vec<ValidatorReadiness>> {
+        // First get all ready validators from DB
+        let ready_validators = self.get_ready_validators(limit * 2).await?;
+
+        if ready_validators.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Fetch validator stakes from chain API
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+
+        let url = format!("{}/api/v1/validators", chain_api_url);
+        let response = client.get(&url).send().await?;
+
+        if !response.status().is_success() {
+            warn!(
+                "Failed to fetch validator stakes from chain API: HTTP {}",
+                response.status()
+            );
+            // Fall back to returning ready validators without stake check
+            return Ok(ready_validators.into_iter().take(limit).collect());
+        }
+
+        let chain_validators: Vec<ChainValidatorInfo> = response.json().await?;
+
+        // Create a map of hotkey -> stake for quick lookup
+        let stake_map: std::collections::HashMap<String, u64> = chain_validators
+            .into_iter()
+            .map(|v| (v.hotkey, v.stake))
+            .collect();
+
+        // Filter ready validators by stake and sort by stake (highest first)
+        let mut eligible: Vec<(ValidatorReadiness, u64)> = ready_validators
+            .into_iter()
+            .filter_map(|v| {
+                let stake = stake_map.get(&v.validator_hotkey).copied().unwrap_or(0);
+                if stake >= MIN_VALIDATOR_STAKE_RAO {
+                    Some((v, stake))
+                } else {
+                    debug!(
+                        "Excluding validator {} with insufficient stake: {} TAO (min: 10000 TAO)",
+                        &v.validator_hotkey[..16.min(v.validator_hotkey.len())],
+                        stake / 1_000_000_000
+                    );
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by stake (highest first)
+        eligible.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Take only the requested limit
+        let result: Vec<ValidatorReadiness> =
+            eligible.into_iter().take(limit).map(|(v, _)| v).collect();
+
+        info!(
+            "Found {} ready validators with sufficient stake (>= 10000 TAO)",
+            result.len()
+        );
+
+        Ok(result)
     }
 
     /// Assign tasks to validators for an agent (distributed: 30 tasks / 3 validators = 10 each)

@@ -13,6 +13,7 @@ use crate::task::{Task, TaskRegistry};
 use crate::validator_ws_client::ValidatorEvent;
 use anyhow::{Context, Result};
 use base64::Engine;
+use futures::stream::{self, StreamExt};
 use sp_core::{sr25519, Pair};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -29,8 +30,11 @@ const TASKS_PER_EVALUATION: usize = 30;
 /// Number of tasks per validator (30 total / 3 validators = 10)
 const TASKS_PER_VALIDATOR: usize = 10;
 
-/// Maximum concurrent task containers (prevents resource exhaustion)
-const MAX_CONCURRENT_TASK_CONTAINERS: usize = 5;
+/// Maximum concurrent tasks PER AGENT (run 2 tasks in parallel per agent)
+const MAX_CONCURRENT_TASKS_PER_AGENT: usize = 2;
+
+/// Maximum global concurrent task containers (prevents resource exhaustion)
+const MAX_CONCURRENT_TASK_CONTAINERS: usize = 8;
 
 /// Dataset to load tasks from
 const TASK_DATASET_NAME: &str = "terminal-bench";
@@ -47,7 +51,7 @@ pub struct EvalResult {
 }
 
 /// Result of a single task execution
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TaskResult {
     passed: bool,
     duration_ms: i64,
@@ -66,6 +70,8 @@ pub struct ValidatorWorker {
     keypair: sr25519::Pair,
     validator_hotkey: String,
     http_client: reqwest::Client,
+    /// Dedicated client for critical operations (logs, submissions) to avoid saturation by streaming
+    critical_http_client: reqwest::Client,
     /// Track in-progress evaluations to avoid duplicates
     in_progress: Arc<RwLock<HashSet<String>>>,
     /// Loaded task registry (first 30 tasks from terminal-bench@2.0)
@@ -132,6 +138,12 @@ impl ValidatorWorker {
             validator_hotkey,
             http_client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(300))
+                .build()
+                .unwrap_or_default(),
+            critical_http_client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(300))
+                .pool_idle_timeout(Duration::from_secs(60))
+                .pool_max_idle_per_host(5)
                 .build()
                 .unwrap_or_default(),
             in_progress: Arc::new(RwLock::new(HashSet::new())),
@@ -363,6 +375,7 @@ impl ValidatorWorker {
             keypair: self.keypair.clone(),
             validator_hotkey: self.validator_hotkey.clone(),
             http_client: self.http_client.clone(),
+            critical_http_client: self.critical_http_client.clone(),
             in_progress: self.in_progress.clone(),
             task_registry: self.task_registry.clone(),
             container_backend: self.container_backend.clone(),
@@ -568,25 +581,14 @@ impl ValidatorWorker {
             result.tasks_total
         );
 
-        // 3. Submit result
-        info!("Submitting result...");
-        if let Err(e) = self.submit_result(agent_hash, &result).await {
-            error!("Submit result failed for agent {}: {:?}", short_hash, e);
-            // Log global failure to server for visibility
-            if let Err(log_err) = self
-                .log_global_failure(
-                    agent_hash,
-                    "submit_result",
-                    &format!("{}", e),
-                    &format!("{:?}", e),
-                )
-                .await
-            {
-                warn!("Failed to log submit failure: {}", log_err);
-            }
-            return Err(e);
-        }
-        info!("Result submitted for agent {}", short_hash);
+        // NOTE: submit_result has been removed - the server auto-detects completion
+        // when all tasks are logged via log_task_result() calls above.
+        // The server creates ValidatorEvaluation records automatically when
+        // completed_tasks == total_tasks for this validator.
+        info!(
+            "Evaluation complete for agent {} - all {} tasks logged, server will auto-complete",
+            short_hash, result.tasks_total
+        );
 
         Ok(())
     }
@@ -798,16 +800,17 @@ impl ValidatorWorker {
         let all_tasks = self.get_evaluation_tasks().await?;
 
         // Filter to only tasks assigned to this validator
-        let tasks: Vec<Task> = if assigned_task_ids.is_empty() {
-            // Fallback: no specific assignment, use all tasks (backwards compatibility)
-            warn!(
-                "No assigned task IDs for agent {}, using all {} tasks (fallback mode)",
-                short_hash,
-                all_tasks.len()
+        // NO FALLBACK: If no tasks assigned, skip evaluation entirely
+        if assigned_task_ids.is_empty() {
+            error!(
+                "No assigned task IDs for agent {}, skipping evaluation (no fallback)",
+                short_hash
             );
-            all_tasks
-        } else {
-            // Only evaluate tasks assigned to this validator
+            anyhow::bail!("No assigned task IDs for agent {}", short_hash);
+        }
+
+        // Only evaluate tasks assigned to this validator
+        let tasks: Vec<Task> = {
             let filtered: Vec<Task> = all_tasks
                 .into_iter()
                 .filter(|t| assigned_task_ids.contains(&t.id().to_string()))
@@ -828,73 +831,95 @@ impl ValidatorWorker {
             .count();
 
         info!(
-            "Agent {}: {} assigned tasks, {} remaining to evaluate",
-            short_hash, tasks_total, tasks_remaining
+            "Agent {}: {} assigned tasks, {} remaining to evaluate (running {} concurrent)",
+            short_hash, tasks_total, tasks_remaining, MAX_CONCURRENT_TASKS_PER_AGENT
         );
 
-        for task in &tasks {
-            let task_id = task.id();
+        // Filter to only remaining tasks
+        let remaining_tasks: Vec<_> = tasks
+            .into_iter()
+            .filter(|t| !completed_task_ids.contains(t.id()))
+            .collect();
 
-            // Skip already completed tasks
-            if completed_task_ids.contains(task_id) {
-                debug!("Skipping already completed task: {}", task_id);
-                continue;
-            }
+        // Run tasks concurrently (MAX_CONCURRENT_TASKS_PER_AGENT at a time)
+        // The global semaphore (MAX_CONCURRENT_TASK_CONTAINERS) limits total Docker containers
+        // IMPORTANT: Each task logs its result immediately after completion, not after all tasks finish
+        let results: Vec<_> = stream::iter(remaining_tasks)
+            .map(|task| {
+                let binary_path = binary_path.to_string();
+                let agent_hash = agent_hash.to_string();
+                let worker = self.clone_ref();
+                async move {
+                    let task_id = task.id().to_string();
+                    let instruction = task.instruction();
+                    info!(
+                        "Running task: {} - {}",
+                        task_id,
+                        &instruction[..50.min(instruction.len())]
+                    );
 
-            let instruction = task.instruction();
-            info!(
-                "Running task: {} - {}",
-                task_id,
-                &instruction[..50.min(instruction.len())]
-            );
+                    // Execute the task
+                    let result = worker
+                        .run_task_in_docker(&binary_path, &task, &agent_hash)
+                        .await;
 
-            let result = self
-                .run_task_in_docker(&binary_path, task, agent_hash)
-                .await;
+                    // Convert result to TaskResult
+                    let task_result = match &result {
+                        Ok(tr) => {
+                            if tr.passed {
+                                info!("Task {} PASSED", task_id);
+                            } else {
+                                info!("Task {} FAILED", task_id);
+                            }
+                            tr.clone()
+                        }
+                        Err(e) => {
+                            warn!("Task {} error: {:?}", task_id, e);
+                            TaskResult {
+                                passed: false,
+                                duration_ms: 0,
+                                error: Some(format!("{:?}", e)),
+                                agent_stderr: Some(format!("Task execution error: {:?}", e)),
+                                test_output: None,
+                                steps_executed: None,
+                            }
+                        }
+                    };
 
-            let task_result = match result {
-                Ok(tr) => {
-                    if tr.passed {
-                        info!("Task {} PASSED", task_id);
-                        tasks_passed += 1;
-                    } else {
-                        info!("Task {} FAILED", task_id);
-                        tasks_failed += 1;
+                    // Log task result IMMEDIATELY to platform server
+                    // This ensures results are saved even if other tasks are still running
+                    if let Err(e) = worker
+                        .log_task_result(
+                            &agent_hash,
+                            &task_id,
+                            task_result.passed,
+                            task_result.duration_ms,
+                            task_result.error.clone(),
+                            task_result.agent_stderr.clone(),
+                            None, // agent_stdout not separately tracked
+                            task_result.test_output.clone(),
+                            task_result.steps_executed,
+                            None, // not a global failure
+                        )
+                        .await
+                    {
+                        warn!("Failed to log task {} result: {}", task_id, e);
                     }
-                    tr
-                }
-                Err(e) => {
-                    // Log full error chain with :? for debugging Docker issues
-                    warn!("Task {} error: {:?}", task_id, e);
-                    tasks_failed += 1;
-                    TaskResult {
-                        passed: false,
-                        duration_ms: 0,
-                        error: Some(format!("{:?}", e)),
-                        agent_stderr: Some(format!("Task execution error: {:?}", e)),
-                        test_output: None,
-                        steps_executed: None,
-                    }
-                }
-            };
 
-            // Log task result to platform server with full verbose details
-            if let Err(e) = self
-                .log_task_result(
-                    agent_hash,
-                    task_id,
-                    task_result.passed,
-                    task_result.duration_ms,
-                    task_result.error.clone(),
-                    task_result.agent_stderr.clone(),
-                    None, // agent_stdout not separately tracked
-                    task_result.test_output.clone(),
-                    task_result.steps_executed,
-                    None, // not a global failure
-                )
-                .await
-            {
-                warn!("Failed to log task {} result: {}", task_id, e);
+                    // Return whether task passed for counting
+                    result.map(|r| r.passed).unwrap_or(false)
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT_TASKS_PER_AGENT)
+            .collect()
+            .await;
+
+        // Count results (logging already done above)
+        for passed in &results {
+            if *passed {
+                tasks_passed += 1;
+            } else {
+                tasks_failed += 1;
             }
         }
 
@@ -1439,7 +1464,7 @@ impl ValidatorWorker {
         const MAX_CONSECUTIVE_ERRORS: usize = 5;
 
         // Stream progress tracking
-        const STREAM_INTERVAL_MS: u64 = 2000; // Stream logs every 2 seconds
+        const STREAM_INTERVAL_MS: u64 = 60000; // Stream logs every 60 seconds (1 minute) as requested
         let mut last_stream_time = std::time::Instant::now();
         let mut last_stdout_len = 0usize;
         let mut last_stderr_len = 0usize;
@@ -1816,45 +1841,8 @@ impl ValidatorWorker {
         }
     }
 
-    /// Submit result via bridge
-    async fn submit_result(&self, agent_hash: &str, result: &EvalResult) -> Result<()> {
-        let url = format!(
-            "{}/api/v1/bridge/{}/api/v1/validator/submit_result",
-            self.platform_url, self.challenge_id
-        );
-
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs() as i64;
-
-        let message = format!("submit_result:{}:{}", agent_hash, timestamp);
-        let signature = self.sign_message(&message);
-
-        let response = self
-            .http_client
-            .post(&url)
-            .json(&serde_json::json!({
-                "agent_hash": agent_hash,
-                "validator_hotkey": self.validator_hotkey,
-                "score": result.score,
-                "tasks_passed": result.tasks_passed,
-                "tasks_total": result.tasks_total,
-                "tasks_failed": result.tasks_failed,
-                "total_cost_usd": result.total_cost,
-                "timestamp": timestamp,
-                "signature": signature,
-            }))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Submit result failed: {} - {}", status, text);
-        }
-
-        Ok(())
-    }
+    // NOTE: submit_result has been removed - server auto-detects completion
+    // when all tasks are logged via log_task_result()
 
     /// Sign message with validator keypair
     fn sign_message(&self, message: &str) -> String {
@@ -1889,39 +1877,70 @@ impl ValidatorWorker {
         let signature = self.sign_message(&message);
 
         // API expects these fields from LogTaskRequest
-        let response = self
-            .http_client
-            .post(&url)
-            .json(&serde_json::json!({
-                "validator_hotkey": self.validator_hotkey,
-                "signature": signature,
-                "timestamp": now,
-                "agent_hash": agent_hash,
-                "task_id": task_id,
-                "task_name": task_id,  // Use task_id as task_name
-                "passed": passed,
-                "score": if passed { 1.0 } else { 0.0 },
-                "execution_time_ms": duration_ms,
-                "steps": steps_executed.unwrap_or(0),
-                "cost_usd": 0.0,  // Not tracked currently
-                "error": error,
-                "execution_log": null,
-                "trajectory": null,
-                "started_at": now - (duration_ms / 1000),
-                // Verbose logging fields
-                "agent_stderr": agent_stderr,
-                "agent_stdout": agent_stdout,
-                "test_output": test_output,
-                "steps_executed": steps_executed,
-                "failure_stage": failure_stage,
-            }))
-            .send()
-            .await?;
+        let body = serde_json::json!({
+            "validator_hotkey": self.validator_hotkey,
+            "signature": signature,
+            "timestamp": now,
+            "agent_hash": agent_hash,
+            "task_id": task_id,
+            "task_name": task_id,  // Use task_id as task_name
+            "passed": passed,
+            "score": if passed { 1.0 } else { 0.0 },
+            "execution_time_ms": duration_ms,
+            "steps": steps_executed.unwrap_or(0),
+            "cost_usd": 0.0,  // Not tracked currently
+            "error": error,
+            "execution_log": null,
+            "trajectory": null,
+            "started_at": now - (duration_ms / 1000),
+            // Verbose logging fields
+            "agent_stderr": agent_stderr,
+            "agent_stdout": agent_stdout,
+            "test_output": test_output,
+            "steps_executed": steps_executed,
+            "failure_stage": failure_stage,
+        });
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("log_task failed: {} - {}", status, text);
+        // Retry loop for critical task logging
+        let mut last_error = None;
+        for attempt in 1..=3 {
+            match self
+                .critical_http_client
+                .post(&url)
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        return Ok(());
+                    } else {
+                        let status = response.status();
+                        let text = response.text().await.unwrap_or_default();
+                        last_error = Some(anyhow::anyhow!(
+                            "log_task failed (attempt {}): {} - {}",
+                            attempt,
+                            status,
+                            text
+                        ));
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(anyhow::anyhow!(
+                        "log_task network error (attempt {}): {}",
+                        attempt,
+                        e
+                    ));
+                }
+            }
+            // Wait before retry
+            if attempt < 3 {
+                tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+            }
+        }
+
+        if let Some(e) = last_error {
+            return Err(e);
         }
 
         Ok(())

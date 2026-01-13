@@ -226,11 +226,14 @@ pub struct WeightEntry {
 }
 
 /// GET /get_weights - Deterministic weight calculation
-/// Winner-takes-all: The best eligible agent gets weight based on time decay
-/// Eligibility requirements:
+///
+/// If forced_weights table has active entries, those are used instead.
+/// Otherwise, winner-takes-all: The best eligible agent gets weight based on time decay
+///
+/// Eligibility requirements (for winner-takes-all):
 /// - manually_validated = true
 /// - At least 2 validators have evaluated
-/// - At least 8 tasks passed per validator
+/// - At least 8 tasks passed total (across all validators)
 ///
 /// Time decay:
 /// - Grace period: 40 epochs (~48 hours) - no decay
@@ -252,52 +255,99 @@ pub async fn get_weights(
     // Load time decay config from environment
     let decay_config = crate::time_decay::TimeDecayConfig::from_env();
 
-    // Get the eligible winner directly from our database
-    let winner = pg
-        .get_eligible_winner()
+    // Check for forced weights first (manual overrides)
+    let forced_weights = pg
+        .get_forced_weights()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let weights = if let Some(winner) = winner {
-        // Calculate time-based decay multiplier based on last task evaluation time
-        // Use last_evaluation_at (last task completed) instead of created_at (submission time)
-        let decay_info =
-            crate::time_decay::calculate_decay_info(winner.last_evaluation_at, &decay_config);
-
-        // Apply decay only if disable_decay is false
-        let final_weight = if winner.disable_decay {
-            1.0 // No decay for this agent
-        } else {
-            decay_info.multiplier
-        };
-
+    let weights = if !forced_weights.is_empty() {
+        // Use forced weights - these override winner-takes-all
         info!(
-            "Weight winner for epoch {}: {} (hotkey: {}, tasks_passed: {}, validators: {}, weight: {:.2}%, disable_decay: {})",
-            epoch,
-            winner.name.as_deref().unwrap_or(&winner.agent_hash[..16]),
-            &winner.miner_hotkey[..16],
-            winner.total_tasks_passed,
-            winner.num_validators,
-            final_weight * 100.0,
-            winner.disable_decay
+            "Using {} forced weight entries for epoch {}",
+            forced_weights.len(),
+            epoch
         );
 
-        if !winner.disable_decay && decay_info.decay_active {
-            info!(
-                "Time decay active: {:.1}h since last task, grace expired, {:.1} days decaying, multiplier={:.4}",
-                decay_info.age_hours, decay_info.days_decaying, decay_info.multiplier
-            );
-        } else if winner.disable_decay {
-            info!("Time decay DISABLED for this agent");
-        }
+        forced_weights
+            .into_iter()
+            .map(|fw| {
+                // Apply time decay if not disabled
+                let decay_info =
+                    crate::time_decay::calculate_decay_info(fw.last_evaluation_at, &decay_config);
 
-        vec![WeightEntry {
-            hotkey: winner.miner_hotkey,
-            weight: final_weight,
-        }]
+                let final_weight = if fw.disable_decay {
+                    fw.weight
+                } else {
+                    fw.weight * decay_info.multiplier
+                };
+
+                info!(
+                    "  Forced weight: {} (hotkey: {}) -> {:.2}% (base: {:.2}%, decay: {:.4})",
+                    fw.name.as_deref().unwrap_or(&fw.agent_hash[..16]),
+                    &fw.miner_hotkey[..16],
+                    final_weight * 100.0,
+                    fw.weight * 100.0,
+                    if fw.disable_decay {
+                        1.0
+                    } else {
+                        decay_info.multiplier
+                    }
+                );
+
+                WeightEntry {
+                    hotkey: fw.miner_hotkey,
+                    weight: final_weight,
+                }
+            })
+            .collect()
     } else {
-        info!("No eligible winner for epoch {} - no agents meet criteria (validated, >=2 validators, >=8 tasks/validator)", epoch);
-        vec![]
+        // Normal winner-takes-all logic
+        let winner = pg
+            .get_eligible_winner()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        if let Some(winner) = winner {
+            // Calculate time-based decay multiplier based on last task evaluation time
+            let decay_info =
+                crate::time_decay::calculate_decay_info(winner.last_evaluation_at, &decay_config);
+
+            // Apply decay only if disable_decay is false
+            let final_weight = if winner.disable_decay {
+                1.0 // No decay for this agent
+            } else {
+                decay_info.multiplier
+            };
+
+            info!(
+                "Weight winner for epoch {}: {} (hotkey: {}, tasks_passed: {}, validators: {}, weight: {:.2}%, disable_decay: {})",
+                epoch,
+                winner.name.as_deref().unwrap_or(&winner.agent_hash[..16]),
+                &winner.miner_hotkey[..16],
+                winner.total_tasks_passed,
+                winner.num_validators,
+                final_weight * 100.0,
+                winner.disable_decay
+            );
+
+            if !winner.disable_decay && decay_info.decay_active {
+                info!(
+                    "Time decay active: {:.1}h since last task, grace expired, {:.1} days decaying, multiplier={:.4}",
+                    decay_info.age_hours, decay_info.days_decaying, decay_info.multiplier
+                );
+            } else if winner.disable_decay {
+                info!("Time decay DISABLED for this agent");
+            }
+
+            vec![WeightEntry {
+                hotkey: winner.miner_hotkey,
+                weight: final_weight,
+            }]
+        } else {
+            info!("No eligible winner for epoch {} - no agents meet criteria (validated, >=2 validators, >=8 tasks/validator)", epoch);
+            vec![]
+        }
     };
 
     let total_weight: f64 = weights.iter().map(|w| w.weight).sum();
@@ -1611,7 +1661,8 @@ pub async fn run_server_with_mode(
             .route("/validator/claim_jobs", post(api::claim_jobs))
             .route("/validator/heartbeat", post(api::validator_heartbeat))
             .route("/validator/log_task", post(api::log_task))
-            .route("/validator/submit_result", post(api::submit_result))
+            // NOTE: submit_result route removed - evaluation completion is now auto-detected
+            // when all tasks are logged via log_task()
             .route("/validator/my_jobs", post(api::get_my_jobs))
             .route(
                 "/validator/task_stream_update",
@@ -1777,8 +1828,7 @@ pub async fn run_server_with_mode(
         info!("║    POST /api/v1/my/agents           - List my agents         ║");
         info!("║    POST /api/v1/my/agents/:h/source - Get my agent source    ║");
         info!("║    POST /api/v1/validator/claim_jobs - Claim jobs (batch)     ║");
-        info!("║    POST /api/v1/validator/log_task - Log task (realtime)     ║");
-        info!("║    POST /api/v1/validator/submit_result - Submit evaluation  ║");
+        info!("║    POST /api/v1/validator/log_task - Log task (auto-complete)║");
         info!("║    POST /api/v1/validator/my_jobs - Get my pending jobs      ║");
         info!("║    POST /api/v1/validator/get_evaluation_progress - Resume   ║");
         info!("║    GET  /api/v1/validator/agent_status/:h - Agent eval status║");

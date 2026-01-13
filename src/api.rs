@@ -57,7 +57,7 @@ pub struct ApiState {
 }
 
 impl ApiState {
-    /// Check if a validator is authorized (has >= 1000 TAO stake or is whitelisted)
+    /// Check if a validator is authorized (has >= 10000 TAO stake or is whitelisted)
     pub async fn is_authorized_validator(&self, hotkey: &str) -> bool {
         // First check metagraph cache for stake-based auth (primary method)
         if let Some(ref cache) = self.metagraph_cache {
@@ -602,7 +602,8 @@ pub struct CodeVisibilityError {
 ///
 /// Code is public if:
 /// - 48+ hours since submission AND disable_public_code = false
-/// - OR manually_validated = true
+///
+/// Note: manually_validated does NOT affect code visibility (only leaderboard eligibility)
 pub async fn get_agent_code(
     State(state): State<Arc<ApiState>>,
     Path(agent_hash): Path<String>,
@@ -642,19 +643,13 @@ pub async fn get_agent_code(
         ));
     }
 
-    // 3. Check visibility - time-based (48h) unless manually validated
+    // 3. Check visibility - time-based (48h)
+    // Note: manually_validated does NOT bypass this - it only affects leaderboard eligibility
     let now = chrono::Utc::now().timestamp();
     let hours_since = (now - submission.created_at) as f64 / 3600.0;
     const VISIBILITY_HOURS: f64 = 48.0;
 
-    // Check if manually_validated by querying the submission status
-    let is_manually_validated = state
-        .storage
-        .is_agent_manually_validated(&agent_hash)
-        .await
-        .unwrap_or(false);
-
-    if hours_since < VISIBILITY_HOURS && !is_manually_validated {
+    if hours_since < VISIBILITY_HOURS {
         let hours_remaining = VISIBILITY_HOURS - hours_since;
         return Err((
             StatusCode::FORBIDDEN,
@@ -1229,7 +1224,7 @@ pub async fn claim_jobs(
         ));
     }
 
-    // Check if validator is authorized (>= 1000 TAO stake or whitelisted)
+    // Check if validator is authorized (>= 10000 TAO stake or whitelisted)
     if !skip_auth {
         if !state.is_authorized_validator(&req.validator_hotkey).await {
             warn!(
@@ -1243,7 +1238,7 @@ pub async fn claim_jobs(
                     jobs: vec![],
                     total_available: 0,
                     error: Some(
-                        "Validator not authorized (requires >= 1000 TAO stake)".to_string(),
+                        "Validator not authorized (requires >= 10000 TAO stake)".to_string(),
                     ),
                 }),
             ));
@@ -1573,7 +1568,7 @@ pub async fn log_task(
         ));
     }
 
-    // Check if validator is authorized (>= 1000 TAO stake or whitelisted)
+    // Check if validator is authorized (>= 10000 TAO stake or whitelisted)
     if !skip_auth && !state.is_authorized_validator(&req.validator_hotkey).await {
         return Err((
             StatusCode::FORBIDDEN,
@@ -1581,7 +1576,7 @@ pub async fn log_task(
                 success: false,
                 tasks_logged: 0,
                 tasks_total: 0,
-                error: Some("Validator not authorized (requires >= 1000 TAO stake)".to_string()),
+                error: Some("Validator not authorized (requires >= 10000 TAO stake)".to_string()),
             }),
         ));
     }
@@ -1706,6 +1701,41 @@ pub async fn log_task(
         summary.completed_tasks,
         summary.total_tasks
     );
+
+    // Auto-detect completion: when all tasks are logged, auto-complete the evaluation
+    // This replaces the need for validators to call submit_result
+    if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0 {
+        info!(
+            "Validator {} completed all {} tasks for agent {}, auto-completing evaluation",
+            &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
+            summary.total_tasks,
+            &req.agent_hash[..16.min(req.agent_hash.len())]
+        );
+
+        match state
+            .storage
+            .auto_complete_validator_evaluation(&req.agent_hash, &req.validator_hotkey, &summary)
+            .await
+        {
+            Ok((consensus_reached, final_score)) => {
+                if consensus_reached {
+                    info!(
+                        "Consensus reached for agent {}: final score = {:.4}",
+                        &req.agent_hash[..16.min(req.agent_hash.len())],
+                        final_score.unwrap_or(0.0)
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to auto-complete evaluation for {} on {}: {}",
+                    &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
+                    &req.agent_hash[..16.min(req.agent_hash.len())],
+                    e
+                );
+            }
+        }
+    }
 
     Ok(Json(LogTaskResponse {
         success: true,
@@ -1896,307 +1926,13 @@ pub async fn get_live_task_detail(
 }
 
 // ============================================================================
-// SUBMIT RESULT (Final submission with verification)
+// SUBMIT RESULT - DEPRECATED
 // ============================================================================
-
-#[derive(Debug, Deserialize)]
-pub struct SubmitResultRequest {
-    pub validator_hotkey: String,
-    pub signature: String,
-    pub timestamp: i64,
-    pub agent_hash: String,
-    pub score: f64,
-    pub tasks_passed: i32,
-    pub tasks_total: i32,
-    pub tasks_failed: i32,
-    pub total_cost_usd: f64,
-    pub execution_time_ms: Option<i64>,
-    pub task_results: Option<serde_json::Value>,
-    /// If true, skip task log verification (for backward compatibility)
-    #[serde(default)]
-    pub skip_verification: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SubmitResultResponse {
-    pub success: bool,
-    pub is_late: bool,
-    pub consensus_reached: bool,
-    pub final_score: Option<f64>,
-    pub validators_completed: i32,
-    pub total_validators: i32,
-    pub error: Option<String>,
-}
-
-/// POST /api/v1/validator/submit_result - Submit evaluation result
-///
-/// Each validator submits ONE evaluation per agent.
-/// When ALL validators complete (or window expires), consensus is calculated.
-pub async fn submit_result(
-    State(state): State<Arc<ApiState>>,
-    Json(req): Json<SubmitResultRequest>,
-) -> Result<Json<SubmitResultResponse>, (StatusCode, Json<SubmitResultResponse>)> {
-    // Validate hotkey
-    if !is_valid_ss58_hotkey(&req.validator_hotkey) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(SubmitResultResponse {
-                success: false,
-                is_late: false,
-                consensus_reached: false,
-                final_score: None,
-                validators_completed: 0,
-                total_validators: 0,
-                error: Some("Invalid hotkey format".to_string()),
-            }),
-        ));
-    }
-
-    // Validate timestamp
-    if !is_timestamp_valid(req.timestamp) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(SubmitResultResponse {
-                success: false,
-                is_late: false,
-                consensus_reached: false,
-                final_score: None,
-                validators_completed: 0,
-                total_validators: 0,
-                error: Some("Timestamp expired".to_string()),
-            }),
-        ));
-    }
-
-    // Verify signature (skip in test mode)
-    let message = format!("submit_result:{}:{}", req.agent_hash, req.timestamp);
-    let skip_auth = std::env::var("SKIP_AUTH")
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    if !skip_auth && !verify_signature(&req.validator_hotkey, &message, &req.signature) {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(SubmitResultResponse {
-                success: false,
-                is_late: false,
-                consensus_reached: false,
-                final_score: None,
-                validators_completed: 0,
-                total_validators: 0,
-                error: Some("Invalid signature".to_string()),
-            }),
-        ));
-    }
-
-    // Check if validator is authorized (>= 1000 TAO stake or whitelisted)
-    if !skip_auth && !state.is_authorized_validator(&req.validator_hotkey).await {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(SubmitResultResponse {
-                success: false,
-                is_late: false,
-                consensus_reached: false,
-                final_score: None,
-                validators_completed: 0,
-                total_validators: 0,
-                error: Some("Validator not authorized (requires >= 1000 TAO stake)".to_string()),
-            }),
-        ));
-    }
-
-    // Check if validator is assigned to this agent (skip in test mode)
-    let is_assigned = if skip_auth {
-        true
-    } else {
-        state
-            .storage
-            .is_validator_assigned(&req.agent_hash, &req.validator_hotkey)
-            .await
-            .unwrap_or(false)
-    };
-
-    if !is_assigned {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(SubmitResultResponse {
-                success: false,
-                is_late: false,
-                consensus_reached: false,
-                final_score: None,
-                validators_completed: 0,
-                total_validators: 0,
-                error: Some("Validator not assigned to this agent".to_string()),
-            }),
-        ));
-    }
-
-    // Verify all task logs are present (unless skip_verification is set)
-    if !req.skip_verification {
-        let (logs_complete, logs_message) = state
-            .storage
-            .verify_task_logs_complete(&req.agent_hash, &req.validator_hotkey)
-            .await
-            .unwrap_or((false, "Failed to verify task logs".to_string()));
-
-        if !logs_complete {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(SubmitResultResponse {
-                    success: false,
-                    is_late: false,
-                    consensus_reached: false,
-                    final_score: None,
-                    validators_completed: 0,
-                    total_validators: 0,
-                    error: Some(format!("Task logs incomplete: {}", logs_message)),
-                }),
-            ));
-        }
-
-        debug!(
-            "Task logs verified for {} {}: {}",
-            &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
-            &req.agent_hash[..16.min(req.agent_hash.len())],
-            logs_message
-        );
-    }
-
-    // Get pending status for context
-    let pending = state
-        .storage
-        .get_pending_status(&req.agent_hash)
-        .await
-        .ok()
-        .flatten();
-    let (total_validators, current_completed) = pending
-        .as_ref()
-        .map(|p| (p.total_validators, p.validators_completed))
-        .unwrap_or((0, 0));
-
-    // Get submission info
-    let submission = state
-        .storage
-        .get_submission_info(&req.agent_hash)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(SubmitResultResponse {
-                    success: false,
-                    is_late: false,
-                    consensus_reached: false,
-                    final_score: None,
-                    validators_completed: current_completed,
-                    total_validators,
-                    error: Some(format!("Failed to get submission: {}", e)),
-                }),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(SubmitResultResponse {
-                    success: false,
-                    is_late: false,
-                    consensus_reached: false,
-                    final_score: None,
-                    validators_completed: current_completed,
-                    total_validators,
-                    error: Some("Agent not found".to_string()),
-                }),
-            )
-        })?;
-
-    // Calculate total cost from llm_usage table (more accurate than validator-reported cost)
-    let calculated_cost = state
-        .storage
-        .get_validator_evaluation_cost(&req.agent_hash, &req.validator_hotkey)
-        .await
-        .unwrap_or(0.0);
-
-    // Use calculated cost if available, otherwise fall back to reported cost
-    let total_cost_usd = if calculated_cost > 0.0 {
-        debug!(
-            "Using calculated LLM cost ${:.4} for {}/{}",
-            calculated_cost,
-            &req.agent_hash[..16.min(req.agent_hash.len())],
-            &req.validator_hotkey[..16.min(req.validator_hotkey.len())]
-        );
-        calculated_cost
-    } else {
-        req.total_cost_usd
-    };
-
-    // Create evaluation record
-    let eval = crate::pg_storage::ValidatorEvaluation {
-        id: uuid::Uuid::new_v4().to_string(),
-        agent_hash: req.agent_hash.clone(),
-        validator_hotkey: req.validator_hotkey.clone(),
-        submission_id: submission.id,
-        miner_hotkey: submission.miner_hotkey,
-        score: req.score,
-        tasks_passed: req.tasks_passed,
-        tasks_total: req.tasks_total,
-        tasks_failed: req.tasks_failed,
-        total_cost_usd,
-        execution_time_ms: req.execution_time_ms,
-        task_results: req.task_results,
-        epoch: submission.epoch,
-        created_at: chrono::Utc::now().timestamp(),
-    };
-
-    // Submit evaluation
-    let (is_late, consensus_reached, final_score) = state
-        .storage
-        .submit_validator_evaluation(&eval)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(SubmitResultResponse {
-                    success: false,
-                    is_late: false,
-                    consensus_reached: false,
-                    final_score: None,
-                    validators_completed: current_completed,
-                    total_validators,
-                    error: Some(e.to_string()),
-                }),
-            )
-        })?;
-
-    if is_late {
-        info!(
-            "Validator {} is LATE for agent {} - evaluation ignored",
-            &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
-            &req.agent_hash[..16]
-        );
-    } else if consensus_reached {
-        info!(
-            "Consensus reached for agent {} - final score: {:.4}",
-            &req.agent_hash[..16],
-            final_score.unwrap_or(0.0)
-        );
-    }
-
-    Ok(Json(SubmitResultResponse {
-        success: !is_late,
-        is_late,
-        consensus_reached,
-        final_score,
-        validators_completed: if is_late {
-            current_completed
-        } else {
-            current_completed + 1
-        },
-        total_validators,
-        error: if is_late {
-            Some("Window expired - too late".to_string())
-        } else {
-            None
-        },
-    }))
-}
+// NOTE: submit_result has been removed. Validator evaluation completion is now
+// automatically detected when all tasks are logged via log_task().
+// The server auto-creates ValidatorEvaluation records when a validator logs
+// all their assigned tasks (completed_tasks == total_tasks).
+// ============================================================================
 
 #[derive(Debug, Deserialize)]
 pub struct GetMyJobsRequest {
@@ -2273,7 +2009,7 @@ pub async fn get_my_jobs(
         ));
     }
 
-    // Check if validator is authorized (>= 1000 TAO stake or whitelisted)
+    // Check if validator is authorized (>= 10000 TAO stake or whitelisted)
     if !state.is_authorized_validator(&req.validator_hotkey).await {
         return Err((
             StatusCode::FORBIDDEN,
@@ -2281,7 +2017,7 @@ pub async fn get_my_jobs(
                 success: false,
                 pending_jobs: vec![],
                 completed_count: 0,
-                error: Some("Validator not authorized (requires >= 1000 TAO stake)".to_string()),
+                error: Some("Validator not authorized (requires >= 10000 TAO stake)".to_string()),
             }),
         ));
     }
@@ -2500,7 +2236,7 @@ pub async fn get_evaluation_progress(
                 completed_tasks: vec![],
                 remaining_task_ids: vec![],
                 partial_score: 0.0,
-                error: Some("Validator not authorized (requires >= 1000 TAO stake)".to_string()),
+                error: Some("Validator not authorized (requires >= 10000 TAO stake)".to_string()),
             }),
         ));
     }
@@ -2977,7 +2713,7 @@ pub async fn llm_chat_proxy(
         ));
     }
 
-    // Verify validator is authorized (>= 1000 TAO stake or whitelisted)
+    // Verify validator is authorized (>= 10000 TAO stake or whitelisted)
     if !skip_auth && !state.is_authorized_validator(&req.validator_hotkey).await {
         warn!(
             "LLM proxy: unauthorized validator {} (insufficient stake)",
@@ -2986,7 +2722,7 @@ pub async fn llm_chat_proxy(
         return Err((
             StatusCode::FORBIDDEN,
             Json(err_response(
-                "Validator not authorized (requires >= 1000 TAO stake)".to_string(),
+                "Validator not authorized (requires >= 10000 TAO stake)".to_string(),
             )),
         ));
     }
@@ -3524,7 +3260,7 @@ pub async fn llm_chat_proxy_stream(
         return Err((
             StatusCode::FORBIDDEN,
             Json(err_response(
-                "Validator not authorized (requires >= 1000 TAO stake)".to_string(),
+                "Validator not authorized (requires >= 10000 TAO stake)".to_string(),
             )),
         ));
     }

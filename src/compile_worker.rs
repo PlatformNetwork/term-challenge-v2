@@ -274,6 +274,20 @@ impl CompileWorker {
                     return;
                 }
 
+                // Cleanup all previous evaluation data for this agent
+                // This ensures a fresh start in case of recompilation
+                if let Err(e) = self
+                    .storage
+                    .cleanup_agent_for_recompilation(agent_hash)
+                    .await
+                {
+                    warn!(
+                        "Failed to cleanup agent {} for recompilation: {}",
+                        short_hash, e
+                    );
+                    // Continue anyway - cleanup is best effort
+                }
+
                 // Wait for ready validators and assign them (waits up to 15 min)
                 if !self.assign_validators(agent_hash).await {
                     // Validators not available - agent already marked as failed
@@ -296,6 +310,32 @@ impl CompileWorker {
                             return;
                         }
                     };
+
+                // Create/update pending_evaluations entry with correct validator count
+                // This ensures the entry exists even if it was deleted/expired
+                if let Ok(Some(submission)) = self.storage.get_submission(agent_hash).await {
+                    if let Err(e) = self
+                        .storage
+                        .queue_for_all_validators(
+                            &submission.id,
+                            agent_hash,
+                            &submission.miner_hotkey,
+                            assigned_validators.len() as i32,
+                        )
+                        .await
+                    {
+                        error!(
+                            "Failed to create pending_evaluation for {}: {}",
+                            short_hash, e
+                        );
+                    } else {
+                        info!(
+                            "Created/updated pending_evaluation for {} with {} validators",
+                            short_hash,
+                            assigned_validators.len()
+                        );
+                    }
+                }
 
                 // Assign tasks distributed across validators (10 tasks each)
                 self.assign_evaluation_tasks_distributed(agent_hash, &assigned_validators)
@@ -494,15 +534,15 @@ impl CompileWorker {
         let required_validators = VALIDATORS_PER_AGENT;
 
         loop {
-            // Check for ready validators from DB
+            // Check for ready validators from DB with stake verification (>= 10000 TAO)
             let ready_validators = match self
                 .storage
-                .get_ready_validators(required_validators + 2)
+                .get_ready_validators_with_stake(&self.platform_url, required_validators + 2)
                 .await
             {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!("Failed to get ready validators: {}", e);
+                    warn!("Failed to get ready validators with stake check: {}", e);
                     vec![]
                 }
             };
@@ -547,7 +587,7 @@ impl CompileWorker {
             let elapsed = start_time.elapsed().as_secs();
             if elapsed >= MAX_VALIDATOR_WAIT_SECS {
                 error!(
-                    "TIMEOUT: No ready validators available for agent {} after {} seconds. \
+                    "TIMEOUT: No ready validators with sufficient stake (>= 10000 TAO) available for agent {} after {} seconds. \
                      Required: {}, Available: {}. Evaluation FAILED.",
                     short_hash,
                     elapsed,
@@ -560,7 +600,9 @@ impl CompileWorker {
                     .sudo_set_status(
                         agent_hash,
                         "failed",
-                        Some("No ready validators available after 15 minutes"),
+                        Some(
+                            "No ready validators with sufficient stake available after 15 minutes",
+                        ),
                     )
                     .await
                 {
