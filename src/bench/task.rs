@@ -214,3 +214,227 @@ impl Task {
         self.config.verifier.timeout_sec
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_task_metadata_default() {
+        let metadata = TaskMetadata::default();
+        
+        assert_eq!(metadata.author_name, "");
+        assert_eq!(metadata.author_email, "");
+        // Default trait gives empty string, not the serde default
+        assert_eq!(metadata.difficulty, "");
+        assert_eq!(metadata.category, "");
+        assert!(metadata.tags.is_empty());
+    }
+
+    #[test]
+    fn test_task_metadata_with_values() {
+        let metadata = TaskMetadata {
+            author_name: "John Doe".to_string(),
+            author_email: "john@example.com".to_string(),
+            difficulty: "hard".to_string(),
+            category: "programming".to_string(),
+            tags: vec!["rust".to_string(), "cli".to_string()],
+        };
+        
+        assert_eq!(metadata.author_name, "John Doe");
+        assert_eq!(metadata.difficulty, "hard");
+        assert_eq!(metadata.tags.len(), 2);
+    }
+
+    #[test]
+    fn test_verifier_config_default() {
+        let config = VerifierConfig::default();
+        assert_eq!(config.timeout_sec, 300.0);
+    }
+
+    #[test]
+    fn test_verifier_config_custom() {
+        let config = VerifierConfig {
+            timeout_sec: 600.0,
+        };
+        assert_eq!(config.timeout_sec, 600.0);
+    }
+
+    #[test]
+    fn test_agent_config_default() {
+        let config = AgentConfigToml::default();
+        assert_eq!(config.timeout_sec, 600.0);
+    }
+
+    #[test]
+    fn test_agent_config_custom() {
+        let config = AgentConfigToml {
+            timeout_sec: 1200.0,
+        };
+        assert_eq!(config.timeout_sec, 1200.0);
+    }
+
+    #[test]
+    fn test_environment_config_default() {
+        let config = EnvironmentConfigToml::default();
+        
+        assert_eq!(config.build_timeout_sec, 600.0);
+        assert_eq!(config.cpus, 2);
+        assert_eq!(config.memory, "4G");
+        assert_eq!(config.storage, "20G");
+    }
+
+    #[test]
+    fn test_environment_config_custom() {
+        let config = EnvironmentConfigToml {
+            build_timeout_sec: 300.0,
+            cpus: 4,
+            memory: "8G".to_string(),
+            storage: "50G".to_string(),
+        };
+        
+        assert_eq!(config.build_timeout_sec, 300.0);
+        assert_eq!(config.cpus, 4);
+        assert_eq!(config.memory, "8G");
+        assert_eq!(config.storage, "50G");
+    }
+
+    #[test]
+    fn test_task_config_default() {
+        let config = TaskConfig::default();
+        
+        // Default trait gives empty version, not the serde default "1.0"
+        assert_eq!(config.version, "");
+        // Default trait gives empty difficulty, not the serde default "medium"
+        assert_eq!(config.metadata.difficulty, "");
+        assert_eq!(config.verifier.timeout_sec, 300.0);
+        assert_eq!(config.agent.timeout_sec, 600.0);
+        assert_eq!(config.environment.cpus, 2);
+    }
+
+    #[test]
+    fn test_task_metadata_serialization() {
+        let metadata = TaskMetadata {
+            author_name: "Test Author".to_string(),
+            author_email: "test@test.com".to_string(),
+            difficulty: "easy".to_string(),
+            category: "system".to_string(),
+            tags: vec!["bash".to_string()],
+        };
+        
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: TaskMetadata = serde_json::from_str(&json).unwrap();
+        
+        assert_eq!(deserialized.author_name, "Test Author");
+        assert_eq!(deserialized.difficulty, "easy");
+    }
+
+    #[test]
+    fn test_verifier_config_serialization() {
+        let config = VerifierConfig {
+            timeout_sec: 450.0,
+        };
+        
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("450"));
+    }
+
+    #[test]
+    fn test_agent_config_serialization() {
+        let config = AgentConfigToml {
+            timeout_sec: 900.0,
+        };
+        
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("900"));
+    }
+
+    #[test]
+    fn test_environment_config_serialization() {
+        let config = EnvironmentConfigToml {
+            build_timeout_sec: 400.0,
+            cpus: 8,
+            memory: "16G".to_string(),
+            storage: "100G".to_string(),
+        };
+        
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("16G"));
+        assert!(json.contains("100G"));
+    }
+
+    #[test]
+    fn test_default_difficulty() {
+        let diff = default_difficulty();
+        assert_eq!(diff, "medium");
+    }
+
+    #[test]
+    fn test_default_verifier_timeout() {
+        let timeout = default_verifier_timeout();
+        assert_eq!(timeout, 300.0);
+    }
+
+    #[test]
+    fn test_default_agent_timeout() {
+        let timeout = default_agent_timeout();
+        assert_eq!(timeout, 600.0);
+    }
+
+    #[test]
+    fn test_default_build_timeout() {
+        let timeout = default_build_timeout();
+        assert_eq!(timeout, 600.0);
+    }
+
+    #[test]
+    fn test_default_cpus() {
+        let cpus = default_cpus();
+        assert_eq!(cpus, 2);
+    }
+
+    #[test]
+    fn test_default_memory() {
+        let memory = default_memory();
+        assert_eq!(memory, "4G");
+    }
+
+    #[test]
+    fn test_default_storage() {
+        let storage = default_storage();
+        assert_eq!(storage, "20G");
+    }
+
+    #[test]
+    fn test_default_version() {
+        let version = default_version();
+        assert_eq!(version, "1.0");
+    }
+
+    #[test]
+    fn test_task_config_with_custom_values() {
+        let config = TaskConfig {
+            version: "2.0".to_string(),
+            metadata: TaskMetadata {
+                difficulty: "hard".to_string(),
+                ..Default::default()
+            },
+            verifier: VerifierConfig {
+                timeout_sec: 500.0,
+            },
+            agent: AgentConfigToml {
+                timeout_sec: 1000.0,
+            },
+            environment: EnvironmentConfigToml {
+                cpus: 16,
+                ..Default::default()
+            },
+        };
+        
+        assert_eq!(config.version, "2.0");
+        assert_eq!(config.metadata.difficulty, "hard");
+        assert_eq!(config.verifier.timeout_sec, 500.0);
+        assert_eq!(config.agent.timeout_sec, 1000.0);
+        assert_eq!(config.environment.cpus, 16);
+    }
+}
