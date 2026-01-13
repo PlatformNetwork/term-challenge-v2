@@ -922,4 +922,677 @@ mod tests {
         let slots = controller.acquire_task_slots("agent1", 2);
         assert_eq!(slots, 2);
     }
+
+    #[test]
+    fn test_set_state_callback() {
+        use std::sync::{Arc, Mutex};
+
+        let mut controller = SubnetController::new("validator1".to_string());
+        let callback_called = Arc::new(Mutex::new(false));
+        let callback_called_clone = callback_called.clone();
+
+        controller.set_state_callback(move |_state| {
+            *callback_called_clone.lock().unwrap() = true;
+        });
+
+        controller.set_owner("owner1".to_string());
+
+        assert!(*callback_called.lock().unwrap());
+    }
+
+    #[test]
+    fn test_set_queue_callback() {
+        use std::sync::{Arc, Mutex};
+
+        let mut controller = SubnetController::new("validator1".to_string());
+        let callback_called = Arc::new(Mutex::new(false));
+        let callback_called_clone = callback_called.clone();
+
+        controller.set_queue_callback(move |_queue| {
+            *callback_called_clone.lock().unwrap() = true;
+        });
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+        controller.add_pending_agent(agent);
+
+        assert!(*callback_called.lock().unwrap());
+    }
+
+    #[test]
+    fn test_load_state() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let control_state = SubnetControlState {
+            uploads_enabled: false,
+            validation_enabled: true,
+            owner_hotkey: "owner1".to_string(),
+            last_modified: Utc::now(),
+            modified_by: "admin".to_string(),
+            modified_at_epoch: 100,
+        };
+
+        let queue_state = EvaluationQueueState::default();
+
+        controller.load_state(control_state, queue_state);
+
+        assert!(!controller.uploads_enabled());
+        assert!(controller.validation_enabled());
+    }
+
+    #[test]
+    fn test_get_state() {
+        let controller = SubnetController::new("validator1".to_string());
+        controller.set_owner("owner1".to_string());
+
+        let state = controller.get_state();
+        assert_eq!(state.owner_hotkey, "owner1");
+        assert!(state.uploads_enabled);
+    }
+
+    #[test]
+    fn test_get_queue_state() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+        controller.add_pending_agent(agent);
+
+        let queue = controller.get_queue_state();
+        assert_eq!(queue.pending_validation.len(), 1);
+    }
+
+    #[test]
+    fn test_set_validation_enabled() {
+        let controller = SubnetController::new("validator1".to_string());
+        controller.set_owner("owner1".to_string());
+
+        assert!(controller.set_validation_enabled(true, "owner1", 1).is_ok());
+        assert!(controller.validation_enabled());
+
+        // Non-owner should fail
+        assert!(controller
+            .set_validation_enabled(false, "random", 2)
+            .is_err());
+    }
+
+    #[test]
+    fn test_verify_owner_no_owner_set() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        // Should allow any operator when no owner is set
+        assert!(controller.set_uploads_enabled(false, "anyone", 1).is_ok());
+    }
+
+    #[test]
+    fn test_verify_owner_not_owner() {
+        let controller = SubnetController::new("validator1".to_string());
+        controller.set_owner("owner1".to_string());
+
+        let result = controller.set_uploads_enabled(false, "not_owner", 1);
+        assert!(matches!(result, Err(ControlError::NotOwner { .. })));
+    }
+
+    #[test]
+    fn test_add_pending_agent_duplicate() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent.clone());
+        assert_eq!(controller.pending_count(), 1);
+
+        // Add duplicate - should be ignored
+        controller.add_pending_agent(agent);
+        assert_eq!(controller.pending_count(), 1);
+    }
+
+    #[test]
+    fn test_start_evaluation_agent_not_found() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let result = controller.start_evaluation("nonexistent", "eval1", 10);
+        assert!(matches!(result, Err(ControlError::AgentNotFound(_))));
+    }
+
+    #[test]
+    fn test_update_agent_tasks() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        controller.update_agent_tasks("agent1", 5, 3);
+
+        let queue = controller.get_queue_state();
+        let evaluating_agent = queue.evaluating.iter().find(|a| a.agent_hash == "agent1");
+        assert!(evaluating_agent.is_some());
+        assert_eq!(evaluating_agent.unwrap().current_tasks, 5);
+        assert_eq!(evaluating_agent.unwrap().completed_tasks, 3);
+    }
+
+    #[test]
+    fn test_record_task_completion() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        controller.record_task_completion("agent1", "task1", true);
+        controller.record_task_completion("agent1", "task2", false);
+
+        let completed = controller.get_completed_task_ids("agent1");
+        assert_eq!(completed.len(), 2);
+        assert!(completed.contains(&"task1".to_string()));
+        assert!(completed.contains(&"task2".to_string()));
+
+        let progress = controller.get_evaluation_progress("agent1");
+        assert!(progress.is_some());
+        let (passed, failed, total) = progress.unwrap();
+        assert_eq!(passed, 1);
+        assert_eq!(failed, 1);
+        assert_eq!(total, 10);
+    }
+
+    #[test]
+    fn test_record_task_completion_duplicate() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        controller.record_task_completion("agent1", "task1", true);
+        controller.record_task_completion("agent1", "task1", true); // Duplicate
+
+        let completed = controller.get_completed_task_ids("agent1");
+        assert_eq!(completed.len(), 1); // Should not duplicate
+    }
+
+    #[test]
+    fn test_get_completed_task_ids_not_found() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let completed = controller.get_completed_task_ids("nonexistent");
+        assert!(completed.is_empty());
+    }
+
+    #[test]
+    fn test_get_evaluation_progress_not_found() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let progress = controller.get_evaluation_progress("nonexistent");
+        assert!(progress.is_none());
+    }
+
+    #[test]
+    fn test_complete_evaluation() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        assert_eq!(controller.evaluating_count(), 1);
+
+        controller.complete_evaluation("agent1");
+
+        assert_eq!(controller.evaluating_count(), 0);
+    }
+
+    #[test]
+    fn test_fail_evaluation() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        assert_eq!(controller.evaluating_count(), 1);
+        assert_eq!(controller.pending_count(), 0);
+
+        controller.fail_evaluation("agent1", "test failure");
+
+        assert_eq!(controller.evaluating_count(), 0);
+        assert_eq!(controller.pending_count(), 1); // Returned to queue
+    }
+
+    #[test]
+    fn test_get_evaluating_agents() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        let evaluating = controller.get_evaluating_agents();
+        assert_eq!(evaluating.len(), 1);
+        assert_eq!(evaluating[0].agent_hash, "agent1");
+    }
+
+    #[test]
+    fn test_current_concurrent_tasks() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        assert_eq!(controller.current_concurrent_tasks(), 0);
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        let slots = controller.acquire_task_slots("agent1", 5);
+        assert_eq!(controller.current_concurrent_tasks(), slots);
+    }
+
+    #[test]
+    fn test_remove_pending() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        assert_eq!(controller.pending_count(), 1);
+
+        let removed = controller.remove_pending("agent1");
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().agent_hash, "agent1");
+        assert_eq!(controller.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_remove_pending_not_found() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let removed = controller.remove_pending("nonexistent");
+        assert!(removed.is_none());
+    }
+
+    #[test]
+    fn test_is_agent_queued() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent.clone());
+        assert!(controller.is_agent_queued("agent1"));
+
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+        assert!(controller.is_agent_queued("agent1")); // Still in evaluating
+
+        controller.complete_evaluation("agent1");
+        assert!(!controller.is_agent_queued("agent1"));
+    }
+
+    #[test]
+    fn test_get_status() {
+        let controller = SubnetController::new("validator1".to_string());
+        controller.set_owner("owner1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        let status = controller.get_status();
+        assert_eq!(status.pending_agents, 0);
+        assert_eq!(status.evaluating_agents, 1);
+        assert_eq!(status.concurrent_tasks, 0); // No tasks acquired yet
+    }
+
+    #[test]
+    fn test_recover_stale_evaluations() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        // Manually set last_activity to the past
+        {
+            let mut queue = controller.queue_state.write();
+            if let Some(agent) = queue.evaluating.iter_mut().find(|a| a.agent_hash == "agent1") {
+                agent.last_activity = Utc::now() - chrono::Duration::seconds(7200); // 2 hours ago
+            }
+        }
+
+        // Recover with 1 hour (3600 seconds) timeout
+        controller.recover(3600);
+
+        // Agent should be moved back to pending since it's stale (2 hours > 1 hour)
+        assert_eq!(controller.pending_count(), 1);
+        assert_eq!(controller.evaluating_count(), 0);
+    }
+
+    #[test]
+    fn test_recover_no_stale_evaluations() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        // Recover with 1 hour timeout - agent is not stale
+        controller.recover(3600);
+
+        // Agent should still be evaluating
+        assert_eq!(controller.pending_count(), 0);
+        assert_eq!(controller.evaluating_count(), 1);
+    }
+
+    #[test]
+    fn test_queue_position_ordering() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        // Add agents in reverse order
+        for i in (0..5).rev() {
+            let agent = PendingAgent {
+                agent_hash: format!("agent{}", i),
+                miner_hotkey: format!("miner{}", i),
+                submission_epoch: 1,
+                submitted_at: Utc::now(),
+                llm_review_passed: true,
+                llm_review_result: None,
+                queue_position: 0,
+            };
+            controller.add_pending_agent(agent);
+        }
+
+        let agents = controller.get_next_agents(10);
+        
+        // Should be ordered by queue position
+        for i in 0..agents.len() - 1 {
+            assert!(agents[i].queue_position <= agents[i + 1].queue_position);
+        }
+    }
+
+    #[test]
+    fn test_acquire_task_slots_global_limit() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        // Acquire slots
+        let slots = controller.acquire_task_slots("agent1", MAX_TASKS_PER_AGENT);
+        assert_eq!(slots, MAX_TASKS_PER_AGENT);
+        
+        // Update agent's current_tasks to reflect acquired slots
+        controller.update_agent_tasks("agent1", MAX_TASKS_PER_AGENT, 0);
+
+        // Try to acquire more for same agent - should get 0 due to per-agent limit
+        let more_slots = controller.acquire_task_slots("agent1", 10);
+        assert_eq!(more_slots, 0);
+    }
+
+    #[test]
+    fn test_get_next_agents_respects_concurrency() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        // Add more agents than the concurrency limit
+        for i in 0..MAX_CONCURRENT_AGENTS + 5 {
+            let agent = PendingAgent {
+                agent_hash: format!("agent{}", i),
+                miner_hotkey: format!("miner{}", i),
+                submission_epoch: 1,
+                submitted_at: Utc::now(),
+                llm_review_passed: true,
+                llm_review_result: None,
+                queue_position: 0,
+            };
+            controller.add_pending_agent(agent);
+        }
+
+        // Get next agents - should respect MAX_CONCURRENT_AGENTS
+        let agents = controller.get_next_agents(100);
+        assert!(agents.len() <= MAX_CONCURRENT_AGENTS);
+    }
+
+    #[test]
+    fn test_callback_on_complete_evaluation() {
+        use std::sync::{Arc, Mutex};
+
+        let mut controller = SubnetController::new("validator1".to_string());
+        let callback_called = Arc::new(Mutex::new(false));
+        let callback_called_clone = callback_called.clone();
+
+        controller.set_queue_callback(move |_queue| {
+            *callback_called_clone.lock().unwrap() = true;
+        });
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        // Reset flag
+        *callback_called.lock().unwrap() = false;
+
+        controller.complete_evaluation("agent1");
+
+        assert!(*callback_called.lock().unwrap());
+    }
+
+    #[test]
+    fn test_callback_on_fail_evaluation() {
+        use std::sync::{Arc, Mutex};
+
+        let mut controller = SubnetController::new("validator1".to_string());
+        let callback_count = Arc::new(Mutex::new(0));
+        let callback_count_clone = callback_count.clone();
+
+        controller.set_queue_callback(move |_queue| {
+            *callback_count_clone.lock().unwrap() += 1;
+        });
+
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+
+        let before_count = *callback_count.lock().unwrap();
+
+        controller.fail_evaluation("agent1", "test");
+
+        assert!(*callback_count.lock().unwrap() > before_count);
+    }
+
+    #[test]
+    fn test_control_status_fields() {
+        let controller = SubnetController::new("validator1".to_string());
+        controller.set_owner("owner1".to_string());
+
+        let status = controller.get_status();
+        
+        assert!(status.uploads_enabled);
+        assert!(!status.validation_enabled);
+        assert_eq!(status.pending_agents, 0);
+        assert_eq!(status.evaluating_agents, 0);
+        assert_eq!(status.concurrent_tasks, 0);
+        assert_eq!(status.max_concurrent_agents, MAX_CONCURRENT_AGENTS);
+        assert_eq!(status.max_concurrent_tasks, MAX_CONCURRENT_TASKS);
+    }
+
+    #[test]
+    fn test_release_task_slots_zero_state() {
+        let controller = SubnetController::new("validator1".to_string());
+
+        // Initially 0 tasks
+        assert_eq!(controller.current_concurrent_tasks(), 0);
+        
+        // Acquire some slots - this updates the global counter
+        let agent = PendingAgent {
+            agent_hash: "agent1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            submission_epoch: 1,
+            submitted_at: Utc::now(),
+            llm_review_passed: true,
+            llm_review_result: None,
+            queue_position: 0,
+        };
+        controller.add_pending_agent(agent);
+        controller.start_evaluation("agent1", "eval1", 10).unwrap();
+        
+        let slots = controller.acquire_task_slots("agent1", 5);
+        assert!(slots > 0);
+        assert_eq!(controller.current_concurrent_tasks(), slots);
+        
+        // Release all
+        controller.release_task_slots(slots);
+        assert_eq!(controller.current_concurrent_tasks(), 0);
+    }
 }
