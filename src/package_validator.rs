@@ -764,12 +764,12 @@ mod tests {
 
         let result = validator.validate(&zip_data, "zip", "agent.py").unwrap();
         // The code uses os.system which should generate warnings or errors
-        // from the whitelist checker
-        let has_feedback = !result.warnings.is_empty() || !result.errors.is_empty();
+        // from the whitelist checker - check for specific 'os' module mention
+        let has_os_warning = result.warnings.iter().any(|w| w.contains("os"));
+        let has_os_error = result.errors.iter().any(|e| e.contains("os"));
         assert!(
-            has_feedback || !result.valid,
-            "Expected whitelist warnings/errors for os module usage, got valid={}, warnings={:?}, errors={:?}",
-            result.valid,
+            has_os_warning || has_os_error,
+            "Expected whitelist warning/error mentioning 'os' module, got warnings={:?}, errors={:?}",
             result.warnings,
             result.errors
         );
@@ -778,40 +778,52 @@ mod tests {
     /// Test total uncompressed size too large
     #[test]
     fn test_total_uncompressed_size_too_large() {
-        // Use a very small max_package_size so compressed data can pass but uncompressed fails
+        // Use a max_package_size that allows compressed data to pass but uncompressed fails
         // The uncompressed limit is max_package_size * 2
-        let max_package_size = 50_000; // 50KB compressed limit
+        let max_package_size = 5_000; // 5KB compressed limit, so uncompressed limit is 10KB
         let config = PackageValidatorConfig {
             max_package_size,
-            max_file_size: 200_000, // Allow large individual files
+            max_file_size: 50_000, // Allow large individual files
             ..Default::default()
         };
         let validator = PackageValidator::with_config(config);
 
-        // Create highly repetitive content that compresses well
-        // 100KB of repeated pattern should compress to < 50KB but decompress to > 100KB
-        let repetitive_content = "AAAAAAAAAA".repeat(10_000); // 100KB of 'A's
+        // Create highly repetitive content that compresses very well with DEFLATE
+        // 20KB of repeated 'A' characters should compress to < 5KB but decompress to > 10KB
+        let repetitive_content = "A".repeat(20_000); // 20KB of 'A's
 
-        let zip_data = create_test_zip(&[(
-            "agent.py",
-            &format!("from term_sdk import Agent\n# {}", repetitive_content),
-        )]);
+        // Create zip with compression enabled
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buffer);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            let content = format!("from term_sdk import Agent\n# {}", repetitive_content);
+            zip.start_file("agent.py", options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let zip_data = buffer.into_inner();
 
-        // The uncompressed size should be > 100KB which is > max_package_size * 2 (100KB)
         let result = validator.validate(&zip_data, "zip", "agent.py").unwrap();
 
-        // Should have uncompressed size error if compression worked
-        if zip_data.len() <= max_package_size {
-            assert!(
-                result
-                    .errors
-                    .iter()
-                    .any(|e| e.contains("uncompressed size too large")),
-                "Expected uncompressed size error, compressed={}, errors={:?}",
-                zip_data.len(),
-                result.errors
-            );
-        }
+        // Ensure compression worked as expected for this test to be meaningful
+        assert!(
+            zip_data.len() <= max_package_size,
+            "Test setup issue: compressed size {} exceeds limit {}, compression may not be working",
+            zip_data.len(),
+            max_package_size
+        );
+
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("uncompressed size too large")),
+            "Expected uncompressed size error, compressed={}, errors={:?}",
+            zip_data.len(),
+            result.errors
+        );
     }
 
     /// Test Default impl for PackageValidator

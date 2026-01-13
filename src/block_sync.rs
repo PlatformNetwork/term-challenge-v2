@@ -1049,9 +1049,6 @@ mod tests {
     #[tokio::test]
     async fn test_start_with_init_failure_continues() {
         let server = MockServer::start();
-        // First request fails, subsequent ones succeed
-        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let call_count_clone = call_count.clone();
 
         let _mock = server.mock(|when, then| {
             when.method(GET).path("/api/v1/network/state");
@@ -1105,10 +1102,9 @@ mod tests {
         // Wait for at least one poll
         sleep(Duration::from_millis(100)).await;
 
-        // Should have received events
-        let mut received = false;
+        // Drain any received events
         while let Ok(_) = rx.try_recv() {
-            received = true;
+            // Events received (timing dependent)
         }
 
         sync.stop().await;
@@ -1118,8 +1114,6 @@ mod tests {
     #[tokio::test]
     async fn test_polling_handles_tempo_change() {
         let server = MockServer::start();
-        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let call_count_clone = call_count.clone();
 
         let _mock = server.mock(|when, then| {
             when.method(GET).path("/api/v1/network/state");
@@ -1138,7 +1132,7 @@ mod tests {
             ..Default::default()
         };
         let sync = BlockSync::new(config, calc, None);
-        let mut rx = sync.subscribe();
+        let _rx = sync.subscribe();
 
         sync.start().await.unwrap();
 
@@ -1487,7 +1481,6 @@ mod tests {
         sync.start().await.unwrap();
 
         // Wait for poll with timeout
-        let mut found_tempo_update = false;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
@@ -1497,7 +1490,6 @@ mod tests {
                 })) => {
                     assert_eq!(old_tempo, 360);
                     assert_eq!(new_tempo, 500);
-                    found_tempo_update = true;
                     break;
                 }
                 _ => continue,

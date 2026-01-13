@@ -368,7 +368,7 @@ mod tests {
             let mut validators = cache.validators.write();
             validators.push(ValidatorInfo {
                 hotkey: "abc123".to_string(),
-                stake: 500_000_000_000, // 500 TAO (less than 1000)
+                stake: 500_000_000_000, // 500 TAO (less than MIN_STAKE_RAO = 10,000 TAO)
                 is_active: true,
             });
         }
@@ -556,7 +556,7 @@ mod tests {
             let mut validators = cache.validators.write();
             validators.push(ValidatorInfo {
                 hotkey: "exact_stake".to_string(),
-                stake: MetagraphCache::MIN_STAKE_RAO, // Exactly 1000 TAO
+                stake: MetagraphCache::MIN_STAKE_RAO, // Exactly 10,000 TAO
                 is_active: true,
             });
         }
@@ -724,8 +724,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_connection_error() {
-        // Test refresh with invalid URL that will fail to connect
-        let cache = MetagraphCache::new("http://localhost:99999".to_string());
+        // Test refresh with a valid but likely-unused port that will fail to connect
+        let cache = MetagraphCache::new("http://127.0.0.1:65534".to_string());
 
         let result = cache.refresh().await;
         assert!(result.is_err());

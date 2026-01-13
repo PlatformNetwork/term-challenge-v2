@@ -1241,8 +1241,7 @@ mod tests {
     #[test]
     fn test_chain_storage_new_trims_multiple_slashes() {
         let storage = ChainStorage::new("http://localhost:8080///", "test");
-        // Only one trailing slash is trimmed per trim_end_matches call
-        // But the actual API URL construction should still work
+        // trim_end_matches('/') removes all trailing '/' characters
         assert!(!storage.api_url.ends_with('/'));
     }
 

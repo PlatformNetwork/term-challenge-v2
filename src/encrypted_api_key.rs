@@ -978,7 +978,7 @@ mod tests {
     fn test_decode_ss58_too_short_for_2byte_prefix() {
         // Create an invalid SS58 that's too short for 2-byte prefix
         // First byte >= 64 and < 128 indicates 2-byte prefix
-        let mut data = vec![64u8]; // Start of 2-byte prefix range
+        let data = vec![64u8]; // Start of 2-byte prefix range
         let result = decode_ss58(&bs58::encode(&data).into_string());
         assert!(matches!(result, Err(ApiKeyError::InvalidHotkey(_))));
     }

@@ -13,7 +13,6 @@
 
 use crate::pg_storage::{PgStorage, StaleAssignment};
 use async_trait::async_trait;
-use rand::seq::SliceRandom;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -199,10 +198,8 @@ impl<S: AssignmentStorage> AssignmentMonitor<S> {
             }
 
             // Select the first available validator (list is already sorted by stake/heartbeat)
-            let new_validator = match available.first() {
-                Some(v) => (*v).clone(),
-                None => continue,
-            };
+            // Safe to unwrap since we checked available.is_empty() above
+            let new_validator = (*available.first().unwrap()).clone();
 
             let short_new = &new_validator[..16.min(new_validator.len())];
 
