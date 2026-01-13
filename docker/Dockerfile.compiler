@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     libc6-dev \
     file \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PyInstaller, StaticX, and all SDK dependencies

@@ -421,7 +421,10 @@ mod tests {
 
     #[test]
     fn test_provider_base_url() {
-        assert_eq!(Provider::OpenRouter.base_url(), "https://openrouter.ai/api/v1");
+        assert_eq!(
+            Provider::OpenRouter.base_url(),
+            "https://openrouter.ai/api/v1"
+        );
         assert_eq!(Provider::Chutes.base_url(), "https://llm.chutes.ai/v1");
     }
 
@@ -433,7 +436,10 @@ mod tests {
 
     #[test]
     fn test_provider_default_model() {
-        assert_eq!(Provider::OpenRouter.default_model(), "anthropic/claude-sonnet-4");
+        assert_eq!(
+            Provider::OpenRouter.default_model(),
+            "anthropic/claude-sonnet-4"
+        );
         assert_eq!(Provider::Chutes.default_model(), "Qwen/Qwen3-32B");
     }
 
@@ -539,18 +545,24 @@ mod tests {
     #[test]
     fn test_cost_tracker_multiple_calls() {
         let mut tracker = CostTracker::new(10.0);
-        
-        tracker.add_usage(&Usage {
-            prompt_tokens: 500,
-            completion_tokens: 200,
-            total_tokens: 700,
-        }, "gpt-3.5-turbo");
 
-        tracker.add_usage(&Usage {
-            prompt_tokens: 300,
-            completion_tokens: 150,
-            total_tokens: 450,
-        }, "gpt-3.5-turbo");
+        tracker.add_usage(
+            &Usage {
+                prompt_tokens: 500,
+                completion_tokens: 200,
+                total_tokens: 700,
+            },
+            "gpt-3.5-turbo",
+        );
+
+        tracker.add_usage(
+            &Usage {
+                prompt_tokens: 300,
+                completion_tokens: 150,
+                total_tokens: 450,
+            },
+            "gpt-3.5-turbo",
+        );
 
         assert_eq!(tracker.total_prompt_tokens, 800);
         assert_eq!(tracker.total_completion_tokens, 350);

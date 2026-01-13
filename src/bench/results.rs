@@ -360,7 +360,7 @@ mod tests {
         use super::super::verifier::VerificationResult;
         use chrono::Utc;
         use std::path::PathBuf;
-        
+
         let trial = TrialResult {
             task_name: "test-task".to_string(),
             trial_name: "trial-1".to_string(),
@@ -383,7 +383,7 @@ mod tests {
             agent_provider: Some("test".to_string()),
             model_name: Some("test-model".to_string()),
         };
-        
+
         let task_result = TaskResult::from(trial);
         assert_eq!(task_result.task_name, "test-task");
         assert_eq!(task_result.trial_name, "trial-1");
@@ -394,8 +394,9 @@ mod tests {
 
     #[test]
     fn test_benchmark_results_new() {
-        let results = BenchmarkResults::new("test-bench", "test-dataset", "test-agent", Some("gpt-4"));
-        
+        let results =
+            BenchmarkResults::new("test-bench", "test-dataset", "test-agent", Some("gpt-4"));
+
         assert_eq!(results.name, "test-bench");
         assert_eq!(results.dataset, "test-dataset");
         assert_eq!(results.agent, "test-agent");
@@ -408,7 +409,7 @@ mod tests {
     #[test]
     fn test_benchmark_results_add_result() {
         let mut results = BenchmarkResults::new("test", "dataset", "agent", None);
-        
+
         let task_result = TaskResult {
             task_name: "task1".to_string(),
             success: true,
@@ -418,9 +419,9 @@ mod tests {
             error: None,
             trial_name: "trial1".to_string(),
         };
-        
+
         results.add_result(task_result);
-        
+
         assert_eq!(results.tasks.len(), 1);
         assert_eq!(results.summary.total_tasks, 1);
         assert_eq!(results.summary.passed, 1);
@@ -430,7 +431,7 @@ mod tests {
     #[test]
     fn test_benchmark_summary_calculations() {
         let mut results = BenchmarkResults::new("test", "dataset", "agent", None);
-        
+
         // Add passing task
         results.add_result(TaskResult {
             task_name: "task1".to_string(),
@@ -441,7 +442,7 @@ mod tests {
             error: None,
             trial_name: "trial1".to_string(),
         });
-        
+
         // Add failing task
         results.add_result(TaskResult {
             task_name: "task2".to_string(),
@@ -452,7 +453,7 @@ mod tests {
             error: None,
             trial_name: "trial2".to_string(),
         });
-        
+
         // Add error task
         results.add_result(TaskResult {
             task_name: "task3".to_string(),
@@ -463,7 +464,7 @@ mod tests {
             error: Some("Container crashed".to_string()),
             trial_name: "trial3".to_string(),
         });
-        
+
         assert_eq!(results.summary.total_tasks, 3);
         assert_eq!(results.summary.passed, 1);
         assert_eq!(results.summary.failed, 1);
@@ -482,16 +483,16 @@ mod tests {
     fn test_benchmark_results_complete() {
         let mut results = BenchmarkResults::new("test", "dataset", "agent", None);
         assert!(results.ended_at.is_none());
-        
+
         results.complete();
-        
+
         assert!(results.ended_at.is_some());
     }
 
     #[test]
     fn test_benchmark_summary_default() {
         let summary = BenchmarkSummary::default();
-        
+
         assert_eq!(summary.total_tasks, 0);
         assert_eq!(summary.completed, 0);
         assert_eq!(summary.passed, 0);
@@ -504,7 +505,7 @@ mod tests {
     #[test]
     fn test_benchmark_results_by_difficulty() {
         let mut results = BenchmarkResults::new("test", "dataset", "agent", None);
-        
+
         results.add_result(TaskResult {
             task_name: "easy-task".to_string(),
             success: true,
@@ -514,7 +515,7 @@ mod tests {
             error: None,
             trial_name: "trial1".to_string(),
         });
-        
+
         let by_diff = results.by_difficulty();
         assert!(by_diff.contains_key("unknown"));
         assert_eq!(by_diff.get("unknown").unwrap().len(), 1);
@@ -556,10 +557,10 @@ mod tests {
             error: None,
             trial_name: "trial1".to_string(),
         };
-        
+
         let json = serde_json::to_string(&task).unwrap();
         let deserialized: TaskResult = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(deserialized.task_name, "test");
         assert_eq!(deserialized.success, true);
         assert_eq!(deserialized.reward, 0.95);
@@ -568,10 +569,10 @@ mod tests {
     #[test]
     fn test_benchmark_results_serialization() {
         let results = BenchmarkResults::new("test", "dataset", "agent", Some("model"));
-        
+
         let json = serde_json::to_string(&results).unwrap();
         let deserialized: BenchmarkResults = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(deserialized.name, "test");
         assert_eq!(deserialized.dataset, "dataset");
         assert_eq!(deserialized.agent, "agent");
@@ -580,7 +581,7 @@ mod tests {
     #[test]
     fn test_benchmark_results_empty_summary() {
         let results = BenchmarkResults::new("test", "dataset", "agent", None);
-        
+
         assert_eq!(results.summary.average_reward, 0.0);
         assert_eq!(results.summary.average_duration_sec, 0.0);
         assert_eq!(results.summary.average_steps, 0.0);
@@ -590,7 +591,7 @@ mod tests {
     #[test]
     fn test_benchmark_results_all_passing() {
         let mut results = BenchmarkResults::new("test", "dataset", "agent", None);
-        
+
         for i in 0..5 {
             results.add_result(TaskResult {
                 task_name: format!("task{}", i),
@@ -602,7 +603,7 @@ mod tests {
                 trial_name: format!("trial{}", i),
             });
         }
-        
+
         assert_eq!(results.summary.total_tasks, 5);
         assert_eq!(results.summary.passed, 5);
         assert_eq!(results.summary.failed, 0);
@@ -620,7 +621,7 @@ mod tests {
             error: Some("Timeout exceeded".to_string()),
             trial_name: "trial1".to_string(),
         };
-        
+
         assert!(!task.success);
         assert!(task.error.is_some());
         assert_eq!(task.error.unwrap(), "Timeout exceeded");

@@ -1075,10 +1075,69 @@ async fn run_package_compilation_steps(
     Ok(binary)
 }
 
+/// Get the path where we store the compiler Dockerfile hash
+/// Uses DATA_DIR (persistent volume) if available, otherwise /tmp
+fn get_dockerfile_hash_path() -> std::path::PathBuf {
+    let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "/data".to_string());
+    std::path::PathBuf::from(data_dir).join(".compiler_dockerfile_hash")
+}
+
+/// Compute SHA256 hash of the Dockerfile content
+fn compute_dockerfile_hash(content: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Check if Dockerfile has changed since last build
+fn dockerfile_changed(current_hash: &str) -> bool {
+    let hash_path = get_dockerfile_hash_path();
+
+    match std::fs::read_to_string(&hash_path) {
+        Ok(stored_hash) => {
+            let stored = stored_hash.trim();
+            if stored != current_hash {
+                info!(
+                    "Dockerfile changed: stored hash {} != current hash {}",
+                    stored, current_hash
+                );
+                true
+            } else {
+                debug!("Dockerfile unchanged (hash: {})", current_hash);
+                false
+            }
+        }
+        Err(_) => {
+            info!("No stored Dockerfile hash found, will rebuild if image exists");
+            true
+        }
+    }
+}
+
+/// Save the Dockerfile hash after successful build
+fn save_dockerfile_hash(hash: &str) -> Result<()> {
+    let hash_path = get_dockerfile_hash_path();
+
+    // Ensure parent directory exists
+    if let Some(parent) = hash_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+
+    std::fs::write(&hash_path, hash)
+        .with_context(|| format!("Failed to save Dockerfile hash to {}", hash_path.display()))?;
+
+    info!("Saved Dockerfile hash to {}", hash_path.display());
+    Ok(())
+}
+
 /// Ensure the term-compiler Docker image is available
 ///
 /// Uses the provided backend to build the image if needed.
-/// This should be called once at server startup.
+/// Rebuilds if the Dockerfile has changed (detected via hash comparison).
+/// The hash is stored in DATA_DIR (persistent volume) to survive container restarts.
 pub async fn build_compiler_image(backend: &Arc<dyn ContainerBackend>) -> Result<()> {
     // Read Dockerfile content
     let dockerfile_path = "docker/Dockerfile.compiler";
@@ -1105,16 +1164,32 @@ pub async fn build_compiler_image(backend: &Arc<dyn ContainerBackend>) -> Result
         }
     };
 
+    // Compute hash of current Dockerfile
+    let current_hash = compute_dockerfile_hash(&dockerfile_content);
+    let dockerfile_changed = dockerfile_changed(&current_hash);
+
     info!("Ensuring compiler image {} exists...", COMPILER_IMAGE);
 
     // Check if image exists using backend
-    if backend.image_exists(COMPILER_IMAGE).await.unwrap_or(false) {
-        info!("Compiler image already exists: {}", COMPILER_IMAGE);
+    let image_exists = backend.image_exists(COMPILER_IMAGE).await.unwrap_or(false);
+
+    if image_exists && !dockerfile_changed {
+        info!(
+            "Compiler image already exists and Dockerfile unchanged: {}",
+            COMPILER_IMAGE
+        );
         return Ok(());
     }
 
-    // Image doesn't exist, try to build via backend
-    info!("Building compiler image via backend: {}", COMPILER_IMAGE);
+    // Need to build: either image doesn't exist or Dockerfile changed
+    if image_exists && dockerfile_changed {
+        info!(
+            "Dockerfile changed, rebuilding compiler image: {}",
+            COMPILER_IMAGE
+        );
+    } else {
+        info!("Building compiler image via backend: {}", COMPILER_IMAGE);
+    }
 
     match backend
         .build_image(COMPILER_IMAGE, &dockerfile_content)
@@ -1122,6 +1197,10 @@ pub async fn build_compiler_image(backend: &Arc<dyn ContainerBackend>) -> Result
     {
         Ok(_) => {
             info!("Compiler image built successfully: {}", COMPILER_IMAGE);
+            // Save hash after successful build
+            if let Err(e) = save_dockerfile_hash(&current_hash) {
+                warn!("Failed to save Dockerfile hash: {}", e);
+            }
             Ok(())
         }
         Err(e) => {

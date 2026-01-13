@@ -839,7 +839,10 @@ mod tests {
 
     #[test]
     fn test_agent_base_image_constant() {
-        assert_eq!(AGENT_BASE_IMAGE, "ghcr.io/platformnetwork/term-challenge:latest");
+        assert_eq!(
+            AGENT_BASE_IMAGE,
+            "ghcr.io/platformnetwork/term-challenge:latest"
+        );
     }
 
     #[test]
