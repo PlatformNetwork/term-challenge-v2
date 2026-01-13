@@ -845,7 +845,7 @@ mod tests {
                 total_timeout_secs: 300,
                 working_dir: "/workspace".to_string(),
             };
-            
+
             let config_clone = config.clone();
             assert_eq!(config_clone.working_dir, "/workspace");
             assert_eq!(config_clone.max_steps, 100);
@@ -854,7 +854,7 @@ mod tests {
         #[test]
         fn test_terminal_harness_new_default_config() {
             let config = HarnessConfig::default();
-            
+
             // Verify defaults that would be used in new()
             assert_eq!(config.working_dir, "/app");
             assert_eq!(config.max_steps, 200);
@@ -883,7 +883,7 @@ mod tests {
                 total_timeout_secs: 100,
                 working_dir: "/test".to_string(),
             };
-            
+
             let config_clone = config.clone();
             assert_eq!(config.max_steps, config_clone.max_steps);
             assert_eq!(config.working_dir, config_clone.working_dir);
@@ -894,7 +894,7 @@ mod tests {
         fn test_cd_absolute_path_logic() {
             let path = "/absolute/path";
             assert!(path.starts_with('/'));
-            
+
             // This is the logic from exec_command for absolute paths
             let new_cwd = path.to_string();
             assert_eq!(new_cwd, "/absolute/path");
@@ -905,7 +905,7 @@ mod tests {
             let current_cwd = "/home/user";
             let path = "subdir";
             assert!(!path.starts_with('/'));
-            
+
             // This is the logic from exec_command for relative paths
             let new_cwd = format!("{}/{}", current_cwd, path);
             assert_eq!(new_cwd, "/home/user/subdir");
@@ -915,7 +915,7 @@ mod tests {
         fn test_cd_parent_directory_logic() {
             let current_cwd = "/home/user/project";
             let path = "..";
-            
+
             // Relative path logic
             let new_cwd = format!("{}/{}", current_cwd, path);
             assert_eq!(new_cwd, "/home/user/project/..");
@@ -932,15 +932,15 @@ mod tests {
         fn test_exec_command_cd_prefix_detection() {
             let cmd1 = "cd /tmp";
             assert!(cmd1.trim().starts_with("cd "));
-            
+
             let cmd2 = "  cd /var  ";
             assert!(cmd2.trim().starts_with("cd "));
-            
+
             let cmd3 = "echo test";
             assert!(!cmd3.trim().starts_with("cd "));
-            
+
             let cmd4 = "cd";
-            assert!(!cmd4.trim().starts_with("cd "));  // Just "cd" without space
+            assert!(!cmd4.trim().starts_with("cd ")); // Just "cd" without space
         }
 
         #[test]
@@ -967,7 +967,7 @@ mod tests {
         fn test_exec_command_full_command_format() {
             let cwd = "/app";
             let command = "ls -la";
-            
+
             // This is how exec_command formats the full command
             let full_cmd = format!("cd {} && {}", cwd, command);
             assert_eq!(full_cmd, "cd /app && ls -la");
@@ -979,7 +979,7 @@ mod tests {
                 max_steps: 10,
                 ..Default::default()
             };
-            
+
             // Verify the loop range: 1..=max_steps
             let steps: Vec<u32> = (1..=config.max_steps).collect();
             assert_eq!(steps.len(), 10);
@@ -990,10 +990,10 @@ mod tests {
         #[test]
         fn test_run_method_timeout_check() {
             use std::time::Duration;
-            
+
             let total_timeout_secs = 60;
             let elapsed_secs = 70;
-            
+
             // This is the timeout logic from run()
             assert!(elapsed_secs > total_timeout_secs);
         }
@@ -1049,15 +1049,13 @@ mod tests {
         #[test]
         fn test_harness_result_on_timeout() {
             // Test HarnessResult structure for timeout case
-            let steps = vec![
-                StepResult {
-                    step: 1,
-                    command: Some("echo test".to_string()),
-                    output: "test".to_string(),
-                    exit_code: 0,
-                    duration_ms: 100,
-                },
-            ];
+            let steps = vec![StepResult {
+                step: 1,
+                command: Some("echo test".to_string()),
+                output: "test".to_string(),
+                exit_code: 0,
+                duration_ms: 100,
+            }];
 
             let result = HarnessResult {
                 steps,
@@ -1124,7 +1122,7 @@ mod tests {
             // When agent doesn't provide a command, output should be empty with exit code 0
             // This is the logic from run() when response.command is None
             let (output, exit_code) = (String::new(), 0);
-            
+
             assert!(output.is_empty());
             assert_eq!(exit_code, 0);
         }
@@ -1132,11 +1130,11 @@ mod tests {
         #[test]
         fn test_run_step_duration_calculation() {
             use std::time::Instant;
-            
+
             let step_start = Instant::now();
             std::thread::sleep(std::time::Duration::from_millis(10));
             let duration_ms = step_start.elapsed().as_millis() as u64;
-            
+
             assert!(duration_ms >= 10);
         }
     }
@@ -1208,7 +1206,7 @@ mod tests {
         assert_eq!(steps[0].step, 1);
         assert_eq!(steps[1].step, 2);
         assert_eq!(steps[2].step, 3);
-        
+
         let total_duration: u64 = steps.iter().map(|s| s.duration_ms).sum();
         assert_eq!(total_duration, 225);
     }

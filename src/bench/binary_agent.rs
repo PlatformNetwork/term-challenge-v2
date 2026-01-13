@@ -664,10 +664,10 @@ mod tests {
             created_at: 1000,
             last_used: 2000,
         };
-        
+
         let json = serde_json::to_string(&entry).unwrap();
         let deserialized: CacheEntry = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(entry.source_hash, deserialized.source_hash);
         assert_eq!(entry.binary_size, deserialized.binary_size);
         assert_eq!(entry.created_at, deserialized.created_at);

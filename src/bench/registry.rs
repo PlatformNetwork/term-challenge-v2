@@ -405,7 +405,10 @@ mod tests {
     #[test]
     fn test_registry_client_with_url() {
         let client = RegistryClient::with_url("https://custom.registry.com/registry.json");
-        assert_eq!(client.registry_url, "https://custom.registry.com/registry.json");
+        assert_eq!(
+            client.registry_url,
+            "https://custom.registry.com/registry.json"
+        );
     }
 
     #[test]
@@ -456,14 +459,12 @@ mod tests {
     #[test]
     fn test_registry_serialization() {
         let registry = Registry {
-            datasets: vec![
-                Dataset {
-                    name: "dataset1".to_string(),
-                    version: "1.0".to_string(),
-                    description: "First dataset".to_string(),
-                    tasks: vec![],
-                },
-            ],
+            datasets: vec![Dataset {
+                name: "dataset1".to_string(),
+                version: "1.0".to_string(),
+                description: "First dataset".to_string(),
+                tasks: vec![],
+            }],
         };
 
         let json = serde_json::to_string(&registry).unwrap();

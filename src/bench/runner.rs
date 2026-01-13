@@ -572,7 +572,7 @@ mod tests {
     async fn test_simple_agent() {
         let agent = SimpleAgent::new("test-agent");
         assert_eq!(agent.name(), "test-agent");
-        
+
         let response = agent.step("test instruction", "screen", 1).await.unwrap();
         assert!(response.task_complete);
     }

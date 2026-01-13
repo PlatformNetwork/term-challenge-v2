@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn test_task_metadata_default() {
         let metadata = TaskMetadata::default();
-        
+
         assert_eq!(metadata.author_name, "");
         assert_eq!(metadata.author_email, "");
         // Default trait now uses default_difficulty() helper
@@ -283,7 +283,7 @@ mod tests {
             category: "programming".to_string(),
             tags: vec!["rust".to_string(), "cli".to_string()],
         };
-        
+
         assert_eq!(metadata.author_name, "John Doe");
         assert_eq!(metadata.difficulty, "hard");
         assert_eq!(metadata.tags.len(), 2);
@@ -297,9 +297,7 @@ mod tests {
 
     #[test]
     fn test_verifier_config_custom() {
-        let config = VerifierConfig {
-            timeout_sec: 600.0,
-        };
+        let config = VerifierConfig { timeout_sec: 600.0 };
         assert_eq!(config.timeout_sec, 600.0);
     }
 
@@ -320,7 +318,7 @@ mod tests {
     #[test]
     fn test_environment_config_default() {
         let config = EnvironmentConfigToml::default();
-        
+
         assert_eq!(config.build_timeout_sec, 600.0);
         assert_eq!(config.cpus, 2);
         assert_eq!(config.memory, "4G");
@@ -335,7 +333,7 @@ mod tests {
             memory: "8G".to_string(),
             storage: "50G".to_string(),
         };
-        
+
         assert_eq!(config.build_timeout_sec, 300.0);
         assert_eq!(config.cpus, 4);
         assert_eq!(config.memory, "8G");
@@ -345,7 +343,7 @@ mod tests {
     #[test]
     fn test_task_config_default() {
         let config = TaskConfig::default();
-        
+
         // Default trait now uses default_version() helper
         assert_eq!(config.version, "1.0");
         // Default trait now uses default_difficulty() helper
@@ -364,20 +362,18 @@ mod tests {
             category: "system".to_string(),
             tags: vec!["bash".to_string()],
         };
-        
+
         let json = serde_json::to_string(&metadata).unwrap();
         let deserialized: TaskMetadata = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(deserialized.author_name, "Test Author");
         assert_eq!(deserialized.difficulty, "easy");
     }
 
     #[test]
     fn test_verifier_config_serialization() {
-        let config = VerifierConfig {
-            timeout_sec: 450.0,
-        };
-        
+        let config = VerifierConfig { timeout_sec: 450.0 };
+
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: VerifierConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.timeout_sec, 450.0);
@@ -385,10 +381,8 @@ mod tests {
 
     #[test]
     fn test_agent_config_serialization() {
-        let config = AgentConfigToml {
-            timeout_sec: 900.0,
-        };
-        
+        let config = AgentConfigToml { timeout_sec: 900.0 };
+
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: AgentConfigToml = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.timeout_sec, 900.0);
@@ -402,7 +396,7 @@ mod tests {
             memory: "16G".to_string(),
             storage: "100G".to_string(),
         };
-        
+
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: EnvironmentConfigToml = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.cpus, 8);
@@ -418,9 +412,7 @@ mod tests {
                 difficulty: "hard".to_string(),
                 ..Default::default()
             },
-            verifier: VerifierConfig {
-                timeout_sec: 500.0,
-            },
+            verifier: VerifierConfig { timeout_sec: 500.0 },
             agent: AgentConfigToml {
                 timeout_sec: 1000.0,
             },
@@ -429,7 +421,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        
+
         assert_eq!(config.version, "2.0");
         assert_eq!(config.metadata.difficulty, "hard");
         assert_eq!(config.verifier.timeout_sec, 500.0);

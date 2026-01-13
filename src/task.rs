@@ -1472,12 +1472,10 @@ mod tests {
     #[test]
     fn test_task_config_get_instruction_with_nonexistent_key() {
         let config = TaskConfig {
-            descriptions: vec![
-                TaskDescription {
-                    key: "first".to_string(),
-                    description: "First description".to_string(),
-                },
-            ],
+            descriptions: vec![TaskDescription {
+                key: "first".to_string(),
+                description: "First description".to_string(),
+            }],
             instruction: "Fallback instruction".to_string(),
             ..Default::default()
         };

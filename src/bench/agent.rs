@@ -351,9 +351,8 @@ mod tests {
 
     #[test]
     fn test_parse_response_invalid_json() {
-        let agent = LlmAgent::new(
-            LlmClient::new(Provider::OpenRouter, Some("test"), Some("key")).unwrap(),
-        );
+        let agent =
+            LlmAgent::new(LlmClient::new(Provider::OpenRouter, Some("test"), Some("key")).unwrap());
 
         let invalid = "This is not JSON at all";
         let response = agent.parse_response(invalid).unwrap();
@@ -365,9 +364,8 @@ mod tests {
 
     #[test]
     fn test_parse_response_task_complete_true() {
-        let agent = LlmAgent::new(
-            LlmClient::new(Provider::OpenRouter, Some("test"), Some("key")).unwrap(),
-        );
+        let agent =
+            LlmAgent::new(LlmClient::new(Provider::OpenRouter, Some("test"), Some("key")).unwrap());
 
         let content = r#"{"task_complete": true}"#;
         let response = agent.parse_response(content).unwrap();
@@ -377,9 +375,8 @@ mod tests {
 
     #[test]
     fn test_parse_response_with_think_blocks() {
-        let agent = LlmAgent::new(
-            LlmClient::new(Provider::OpenRouter, Some("test"), Some("key")).unwrap(),
-        );
+        let agent =
+            LlmAgent::new(LlmClient::new(Provider::OpenRouter, Some("test"), Some("key")).unwrap());
 
         let content = r#"
         <think>Let me think about this...</think>
@@ -432,9 +429,8 @@ mod tests {
 
     #[test]
     fn test_parse_response_partial_json() {
-        let agent = LlmAgent::new(
-            LlmClient::new(Provider::OpenRouter, Some("test"), Some("key")).unwrap(),
-        );
+        let agent =
+            LlmAgent::new(LlmClient::new(Provider::OpenRouter, Some("test"), Some("key")).unwrap());
 
         let content = r#"Some text before {"task_complete": false} and after"#;
         let response = agent.parse_response(content).unwrap();

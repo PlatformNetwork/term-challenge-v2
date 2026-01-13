@@ -1370,8 +1370,13 @@ mod tests {
         // Manually set last_activity to the past
         {
             let mut queue = controller.queue_state.write();
-            if let Some(agent) = queue.evaluating.iter_mut().find(|a| a.agent_hash == "agent1") {
-                agent.last_activity = Utc::now() - chrono::Duration::seconds(7200); // 2 hours ago
+            if let Some(agent) = queue
+                .evaluating
+                .iter_mut()
+                .find(|a| a.agent_hash == "agent1")
+            {
+                agent.last_activity = Utc::now() - chrono::Duration::seconds(7200);
+                // 2 hours ago
             }
         }
 
@@ -1427,7 +1432,7 @@ mod tests {
         }
 
         let agents = controller.get_next_agents(10);
-        
+
         // Should be ordered by queue position
         for i in 0..agents.len() - 1 {
             assert!(agents[i].queue_position <= agents[i + 1].queue_position);
@@ -1454,7 +1459,7 @@ mod tests {
         // Acquire slots
         let slots = controller.acquire_task_slots("agent1", MAX_TASKS_PER_AGENT);
         assert_eq!(slots, MAX_TASKS_PER_AGENT);
-        
+
         // Update agent's current_tasks to reflect acquired slots
         controller.update_agent_tasks("agent1", MAX_TASKS_PER_AGENT, 0);
 
@@ -1557,7 +1562,7 @@ mod tests {
         controller.set_owner("owner1".to_string());
 
         let status = controller.get_status();
-        
+
         assert!(status.uploads_enabled);
         assert!(!status.validation_enabled);
         assert_eq!(status.pending_agents, 0);
@@ -1573,7 +1578,7 @@ mod tests {
 
         // Initially 0 tasks
         assert_eq!(controller.current_concurrent_tasks(), 0);
-        
+
         // Acquire some slots - this updates the global counter
         let agent = PendingAgent {
             agent_hash: "agent1".to_string(),
@@ -1586,11 +1591,11 @@ mod tests {
         };
         controller.add_pending_agent(agent);
         controller.start_evaluation("agent1", "eval1", 10).unwrap();
-        
+
         let slots = controller.acquire_task_slots("agent1", 5);
         assert!(slots > 0);
         assert_eq!(controller.current_concurrent_tasks(), slots);
-        
+
         // Release all
         controller.release_task_slots(slots);
         assert_eq!(controller.current_concurrent_tasks(), 0);

@@ -908,7 +908,7 @@ mod tests {
 
         // Should not be expired with long TTL (even if some time passes)
         assert!(!entry.is_expired(3600));
-        
+
         // is_expired checks: (now - updated_at) > ttl_secs
         // With 0 TTL, even 1 second passed means expired
         // Let's sleep 1 second to ensure expiration with 0 TTL
@@ -1202,7 +1202,7 @@ mod tests {
         let initial_timestamp = entry.updated_at;
         // Sleep for 1 second to ensure measurable difference in seconds
         std::thread::sleep(std::time::Duration::from_secs(1));
-        
+
         entry.update_timestamp();
         assert!(entry.updated_at >= initial_timestamp);
     }
@@ -1276,7 +1276,7 @@ mod tests {
         entry.stdout_buffer = "A".repeat(120);
         // Add stderr
         entry.stderr_buffer = "B".repeat(50);
-        
+
         entry.truncate_if_needed(100);
 
         // Total size should be within limit
@@ -1319,18 +1319,18 @@ mod tests {
         // Create scenario where stdout must be fully cleared
         entry.stdout_buffer = "A".repeat(60);
         entry.stderr_buffer = "B".repeat(80);
-        
+
         // Total is 140, max is 50, so need to remove 90 bytes
         // stdout is 60 bytes, so it will be cleared, leaving 30 more to remove from stderr
         entry.truncate_if_needed(50);
 
         // Stdout should be cleared since it's smaller than excess
         assert!(entry.stdout_buffer.is_empty());
-        
+
         // Stderr should be truncated
         assert!(entry.stderr_buffer.len() <= 50);
         assert!(!entry.stderr_buffer.is_empty());
-        
+
         // Total size should be within limit
         assert!(entry.calculate_size() <= 50);
     }
@@ -1347,7 +1347,7 @@ mod tests {
         // Both buffers exceed limit significantly
         entry.stdout_buffer = "A".repeat(100);
         entry.stderr_buffer = "B".repeat(100);
-        
+
         // With max of 50, need to remove 150 bytes
         // stdout cleared (100), still need 50 more from stderr
         entry.truncate_if_needed(50);
@@ -1515,7 +1515,7 @@ mod tests {
         assert_eq!(entry.size_bytes, 0); // Not updated yet
 
         entry.truncate_if_needed(100);
-        
+
         // size_bytes should be updated after truncation
         assert_eq!(entry.size_bytes, entry.calculate_size());
         assert!(entry.size_bytes <= 100);

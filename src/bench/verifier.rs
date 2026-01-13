@@ -359,7 +359,10 @@ mod tests {
         assert_eq!(results.tests.len(), 2);
         assert_eq!(results.tests[0].name, "test_one");
         assert_eq!(results.tests[0].status, "passed");
-        assert_eq!(results.tests[1].message, Some("assertion failed".to_string()));
+        assert_eq!(
+            results.tests[1].message,
+            Some("assertion failed".to_string())
+        );
     }
 
     #[test]

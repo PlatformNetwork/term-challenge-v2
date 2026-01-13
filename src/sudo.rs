@@ -2216,10 +2216,7 @@ mod tests {
         assert_eq!(initial.rules.len(), 10);
         assert_eq!(initial.version, 1);
 
-        let rules = vec![
-            "No SQL injection".to_string(),
-            "No XSS attacks".to_string(),
-        ];
+        let rules = vec!["No SQL injection".to_string(), "No XSS attacks".to_string()];
 
         controller
             .set_llm_validation_rules(ROOT_KEY, rules.clone())
@@ -2259,12 +2256,18 @@ mod tests {
 
         // Remove second rule
         let removed = controller.remove_llm_validation_rule(ROOT_KEY, 1).unwrap();
-        assert_eq!(removed, "The agent must not attempt to access the network or make HTTP requests");
+        assert_eq!(
+            removed,
+            "The agent must not attempt to access the network or make HTTP requests"
+        );
 
         let rules = controller.get_llm_validation_rules();
         assert_eq!(rules.rules.len(), initial_len - 1);
         // First rule should still be at index 0
-        assert_eq!(rules.rules[0], "The agent must use only the term_sdk module for interacting with the terminal");
+        assert_eq!(
+            rules.rules[0],
+            "The agent must use only the term_sdk module for interacting with the terminal"
+        );
     }
 
     #[test]
@@ -2276,10 +2279,7 @@ mod tests {
 
         let result = controller.remove_llm_validation_rule(ROOT_KEY, out_of_bounds_index);
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            SudoError::ValidationError(_)
-        ));
+        assert!(matches!(result.unwrap_err(), SudoError::ValidationError(_)));
     }
 
     #[test]
@@ -2316,10 +2316,7 @@ mod tests {
 
         let result = controller.set_llm_min_approval_rate(ROOT_KEY, 1.5);
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            SudoError::ValidationError(_)
-        ));
+        assert!(matches!(result.unwrap_err(), SudoError::ValidationError(_)));
 
         let result = controller.set_llm_min_approval_rate(ROOT_KEY, -0.1);
         assert!(result.is_err());
@@ -2401,10 +2398,7 @@ mod tests {
 
         let result = controller.approve_agent_manually(ROOT_KEY, "nonexistent", None);
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            SudoError::ValidationError(_)
-        ));
+        assert!(matches!(result.unwrap_err(), SudoError::ValidationError(_)));
     }
 
     #[test]
@@ -2435,7 +2429,12 @@ mod tests {
         );
 
         let result = controller
-            .reject_agent_manually(ROOT_KEY, "agent123", "Malicious code detected".to_string(), 10)
+            .reject_agent_manually(
+                ROOT_KEY,
+                "agent123",
+                "Malicious code detected".to_string(),
+                10,
+            )
             .unwrap();
 
         assert_eq!(result.status, ManualReviewStatus::Rejected);
@@ -2543,10 +2542,7 @@ mod tests {
     fn test_manual_review_status_equality() {
         assert_eq!(ManualReviewStatus::Pending, ManualReviewStatus::Pending);
         assert_ne!(ManualReviewStatus::Pending, ManualReviewStatus::Approved);
-        assert_ne!(
-            ManualReviewStatus::Approved,
-            ManualReviewStatus::Rejected
-        );
+        assert_ne!(ManualReviewStatus::Approved, ManualReviewStatus::Rejected);
     }
 
     #[test]
@@ -2692,4 +2688,3 @@ mod tests {
         assert_eq!(cloned.blocked_until_epoch, 100);
     }
 }
-

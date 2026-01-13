@@ -687,7 +687,7 @@ mod tests {
             "http://platform.example.com".to_string(),
             "validator_hotkey".to_string(),
         );
-        
+
         assert_eq!(config.name, "test_agent");
         assert_eq!(config.agent_hash, "hash123");
         assert_eq!(config.api_provider, "openrouter");
@@ -703,8 +703,9 @@ mod tests {
             "hash".to_string(),
             "url".to_string(),
             "hotkey".to_string(),
-        ).with_api_key(Some("sk-test".to_string()));
-        
+        )
+        .with_api_key(Some("sk-test".to_string()));
+
         assert_eq!(config.api_key, Some("sk-test".to_string()));
     }
 
@@ -716,8 +717,9 @@ mod tests {
             "hash".to_string(),
             "url".to_string(),
             "hotkey".to_string(),
-        ).with_provider(Some("chutes".to_string()));
-        
+        )
+        .with_provider(Some("chutes".to_string()));
+
         assert_eq!(config.api_provider, "chutes");
     }
 
@@ -729,8 +731,9 @@ mod tests {
             "hash".to_string(),
             "url".to_string(),
             "hotkey".to_string(),
-        ).with_provider(None);
-        
+        )
+        .with_provider(None);
+
         assert_eq!(config.api_provider, "openrouter"); // Default
     }
 
@@ -742,8 +745,9 @@ mod tests {
             "hash".to_string(),
             "url".to_string(),
             "hotkey".to_string(),
-        ).with_cost_limit(100.0);
-        
+        )
+        .with_cost_limit(100.0);
+
         assert_eq!(config.cost_limit_usd, 100.0);
     }
 
@@ -759,7 +763,7 @@ mod tests {
         .with_api_key(Some("key".to_string()))
         .with_provider(Some("chutes".to_string()))
         .with_cost_limit(50.0);
-        
+
         assert_eq!(config.api_key, Some("key".to_string()));
         assert_eq!(config.api_provider, "chutes");
         assert_eq!(config.cost_limit_usd, 50.0);
