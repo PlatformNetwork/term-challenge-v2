@@ -886,7 +886,7 @@ mod tests {
     #[test]
     fn test_agent_info_default() {
         let agent = AgentInfo::default();
-        
+
         assert_eq!(agent.hash, "");
         assert_eq!(agent.miner_hotkey, "");
         assert_eq!(agent.image, "");
@@ -976,8 +976,8 @@ mod tests {
 
     #[test]
     fn test_evaluation_builder_with_tasks() {
-        let builder = EvaluationBuilder::new()
-            .with_tasks(vec!["task1".to_string(), "task2".to_string()]);
+        let builder =
+            EvaluationBuilder::new().with_tasks(vec!["task1".to_string(), "task2".to_string()]);
         assert_eq!(builder.tasks.len(), 2);
         assert_eq!(builder.tasks[0], "task1");
         assert_eq!(builder.tasks[1], "task2");
@@ -997,9 +997,7 @@ mod tests {
 
     #[test]
     fn test_evaluation_builder_chaining() {
-        let builder = EvaluationBuilder::new()
-            .with_num_tasks(10)
-            .with_timeout(60);
+        let builder = EvaluationBuilder::new().with_num_tasks(10).with_timeout(60);
 
         assert_eq!(builder.num_tasks, Some(10));
         assert_eq!(builder.timeout_override, Some(60));
@@ -1028,7 +1026,7 @@ mod tests {
         };
 
         assert_eq!(agent.env_vars.len(), 3);
-        
+
         // Check all env vars are preserved
         let api_key = agent.env_vars.iter().find(|(k, _)| k == "API_KEY");
         assert!(api_key.is_some());

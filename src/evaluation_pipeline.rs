@@ -586,12 +586,8 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("test_tasks");
         let task_registry = TaskRegistry::new(temp_dir).unwrap();
 
-        let pipeline = EvaluationPipeline::new(
-            config,
-            validator_hotkey.clone(),
-            validators,
-            task_registry,
-        );
+        let pipeline =
+            EvaluationPipeline::new(config, validator_hotkey.clone(), validators, task_registry);
 
         assert_eq!(pipeline.validator_hotkey, "5GrwvaEF");
         assert_eq!(pipeline.pending_count(), 0);

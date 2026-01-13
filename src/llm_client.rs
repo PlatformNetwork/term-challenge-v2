@@ -262,7 +262,7 @@ mod tests {
             temperature: 0.7,
             timeout_secs: 60,
         };
-        
+
         assert_eq!(config.api_base, "https://api.openai.com/v1");
         assert_eq!(config.api_key, "test_key");
         assert_eq!(config.model, "gpt-4");
@@ -310,7 +310,7 @@ mod tests {
             temperature: 0.5,
             timeout_secs: 30,
         };
-        
+
         let client = LlmClient::new(config.clone());
         assert!(client.is_ok());
     }
@@ -320,7 +320,7 @@ mod tests {
         let config = LlmConfig::default();
         let client = LlmClient::new(config).unwrap();
         let prompt = client.system_prompt();
-        
+
         assert!(prompt.contains("terminal agent"));
         assert!(prompt.contains("JSON"));
         assert!(prompt.contains("command"));
@@ -331,7 +331,7 @@ mod tests {
     fn test_build_user_message_basic() {
         let config = LlmConfig::default();
         let client = LlmClient::new(config).unwrap();
-        
+
         let req = AgentRequest {
             instruction: "List files".to_string(),
             step: 1,
@@ -340,7 +340,7 @@ mod tests {
             exit_code: None,
             output: None,
         };
-        
+
         let msg = client.build_user_message(&req);
         assert!(msg.contains("List files"));
         assert!(msg.contains("STEP: 1"));
@@ -351,7 +351,7 @@ mod tests {
     fn test_build_user_message_with_command() {
         let config = LlmConfig::default();
         let client = LlmClient::new(config).unwrap();
-        
+
         let req = AgentRequest {
             instruction: "Check status".to_string(),
             step: 2,
@@ -360,7 +360,7 @@ mod tests {
             exit_code: Some(0),
             output: Some("total 0".to_string()),
         };
-        
+
         let msg = client.build_user_message(&req);
         assert!(msg.contains("Check status"));
         assert!(msg.contains("ls -la"));
@@ -372,7 +372,7 @@ mod tests {
     fn test_build_user_message_truncates_long_output() {
         let config = LlmConfig::default();
         let client = LlmClient::new(config).unwrap();
-        
+
         let long_output = "x".repeat(20000);
         let req = AgentRequest {
             instruction: "Test".to_string(),
@@ -382,7 +382,7 @@ mod tests {
             exit_code: None,
             output: Some(long_output),
         };
-        
+
         let msg = client.build_user_message(&req);
         assert!(msg.contains("[truncated]"));
         assert!(msg.len() < 20000);
@@ -396,7 +396,7 @@ mod tests {
             max_tokens: 100,
             temperature: 0.5,
         };
-        
+
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("gpt-4"));
         assert!(json.contains("test"));

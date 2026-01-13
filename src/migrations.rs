@@ -280,14 +280,16 @@ mod tests {
             // Should parse version
             let version = parse_migration_version(name);
             assert!(version.is_some(), "Invalid migration name: {}", name);
-            
+
             // Should contain SQL
             assert!(!sql.is_empty(), "Empty migration SQL for: {}", name);
-            
+
             // Should contain CREATE or ALTER statements typically
             let sql_upper = sql.to_uppercase();
             assert!(
-                sql_upper.contains("CREATE") || sql_upper.contains("ALTER") || sql_upper.contains("INSERT"),
+                sql_upper.contains("CREATE")
+                    || sql_upper.contains("ALTER")
+                    || sql_upper.contains("INSERT"),
                 "Migration {} doesn't contain expected SQL keywords",
                 name
             );
@@ -301,10 +303,10 @@ mod tests {
             .iter()
             .filter_map(|(name, _)| parse_migration_version(name))
             .collect();
-        
+
         // Should have at least some migrations
         assert!(!versions.is_empty(), "No embedded migrations found");
-        
+
         // Check sequential order (allowing gaps)
         for i in 1..versions.len() {
             assert!(
@@ -323,11 +325,11 @@ mod tests {
             .iter()
             .filter_map(|(name, _)| parse_migration_version(name))
             .collect();
-        
+
         let original_len = versions.len();
         versions.sort();
         versions.dedup();
-        
+
         assert_eq!(
             versions.len(),
             original_len,
@@ -342,7 +344,7 @@ mod tests {
             name: "test_migration".to_string(),
             sql: "CREATE TABLE test (id INTEGER);".to_string(),
         };
-        
+
         assert_eq!(migration.version, 1);
         assert_eq!(migration.name, "test_migration");
         assert!(!migration.sql.is_empty());
@@ -354,13 +356,16 @@ mod tests {
         let has_initial = EMBEDDED_MIGRATIONS
             .iter()
             .any(|(name, _)| name.contains("initial_schema"));
-        
+
         assert!(has_initial, "Should have initial_schema migration");
     }
 
     #[test]
     fn test_parse_migration_version_with_underscores() {
         assert_eq!(parse_migration_version("001_add_user_table.sql"), Some(1));
-        assert_eq!(parse_migration_version("002_add_index_on_email.sql"), Some(2));
+        assert_eq!(
+            parse_migration_version("002_add_index_on_email.sql"),
+            Some(2)
+        );
     }
 }

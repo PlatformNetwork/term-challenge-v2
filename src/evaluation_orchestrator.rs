@@ -939,7 +939,7 @@ mod tests {
         );
 
         orchestrator.set_owner("new_owner".to_string());
-        
+
         // Owner is set in the controller
         // We can verify this indirectly through operations that require owner permission
     }

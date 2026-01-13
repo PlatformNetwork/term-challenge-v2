@@ -1104,39 +1104,42 @@ impl ValidatorWorker {
         };
 
         // Run verification (test script) with test timeout
+        // ALWAYS run tests, even if agent timed out - the agent might have done partial work that passes
         let test_timeout_secs = task.config.test_timeout_secs as u64;
-        let (test_passed, test_output) = if agent_completed {
-            match self
-                .run_test_script(
-                    task_container.as_ref(),
-                    &task.test_script,
-                    test_timeout_secs,
-                )
-                .await
-            {
-                Ok((passed, output)) => (passed, Some(output)),
-                Err(e) => (false, Some(format!("Test error: {}", e))),
-            }
-        } else {
-            // Include agent stderr in the "did not complete" message
-            let msg = if agent_stderr.is_empty() {
-                format!(
-                    "Agent did not complete after {} steps (no stderr)",
-                    steps_executed
-                )
-            } else {
-                format!(
-                    "Agent did not complete after {} steps. Stderr:\n{}",
-                    steps_executed,
-                    // Truncate stderr to avoid huge payloads
-                    if agent_stderr.len() > 1000 {
-                        format!("{}... (truncated)", &agent_stderr[..1000])
+        let (test_passed, test_output) = match self
+            .run_test_script(
+                task_container.as_ref(),
+                &task.test_script,
+                test_timeout_secs,
+            )
+            .await
+        {
+            Ok((passed, output)) => {
+                // If agent didn't complete, prepend that info to the test output
+                let full_output = if agent_completed {
+                    output
+                } else {
+                    let agent_status = if agent_stderr.is_empty() {
+                        format!(
+                            "Agent did not complete after {} steps (no stderr)",
+                            steps_executed
+                        )
                     } else {
-                        agent_stderr.clone()
-                    }
-                )
-            };
-            (false, Some(msg))
+                        format!(
+                            "Agent did not complete after {} steps. Stderr:\n{}",
+                            steps_executed,
+                            if agent_stderr.len() > 1000 {
+                                format!("{}... (truncated)", &agent_stderr[..1000])
+                            } else {
+                                agent_stderr.clone()
+                            }
+                        )
+                    };
+                    format!("{}\n\n--- Test Output ---\n{}", agent_status, output)
+                };
+                (passed, Some(full_output))
+            }
+            Err(e) => (false, Some(format!("Test error: {}", e))),
         };
 
         // Force cleanup - always stop and remove container

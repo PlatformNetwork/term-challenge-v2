@@ -627,12 +627,9 @@ mod tests {
     #[tokio::test]
     async fn test_platform_ws_client_creation_with_invalid_url() {
         // Test that connect handles invalid URLs gracefully
-        let result = PlatformWsClient::connect(
-            "invalid://not-a-real-url",
-            "test-challenge",
-            "test-secret",
-        )
-        .await;
+        let result =
+            PlatformWsClient::connect("invalid://not-a-real-url", "test-challenge", "test-secret")
+                .await;
 
         // The function returns Ok even if connection fails (background reconnect)
         assert!(result.is_ok());
@@ -688,7 +685,9 @@ mod tests {
 
         let validators = vec!["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string()];
 
-        let notify_result = client.notify_binary_ready(&validators, "agent_hash_123").await;
+        let notify_result = client
+            .notify_binary_ready(&validators, "agent_hash_123")
+            .await;
 
         assert!(notify_result.is_ok());
     }
@@ -751,12 +750,9 @@ mod tests {
     #[tokio::test]
     async fn test_url_encoding_in_connection() {
         // Test that special characters in secret are properly encoded
-        let result = PlatformWsClient::connect(
-            "http://localhost:9999",
-            "test-challenge",
-            "secret!@#$%",
-        )
-        .await;
+        let result =
+            PlatformWsClient::connect("http://localhost:9999", "test-challenge", "secret!@#$%")
+                .await;
 
         // Should succeed (URL encoding happens internally)
         assert!(result.is_ok());
@@ -765,12 +761,8 @@ mod tests {
     #[tokio::test]
     async fn test_https_to_wss_conversion() {
         // The connect function converts https:// to wss://
-        let result = PlatformWsClient::connect(
-            "https://example.com",
-            "test-challenge",
-            "secret",
-        )
-        .await;
+        let result =
+            PlatformWsClient::connect("https://example.com", "test-challenge", "secret").await;
 
         // Should succeed (connection will fail but function returns Ok)
         assert!(result.is_ok());

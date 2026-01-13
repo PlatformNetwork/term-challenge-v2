@@ -278,7 +278,13 @@ pub fn spawn_assignment_monitor(
     platform_url: String,
     config: AssignmentMonitorConfig,
 ) {
-    let _ = spawn_assignment_monitor_with_storage(storage, platform_url, config);
+    // Spawn the monitor - we intentionally don't await the JoinHandle
+    // as this runs in the background for the lifetime of the process
+    drop(spawn_assignment_monitor_with_storage(
+        storage,
+        platform_url,
+        config,
+    ));
 }
 
 fn spawn_assignment_monitor_with_storage<S: AssignmentStorage + 'static>(
