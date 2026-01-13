@@ -1118,4 +1118,679 @@ mod tests {
         // Consensus not reached since only 1 of 3 required reviews
         assert!(!aggregated.consensus_reached);
     }
+
+    #[test]
+    fn test_llm_provider_endpoints() {
+        assert_eq!(
+            LlmProvider::OpenRouter.endpoint(),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        assert_eq!(
+            LlmProvider::Chutes.endpoint(),
+            "https://llm.chutes.ai/v1/chat/completions"
+        );
+        assert_eq!(
+            LlmProvider::OpenAI.endpoint(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            LlmProvider::Anthropic.endpoint(),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            LlmProvider::Grok.endpoint(),
+            "https://api.x.ai/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_llm_provider_default_models() {
+        assert_eq!(
+            LlmProvider::OpenRouter.default_model(),
+            "anthropic/claude-3.5-sonnet"
+        );
+        assert_eq!(
+            LlmProvider::Chutes.default_model(),
+            "deepseek-ai/DeepSeek-V3-0324"
+        );
+        assert_eq!(LlmProvider::OpenAI.default_model(), "gpt-4o-mini");
+        assert_eq!(
+            LlmProvider::Anthropic.default_model(),
+            "claude-3-5-sonnet-20241022"
+        );
+        assert_eq!(LlmProvider::Grok.default_model(), "grok-2-latest");
+    }
+
+    #[test]
+    fn test_llm_provider_parse() {
+        assert_eq!(LlmProvider::parse("chutes"), LlmProvider::Chutes);
+        assert_eq!(LlmProvider::parse("ch"), LlmProvider::Chutes);
+        assert_eq!(LlmProvider::parse("openai"), LlmProvider::OpenAI);
+        assert_eq!(LlmProvider::parse("oa"), LlmProvider::OpenAI);
+        assert_eq!(LlmProvider::parse("anthropic"), LlmProvider::Anthropic);
+        assert_eq!(LlmProvider::parse("claude"), LlmProvider::Anthropic);
+        assert_eq!(LlmProvider::parse("grok"), LlmProvider::Grok);
+        assert_eq!(LlmProvider::parse("xai"), LlmProvider::Grok);
+        assert_eq!(LlmProvider::parse("unknown"), LlmProvider::OpenRouter);
+        assert_eq!(LlmProvider::parse(""), LlmProvider::OpenRouter);
+    }
+
+    #[test]
+    fn test_llm_provider_is_anthropic() {
+        assert!(LlmProvider::Anthropic.is_anthropic());
+        assert!(!LlmProvider::OpenRouter.is_anthropic());
+        assert!(!LlmProvider::Chutes.is_anthropic());
+        assert!(!LlmProvider::OpenAI.is_anthropic());
+        assert!(!LlmProvider::Grok.is_anthropic());
+    }
+
+    #[test]
+    fn test_llm_config_for_provider() {
+        let config = LlmConfig::for_provider(LlmProvider::Chutes, "test_key".to_string());
+        assert_eq!(config.provider, LlmProvider::Chutes);
+        assert_eq!(config.api_key, "test_key");
+        assert_eq!(config.model_id, "deepseek-ai/DeepSeek-V3-0324");
+        assert_eq!(config.timeout_secs, 60);
+        assert_eq!(config.max_tokens, 1024);
+    }
+
+    #[test]
+    fn test_llm_config_openrouter() {
+        let config = LlmConfig::openrouter("api_key".to_string());
+        assert_eq!(config.provider, LlmProvider::OpenRouter);
+        assert_eq!(config.api_key, "api_key");
+    }
+
+    #[test]
+    fn test_llm_config_chutes() {
+        let config = LlmConfig::chutes("api_key".to_string());
+        assert_eq!(config.provider, LlmProvider::Chutes);
+        assert_eq!(config.api_key, "api_key");
+    }
+
+    #[test]
+    fn test_llm_config_openai() {
+        let config = LlmConfig::openai("api_key".to_string());
+        assert_eq!(config.provider, LlmProvider::OpenAI);
+        assert_eq!(config.api_key, "api_key");
+    }
+
+    #[test]
+    fn test_llm_config_anthropic() {
+        let config = LlmConfig::anthropic("api_key".to_string());
+        assert_eq!(config.provider, LlmProvider::Anthropic);
+        assert_eq!(config.api_key, "api_key");
+    }
+
+    #[test]
+    fn test_llm_config_grok() {
+        let config = LlmConfig::grok("api_key".to_string());
+        assert_eq!(config.provider, LlmProvider::Grok);
+        assert_eq!(config.api_key, "api_key");
+    }
+
+    #[test]
+    fn test_llm_config_endpoint() {
+        let config = LlmConfig::openai("key".to_string());
+        assert_eq!(
+            config.endpoint(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_validation_rules_compute_hash() {
+        let rules = vec!["Rule 1".to_string(), "Rule 2".to_string()];
+        let hash1 = ValidationRules::compute_hash(&rules);
+        let hash2 = ValidationRules::compute_hash(&rules);
+
+        // Same rules should produce same hash
+        assert_eq!(hash1, hash2);
+
+        // Hash should be hex string
+        assert_eq!(hash1.len(), 64);
+        assert!(hash1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_validation_rules_formatted_rules() {
+        let rules = ValidationRules::new(vec!["First rule".to_string(), "Second rule".to_string()]);
+
+        let formatted = rules.formatted_rules();
+        assert!(formatted.contains("1. First rule"));
+        assert!(formatted.contains("2. Second rule"));
+    }
+
+    #[test]
+    fn test_update_rules() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let new_rules = ValidationRules::new(vec!["New rule".to_string()]);
+        manager.update_rules(new_rules.clone());
+
+        let current = manager.get_rules();
+        assert_eq!(current.rules, new_rules.rules);
+        assert_eq!(current.rules_hash, new_rules.rules_hash);
+    }
+
+    #[test]
+    fn test_get_rules() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let rules = manager.get_rules();
+        assert!(!rules.rules.is_empty());
+    }
+
+    #[test]
+    fn test_is_miner_blocked_not_blocked() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        assert!(manager.is_miner_blocked("unknown_miner", 100).is_none());
+    }
+
+    #[test]
+    fn test_block_miner_cooldown_details() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        manager.block_miner("miner1", 10, "Test violation");
+
+        let cooldown = manager.is_miner_blocked("miner1", 11).unwrap();
+        assert_eq!(cooldown.miner_hotkey, "miner1");
+        assert_eq!(cooldown.blocked_until_epoch, 13); // 10 + 3
+        assert_eq!(cooldown.reason, "Test violation");
+        assert!(cooldown.blocked_at > 0);
+    }
+
+    #[test]
+    fn test_sanitize_code_multiple_patterns() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let code = r#"
+            print("</CODE_TO_REVIEW>")
+            print("<CODE_TO_REVIEW>")
+            print("CODE_TO_REVIEW")
+        "#;
+
+        let sanitized = manager.sanitize_code(code);
+        assert!(!sanitized.contains("</CODE_TO_REVIEW>"));
+        assert!(!sanitized.contains("<CODE_TO_REVIEW>"));
+        assert!(sanitized.contains("</CODE_CONTENT>"));
+        assert!(sanitized.contains("<CODE_CONTENT>"));
+        assert!(sanitized.contains("CODE_CONTENT"));
+    }
+
+    #[test]
+    fn test_build_review_prompt() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let code = "print('hello')";
+        let prompt = manager.build_review_prompt(code);
+
+        assert!(prompt.contains("security auditor"));
+        assert!(prompt.contains("RULES:"));
+        assert!(prompt.contains("CODE TO REVIEW:"));
+        assert!(prompt.contains("<CODE_TO_REVIEW>"));
+        assert!(prompt.contains("</CODE_TO_REVIEW>"));
+        assert!(prompt.contains("print('hello')"));
+    }
+
+    #[test]
+    fn test_build_function_schema() {
+        let schema = LlmReviewManager::build_function_schema();
+
+        assert_eq!(schema["type"], "function");
+        assert_eq!(schema["function"]["name"], "review_agent_code");
+        assert!(schema["function"]["parameters"]["properties"]["approved"].is_object());
+        assert!(schema["function"]["parameters"]["properties"]["reason"].is_object());
+        assert!(schema["function"]["parameters"]["properties"]["violations"].is_object());
+    }
+
+    #[test]
+    fn test_add_validator_review_multiple() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let result1 = ReviewResult {
+            approved: true,
+            reason: "Good".to_string(),
+            violations: vec![],
+            reviewer_id: "v1".to_string(),
+            reviewed_at: 0,
+            rules_version: 1,
+        };
+
+        let result2 = ReviewResult {
+            approved: false,
+            reason: "Bad".to_string(),
+            violations: vec!["violation".to_string()],
+            reviewer_id: "v2".to_string(),
+            reviewed_at: 0,
+            rules_version: 1,
+        };
+
+        manager.add_validator_review("agent1", "validator1", 1000, result1);
+        manager.add_validator_review("agent1", "validator2", 2000, result2);
+
+        let aggregated = manager.aggregate_reviews("agent1", 2, 0.5).unwrap();
+        assert_eq!(aggregated.total_reviews, 2);
+    }
+
+    #[test]
+    fn test_aggregate_reviews_empty() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let result = manager.aggregate_reviews("empty_agent", 5, 0.5);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_aggregate_reviews_zero_stake() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        manager.add_validator_review(
+            "agent1",
+            "validator1",
+            0, // Zero stake
+            ReviewResult {
+                approved: true,
+                reason: "Good".to_string(),
+                violations: vec![],
+                reviewer_id: "v1".to_string(),
+                reviewed_at: 0,
+                rules_version: 1,
+            },
+        );
+
+        let aggregated = manager.aggregate_reviews("agent1", 1, 0.5).unwrap();
+        assert_eq!(aggregated.approval_rate, 0.0); // Zero stake = 0% approval rate
+    }
+
+    #[test]
+    fn test_aggregate_reviews_stake_weighted() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        // High stake validator approves
+        manager.add_validator_review(
+            "agent1",
+            "validator1",
+            90000,
+            ReviewResult {
+                approved: true,
+                reason: "Good".to_string(),
+                violations: vec![],
+                reviewer_id: "v1".to_string(),
+                reviewed_at: 0,
+                rules_version: 1,
+            },
+        );
+
+        // Low stake validator rejects
+        manager.add_validator_review(
+            "agent1",
+            "validator2",
+            10000,
+            ReviewResult {
+                approved: false,
+                reason: "Bad".to_string(),
+                violations: vec!["issue".to_string()],
+                reviewer_id: "v2".to_string(),
+                reviewed_at: 0,
+                rules_version: 1,
+            },
+        );
+
+        let aggregated = manager.aggregate_reviews("agent1", 2, 0.5).unwrap();
+        // 90000 / 100000 = 90% approval rate
+        assert!((aggregated.approval_rate - 0.9).abs() < 0.01);
+        assert!(aggregated.final_approved);
+    }
+
+    #[test]
+    fn test_aggregate_reviews_consensus_not_reached() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        // Only 1 review out of 10 validators
+        manager.add_validator_review(
+            "agent1",
+            "validator1",
+            10000,
+            ReviewResult {
+                approved: true,
+                reason: "Good".to_string(),
+                violations: vec![],
+                reviewer_id: "v1".to_string(),
+                reviewed_at: 0,
+                rules_version: 1,
+            },
+        );
+
+        let aggregated = manager.aggregate_reviews("agent1", 10, 0.5).unwrap();
+        assert!(!aggregated.consensus_reached); // Less than 50% participation
+        assert!(!aggregated.final_approved); // No consensus = not approved
+    }
+
+    #[test]
+    fn test_queue_manual_review() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let aggregated = AggregatedReview {
+            agent_hash: "hash1".to_string(),
+            total_reviews: 2,
+            approvals: 1,
+            rejections: 1,
+            approval_rate: 0.5,
+            consensus_reached: true,
+            final_approved: false,
+            reviews: vec![],
+            aggregated_at: 123456,
+        };
+
+        manager.queue_manual_review("hash1", "miner1", "code", aggregated);
+
+        let pending = manager.get_pending_reviews();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].agent_hash, "hash1");
+        assert_eq!(pending[0].miner_hotkey, "miner1");
+        assert_eq!(pending[0].status, ManualReviewStatus::Pending);
+    }
+
+    #[test]
+    fn test_get_pending_reviews_empty() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let pending = manager.get_pending_reviews();
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_process_manual_review_approved() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let aggregated = AggregatedReview {
+            agent_hash: "hash1".to_string(),
+            total_reviews: 1,
+            approvals: 0,
+            rejections: 1,
+            approval_rate: 0.0,
+            consensus_reached: true,
+            final_approved: false,
+            reviews: vec![],
+            aggregated_at: 123456,
+        };
+
+        manager.queue_manual_review("hash1", "miner1", "code", aggregated);
+
+        let result = manager.process_manual_review(
+            "hash1",
+            true,
+            "reviewer1",
+            Some("Looks good".to_string()),
+            10,
+        );
+
+        assert!(result.is_some());
+        let review = result.unwrap();
+        assert_eq!(review.status, ManualReviewStatus::Approved);
+        assert_eq!(review.reviewer, Some("reviewer1".to_string()));
+        assert_eq!(review.review_notes, Some("Looks good".to_string()));
+        assert!(review.reviewed_at.is_some());
+
+        // Should still be in pending reviews (not removed for approved)
+        let pending = manager.get_pending_reviews();
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn test_process_manual_review_rejected() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let aggregated = AggregatedReview {
+            agent_hash: "hash1".to_string(),
+            total_reviews: 1,
+            approvals: 0,
+            rejections: 1,
+            approval_rate: 0.0,
+            consensus_reached: true,
+            final_approved: false,
+            reviews: vec![],
+            aggregated_at: 123456,
+        };
+
+        manager.queue_manual_review("hash1", "miner1", "code", aggregated);
+
+        let result = manager.process_manual_review(
+            "hash1",
+            false,
+            "reviewer1",
+            Some("Violation found".to_string()),
+            10,
+        );
+
+        assert!(result.is_some());
+        let review = result.unwrap();
+        assert_eq!(review.status, ManualReviewStatus::Rejected);
+
+        // Miner should be blocked
+        assert!(manager.is_miner_blocked("miner1", 11).is_some());
+
+        // Should be removed from pending reviews
+        let pending = manager.get_pending_reviews();
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_process_manual_review_not_found() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let result = manager.process_manual_review("nonexistent", true, "reviewer1", None, 10);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_clear_reviews() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        // Add validator review
+        manager.add_validator_review(
+            "agent1",
+            "validator1",
+            1000,
+            ReviewResult {
+                approved: true,
+                reason: "Good".to_string(),
+                violations: vec![],
+                reviewer_id: "v1".to_string(),
+                reviewed_at: 0,
+                rules_version: 1,
+            },
+        );
+
+        // Queue manual review
+        let aggregated = AggregatedReview {
+            agent_hash: "agent1".to_string(),
+            total_reviews: 1,
+            approvals: 1,
+            rejections: 0,
+            approval_rate: 1.0,
+            consensus_reached: true,
+            final_approved: true,
+            reviews: vec![],
+            aggregated_at: 123456,
+        };
+        manager.queue_manual_review("agent1", "miner1", "code", aggregated);
+
+        // Verify they exist
+        assert!(manager.aggregate_reviews("agent1", 1, 0.5).is_some());
+        assert_eq!(manager.get_pending_reviews().len(), 1);
+
+        // Clear
+        manager.clear_reviews("agent1");
+
+        // Verify they're gone
+        assert!(manager.aggregate_reviews("agent1", 1, 0.5).is_none());
+        assert!(manager.get_pending_reviews().is_empty());
+    }
+
+    #[test]
+    fn test_manual_review_status_equality() {
+        assert_eq!(ManualReviewStatus::Pending, ManualReviewStatus::Pending);
+        assert_eq!(ManualReviewStatus::Approved, ManualReviewStatus::Approved);
+        assert_eq!(ManualReviewStatus::Rejected, ManualReviewStatus::Rejected);
+        assert_ne!(ManualReviewStatus::Pending, ManualReviewStatus::Approved);
+    }
+
+    #[test]
+    fn test_llm_provider_default() {
+        let provider = LlmProvider::default();
+        assert_eq!(provider, LlmProvider::OpenRouter);
+    }
+
+    #[test]
+    fn test_llm_provider_equality() {
+        assert_eq!(LlmProvider::OpenRouter, LlmProvider::OpenRouter);
+        assert_eq!(LlmProvider::Chutes, LlmProvider::Chutes);
+        assert_ne!(LlmProvider::OpenRouter, LlmProvider::Chutes);
+    }
+
+    #[test]
+    fn test_validation_rules_default() {
+        let rules = ValidationRules::default();
+        assert!(rules.rules.is_empty());
+        assert!(rules.rules_hash.is_empty());
+        assert_eq!(rules.version, 0);
+        assert_eq!(rules.updated_at, 0);
+    }
+
+    #[test]
+    fn test_pending_manual_review_fields() {
+        let aggregated = AggregatedReview {
+            agent_hash: "hash".to_string(),
+            total_reviews: 1,
+            approvals: 0,
+            rejections: 1,
+            approval_rate: 0.0,
+            consensus_reached: true,
+            final_approved: false,
+            reviews: vec![],
+            aggregated_at: 12345,
+        };
+
+        let pending = PendingManualReview {
+            agent_hash: "hash1".to_string(),
+            miner_hotkey: "miner1".to_string(),
+            source_code: "code".to_string(),
+            aggregated_review: aggregated,
+            status: ManualReviewStatus::Pending,
+            created_at: 123456,
+            reviewed_at: None,
+            reviewer: None,
+            review_notes: None,
+        };
+
+        assert_eq!(pending.agent_hash, "hash1");
+        assert_eq!(pending.miner_hotkey, "miner1");
+        assert_eq!(pending.status, ManualReviewStatus::Pending);
+        assert!(pending.reviewed_at.is_none());
+        assert!(pending.reviewer.is_none());
+    }
+
+    #[test]
+    fn test_miner_cooldown_fields() {
+        let cooldown = MinerCooldown {
+            miner_hotkey: "miner1".to_string(),
+            blocked_until_epoch: 100,
+            reason: "Test reason".to_string(),
+            blocked_at: 123456,
+        };
+
+        assert_eq!(cooldown.miner_hotkey, "miner1");
+        assert_eq!(cooldown.blocked_until_epoch, 100);
+        assert_eq!(cooldown.reason, "Test reason");
+        assert_eq!(cooldown.blocked_at, 123456);
+    }
+
+    #[test]
+    fn test_aggregated_review_fields() {
+        let aggregated = AggregatedReview {
+            agent_hash: "hash1".to_string(),
+            total_reviews: 5,
+            approvals: 3,
+            rejections: 2,
+            approval_rate: 0.6,
+            consensus_reached: true,
+            final_approved: true,
+            reviews: vec![],
+            aggregated_at: 123456,
+        };
+
+        assert_eq!(aggregated.total_reviews, 5);
+        assert_eq!(aggregated.approvals, 3);
+        assert_eq!(aggregated.rejections, 2);
+        assert!((aggregated.approval_rate - 0.6).abs() < 0.01);
+        assert!(aggregated.consensus_reached);
+        assert!(aggregated.final_approved);
+    }
+
+    #[test]
+    fn test_validator_review_creation() {
+        let result = ReviewResult {
+            approved: true,
+            reason: "Good".to_string(),
+            violations: vec![],
+            reviewer_id: "v1".to_string(),
+            reviewed_at: 0,
+            rules_version: 1,
+        };
+
+        let review = ValidatorReview {
+            validator_hotkey: "validator1".to_string(),
+            validator_stake: 50000,
+            result,
+        };
+
+        assert_eq!(review.validator_hotkey, "validator1");
+        assert_eq!(review.validator_stake, 50000);
+        assert!(review.result.approved);
+    }
+
+    #[test]
+    fn test_llm_config_default_max_tokens() {
+        let config = LlmConfig::default();
+        assert_eq!(config.max_tokens, 1024);
+    }
+
+    #[test]
+    fn test_multiple_manual_reviews() {
+        let manager = LlmReviewManager::new(LlmConfig::default(), "test_hotkey".to_string());
+
+        let aggregated1 = AggregatedReview {
+            agent_hash: "hash1".to_string(),
+            total_reviews: 1,
+            approvals: 0,
+            rejections: 1,
+            approval_rate: 0.0,
+            consensus_reached: true,
+            final_approved: false,
+            reviews: vec![],
+            aggregated_at: 123456,
+        };
+
+        let aggregated2 = AggregatedReview {
+            agent_hash: "hash2".to_string(),
+            total_reviews: 1,
+            approvals: 0,
+            rejections: 1,
+            approval_rate: 0.0,
+            consensus_reached: true,
+            final_approved: false,
+            reviews: vec![],
+            aggregated_at: 123456,
+        };
+
+        manager.queue_manual_review("hash1", "miner1", "code1", aggregated1);
+        manager.queue_manual_review("hash2", "miner2", "code2", aggregated2);
+
+        let pending = manager.get_pending_reviews();
+        assert_eq!(pending.len(), 2);
+    }
 }
