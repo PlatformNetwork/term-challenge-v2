@@ -310,6 +310,87 @@ pub async fn run_binary_agent(
     }
 }
 
+/// Run a multi-file Python package on a task, compiling it first like validators do
+///
+/// This is the correct way to test package agents locally - same as production validators.
+/// The package should be a ZIP archive containing the agent files.
+pub async fn run_binary_agent_from_package(
+    package_data: &[u8],
+    package_format: &str,
+    entry_point: &str,
+    agent_hash: &str,
+    task: &Task,
+    config: BinaryAgentConfig,
+    logs_dir: &Path,
+) -> Result<BinaryAgentResult> {
+    let start = Instant::now();
+
+    // For packages, we don't use the simple source cache - compile each time
+    // (could add package caching later based on hash)
+    eprintln!(
+        "  \x1b[36m⏳\x1b[0m Compiling package to binary (this usually takes 30-60 seconds)..."
+    );
+
+    let compile_result =
+        compiler::compile_package(package_data, package_format, entry_point, agent_hash)
+            .await
+            .context("Failed to compile package")?;
+
+    eprintln!(
+        "  \x1b[32m✓\x1b[0m Compilation complete: {:.1} MB in {:.1}s",
+        compile_result.size as f64 / 1_000_000.0,
+        compile_result.compile_time_ms as f64 / 1000.0
+    );
+
+    let binary = compile_result.binary;
+
+    // 2. Create and start task container
+    info!("Creating task container...");
+    let mut env = DockerEnvironment::new(task.clone(), logs_dir.to_path_buf()).await?;
+    env.build(false)
+        .await
+        .context("Failed to build task image")?;
+
+    let trial_name = format!("binary-{}", &agent_hash[..12.min(agent_hash.len())]);
+    env.start(&trial_name)
+        .await
+        .context("Failed to start container")?;
+
+    // 3. Run agent in container
+    let result = run_agent_in_container(&env, &binary, task, &config, agent_hash).await;
+
+    // 4. Run verification regardless of agent result
+    let verification = run_verification(&env, task, logs_dir).await;
+
+    // 5. Cleanup
+    if let Err(e) = env.stop().await {
+        warn!("Failed to stop container: {}", e);
+    }
+
+    let duration_secs = start.elapsed().as_secs_f64();
+
+    match result {
+        Ok((agent_completed, steps)) => Ok(BinaryAgentResult {
+            success: verification.success,
+            reward: verification.reward,
+            steps,
+            duration_secs,
+            agent_completed,
+            verification,
+            error: None,
+        }),
+        Err(e) => Ok(BinaryAgentResult {
+            success: false,
+            reward: 0.0,
+            steps: 0,
+            duration_secs,
+            agent_completed: false,
+            verification,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
 /// Run agent binary inside the task container
 async fn run_agent_in_container(
     env: &DockerEnvironment,

@@ -201,9 +201,13 @@ enum BenchCommands {
     /// Run agent on task(s) - single task or full dataset benchmark
     #[command(visible_alias = "a")]
     Agent {
-        /// Path to agent script (*.py, *.js, *.ts, *.rs)
+        /// Path to agent script (*.py) or folder containing agent package
         #[arg(short, long)]
         agent: std::path::PathBuf,
+
+        /// Entry point file when agent is a folder (default: agent.py or main.py)
+        #[arg(short = 'e', long)]
+        entry_point: Option<String>,
 
         /// Single task directory (mutually exclusive with --dataset)
         #[arg(short, long, conflicts_with = "dataset")]
@@ -306,6 +310,7 @@ async fn main() {
             }
             BenchCommands::Agent {
                 agent,
+                entry_point,
                 task,
                 dataset,
                 api_key,
@@ -320,6 +325,7 @@ async fn main() {
                 (Some(task_path), None) => {
                     commands::bench::run_external_agent(
                         agent,
+                        entry_point.as_deref(),
                         task_path,
                         Some(&provider),
                         model.as_deref(),
@@ -334,6 +340,7 @@ async fn main() {
                     commands::bench::run_benchmark(
                         &dataset_spec,
                         agent,
+                        entry_point.as_deref(),
                         Some(&provider),
                         model.as_deref(),
                         Some(&api_key),

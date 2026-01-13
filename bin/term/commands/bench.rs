@@ -1,7 +1,9 @@
 //! Terminal-Bench benchmark commands
 
-use anyhow::{Context, Result};
-use std::path::PathBuf;
+use anyhow::{bail, Context, Result};
+use sha2::{Digest, Sha256};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use term_challenge::bench::{
     create_agent,
@@ -14,6 +16,109 @@ use term_challenge::bench::{
 use tokio::sync::{Mutex, Semaphore};
 use tracing::{error, info};
 use uuid::Uuid;
+use walkdir::WalkDir;
+use zip::write::FileOptions;
+use zip::CompressionMethod;
+
+// =============================================================================
+// FOLDER/PACKAGE SUPPORT HELPERS
+// =============================================================================
+
+/// Create a ZIP archive from a folder
+fn create_zip_archive(folder: &Path) -> Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buffer));
+        let options = FileOptions::<()>::default()
+            .compression_method(CompressionMethod::Deflated)
+            .unix_permissions(0o644);
+
+        for entry in WalkDir::new(folder).into_iter().flatten() {
+            let path = entry.path();
+            let name = path.strip_prefix(folder).unwrap_or(path);
+
+            // Skip hidden files and common non-essential directories
+            let name_str = name.to_string_lossy();
+            if name_str.is_empty()
+                || name_str.starts_with('.')
+                || name_str.contains("__pycache__")
+                || name_str.contains(".git")
+                || name_str.contains("node_modules")
+                || name_str.contains(".venv")
+                || name_str.contains("venv")
+            {
+                continue;
+            }
+
+            if path.is_file() {
+                zip.start_file(name.to_string_lossy(), options)?;
+                let content = std::fs::read(path)?;
+                zip.write_all(&content)?;
+            }
+        }
+
+        zip.finish()?;
+    }
+
+    Ok(buffer)
+}
+
+/// Detect entry point file in a folder
+fn detect_entry_point(folder: &Path, specified: Option<&str>) -> Result<String> {
+    if let Some(ep) = specified {
+        // Verify the specified entry point exists
+        if !folder.join(ep).exists() {
+            bail!(
+                "Specified entry point '{}' not found in {}",
+                ep,
+                folder.display()
+            );
+        }
+        return Ok(ep.to_string());
+    }
+
+    // Auto-detect: check for agent.py, then main.py
+    if folder.join("agent.py").exists() {
+        return Ok("agent.py".to_string());
+    }
+    if folder.join("main.py").exists() {
+        return Ok("main.py".to_string());
+    }
+
+    // List available .py files for the error message
+    let py_files: Vec<String> = WalkDir::new(folder)
+        .max_depth(2)
+        .into_iter()
+        .flatten()
+        .filter(|e| {
+            e.path().extension().and_then(|ext| ext.to_str()) == Some("py") && e.path().is_file()
+        })
+        .filter_map(|e| {
+            e.path()
+                .strip_prefix(folder)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        })
+        .take(10)
+        .collect();
+
+    if py_files.is_empty() {
+        bail!("No Python files found in {}", folder.display());
+    }
+
+    bail!(
+        "No entry point found (agent.py or main.py). Use --entry-point to specify one of: {}",
+        py_files.join(", ")
+    )
+}
+
+/// Compute hash for package data (for caching)
+fn compute_package_hash(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let result = hasher.finalize();
+    format!("{:x}", result)[..16].to_string()
+}
 
 /// Cleanup all bench containers on Ctrl+C
 async fn cleanup_containers() {
@@ -265,10 +370,16 @@ pub async fn run_task(
 ///
 /// Uses the binary agent system (same as validators) - compiles Python to binary
 /// and runs it inside the task container.
+///
+/// Supports:
+/// - Single .py file: `--agent agent.py`
+/// - Folder with package: `--agent ./my_agent_folder` (auto-detects agent.py/main.py)
+/// - Folder with custom entry: `--agent ./folder --entry-point src/main.py`
 #[allow(clippy::too_many_arguments)]
 pub async fn run_benchmark(
     dataset_spec: &str,
     agent_path: PathBuf,
+    entry_point: Option<&str>,
     provider: Option<&str>,
     model: Option<&str>,
     api_key: Option<&str>,
@@ -278,21 +389,34 @@ pub async fn run_benchmark(
     concurrent: usize,
     _max_steps: u32, // Ignored - agents manage their own limits (SDK 2.0)
 ) -> Result<()> {
-    use term_challenge::bench::{run_binary_agent, BinaryAgentConfig};
+    use term_challenge::bench::{
+        run_binary_agent, run_binary_agent_from_package, BinaryAgentConfig,
+    };
 
     let (name, version) = RegistryClient::parse_dataset_spec(dataset_spec);
 
-    // Only Python is supported (compiled to binary)
-    let ext = agent_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    if ext != "py" {
-        anyhow::bail!("Only Python agents (.py) are supported. Got: .{}", ext);
-    }
+    // Determine if agent is a file or folder
+    let is_folder = agent_path.is_dir();
+    let (agent_display, is_package) = if is_folder {
+        let entry = detect_entry_point(&agent_path, entry_point)?;
+        (format!("{} (entry: {})", agent_path.display(), entry), true)
+    } else {
+        // Single file - validate extension
+        let ext = agent_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if ext != "py" {
+            bail!(
+                "Only Python agents (.py) or folders are supported. Got: .{}",
+                ext
+            );
+        }
+        (agent_path.display().to_string(), false)
+    };
 
     println!("\n  🏁 Starting benchmark: {}@{}\n", name, version);
-    println!("  Agent:      {} (Python -> Binary)", agent_path.display());
+    println!("  Agent:      {} (Python -> Binary)", agent_display);
     if let Some(p) = provider {
         println!("  Provider:   {}", p);
     }
@@ -315,19 +439,45 @@ pub async fn run_benchmark(
     println!("  Concurrent: {}", concurrent);
     println!("  Timeout:    {}x\n", timeout_multiplier);
 
-    // Read agent source code once (binary is compiled and cached)
-    let source_code = std::fs::read_to_string(&agent_path).context(format!(
-        "Failed to read agent file: {}",
-        agent_path.display()
-    ))?;
+    // Prepare agent data based on type
+    let (source_code, package_data, package_entry) = if is_package {
+        // Create ZIP from folder
+        println!("  Creating package from folder...");
+        let zip_data = create_zip_archive(&agent_path)?;
+        let entry = detect_entry_point(&agent_path, entry_point)?;
+        let pkg_hash = compute_package_hash(&zip_data);
+        println!(
+            "  ✓ Package created: {:.1} KB, entry: {}",
+            zip_data.len() as f64 / 1024.0,
+            entry
+        );
 
-    // Pre-compile the agent binary before running tasks
-    // This ensures compilation happens once, not per-task
-    println!("  Compiling agent to binary (one-time)...");
-    let _pre_compile = term_challenge::compiler::compile_agent(&source_code, "bench-precompile")
-        .await
-        .context("Failed to pre-compile agent")?;
-    println!("  ✓ Agent compiled successfully\n");
+        // Pre-compile the package binary before running tasks
+        println!("  Compiling package to binary (one-time)...");
+        let _pre_compile =
+            term_challenge::compiler::compile_package(&zip_data, "zip", &entry, &pkg_hash)
+                .await
+                .context("Failed to pre-compile package")?;
+        println!("  ✓ Package compiled successfully\n");
+
+        (String::new(), Some(zip_data), Some(entry))
+    } else {
+        // Read agent source code once (binary is compiled and cached)
+        let source_code = std::fs::read_to_string(&agent_path).context(format!(
+            "Failed to read agent file: {}",
+            agent_path.display()
+        ))?;
+
+        // Pre-compile the agent binary before running tasks
+        println!("  Compiling agent to binary (one-time)...");
+        let _pre_compile =
+            term_challenge::compiler::compile_agent(&source_code, "bench-precompile")
+                .await
+                .context("Failed to pre-compile agent")?;
+        println!("  ✓ Agent compiled successfully\n");
+
+        (source_code, None, None)
+    };
 
     let output = output_dir.unwrap_or_else(|| PathBuf::from("./benchmark_results"));
     let agent_name = agent_path
@@ -369,6 +519,8 @@ pub async fn run_benchmark(
     let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let semaphore = Arc::new(Semaphore::new(concurrent));
     let source_code = Arc::new(source_code);
+    let package_data = Arc::new(package_data);
+    let package_entry = Arc::new(package_entry);
 
     // Spawn concurrent tasks
     let mut handles = Vec::new();
@@ -380,6 +532,8 @@ pub async fn run_benchmark(
         let bench_name = bench_name.clone();
         let bench_dir = bench_dir.clone();
         let source_code = source_code.clone();
+        let package_data = package_data.clone();
+        let package_entry = package_entry.clone();
         let api_key = api_key.map(String::from);
         let model = model.map(String::from);
         let provider = provider.map(String::from);
@@ -420,7 +574,20 @@ pub async fn run_benchmark(
             };
 
             let start = std::time::Instant::now();
-            let run_result = run_binary_agent(&source_code, &task, config, &logs_dir).await;
+
+            // Run agent - different path for single file vs package
+            let run_result = if let (Some(ref pkg_data), Some(ref entry)) =
+                (package_data.as_ref(), package_entry.as_ref())
+            {
+                let pkg_hash = format!("bench-pkg-{}", &task.name[..8.min(task.name.len())]);
+                run_binary_agent_from_package(
+                    pkg_data, "zip", entry, &pkg_hash, &task, config, &logs_dir,
+                )
+                .await
+            } else {
+                run_binary_agent(&source_code, &task, config, &logs_dir).await
+            };
+
             let duration_sec = start.elapsed().as_secs_f64();
 
             match run_result {
@@ -494,13 +661,19 @@ pub async fn run_benchmark(
     Ok(())
 }
 
-/// Run external agent (Python/JavaScript/Rust) on a task
+/// Run external agent (Python file or folder) on a task
 ///
 /// This compiles the agent to a binary and runs it in the task container,
 /// exactly like production validators do.
+///
+/// Supports:
+/// - Single .py file: `--agent agent.py`
+/// - Folder with package: `--agent ./my_agent_folder` (auto-detects agent.py/main.py)
+/// - Folder with custom entry: `--agent ./folder --entry-point src/main.py`
 #[allow(clippy::too_many_arguments)]
 pub async fn run_external_agent(
     agent_path: PathBuf,
+    entry_point: Option<&str>,
     task_path: PathBuf,
     provider: Option<&str>,
     model: Option<&str>,
@@ -509,18 +682,43 @@ pub async fn run_external_agent(
     timeout_multiplier: f64,
     _max_steps: u32,
 ) -> Result<()> {
-    use term_challenge::bench::{run_binary_agent, BinaryAgentConfig};
+    use term_challenge::bench::{
+        run_binary_agent, run_binary_agent_from_package, BinaryAgentConfig,
+    };
 
     let task = Task::from_path(&task_path)?;
 
-    // Only Python is supported for now (compiled to binary)
-    let ext = agent_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    if ext != "py" {
-        anyhow::bail!("Only Python agents (.py) are supported. Got: .{}", ext);
-    }
+    // Determine if agent is a file or folder
+    let is_folder = agent_path.is_dir();
+    let (agent_display, _agent_hash, is_package) = if is_folder {
+        let entry = detect_entry_point(&agent_path, entry_point)?;
+        let folder_name = agent_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("agent");
+        (
+            format!("{} (entry: {})", agent_path.display(), entry),
+            format!("pkg-{}", folder_name),
+            true,
+        )
+    } else {
+        // Single file - validate extension
+        let ext = agent_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if ext != "py" {
+            bail!(
+                "Only Python agents (.py) or folders are supported. Got: .{}",
+                ext
+            );
+        }
+        (
+            agent_path.display().to_string(),
+            "single".to_string(),
+            false,
+        )
+    };
 
     // Print header
     println!();
@@ -529,7 +727,7 @@ pub async fn run_external_agent(
     println!();
     println!(
         "  \x1b[90mAgent:\x1b[0m    {} \x1b[90m(Python → Binary)\x1b[0m",
-        agent_path.display()
+        agent_display
     );
     println!("  \x1b[90mTask:\x1b[0m     \x1b[1m{}\x1b[0m", task.name);
     if let Some(p) = provider {
@@ -542,12 +740,6 @@ pub async fn run_external_agent(
     }
     println!();
     println!("  \x1b[90m{}\x1b[0m", "─".repeat(50));
-
-    // Read source code
-    let source_code = std::fs::read_to_string(&agent_path).context(format!(
-        "Failed to read agent file: {}",
-        agent_path.display()
-    ))?;
 
     // Setup output directory
     let output = output_dir.unwrap_or_else(|| PathBuf::from("./benchmark_results"));
@@ -565,7 +757,33 @@ pub async fn run_external_agent(
     };
 
     let start = std::time::Instant::now();
-    let result = run_binary_agent(&source_code, &task, config, &logs_dir).await;
+
+    // Run agent - different path for single file vs package
+    let result = if is_package {
+        // Create ZIP from folder
+        println!("  \x1b[36m⏳\x1b[0m Creating package from folder...");
+        let zip_data = create_zip_archive(&agent_path)?;
+        let entry = detect_entry_point(&agent_path, entry_point)?;
+        let pkg_hash = compute_package_hash(&zip_data);
+        println!(
+            "  \x1b[32m✓\x1b[0m Package created: {:.1} KB, entry: {}",
+            zip_data.len() as f64 / 1024.0,
+            entry
+        );
+
+        run_binary_agent_from_package(
+            &zip_data, "zip", &entry, &pkg_hash, &task, config, &logs_dir,
+        )
+        .await
+    } else {
+        // Single file
+        let source_code = std::fs::read_to_string(&agent_path).context(format!(
+            "Failed to read agent file: {}",
+            agent_path.display()
+        ))?;
+        run_binary_agent(&source_code, &task, config, &logs_dir).await
+    };
+
     let elapsed = start.elapsed().as_secs_f64();
 
     match result {
