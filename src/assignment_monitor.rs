@@ -524,6 +524,22 @@ mod tests {
             ));
             Ok(())
         }
+
+        async fn get_agents_needing_validators(
+            &self,
+        ) -> anyhow::Result<Vec<AgentNeedingValidators>> {
+            // FakeStorage returns empty list - no agents need validators in tests by default
+            Ok(Vec::new())
+        }
+
+        async fn assign_additional_validator(
+            &self,
+            _agent_hash: &str,
+            _validator_hotkey: &str,
+        ) -> anyhow::Result<()> {
+            // FakeStorage does nothing for additional validator assignment
+            Ok(())
+        }
     }
 
     fn sample_assignment(
