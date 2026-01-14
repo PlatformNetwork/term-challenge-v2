@@ -1093,139 +1093,197 @@ impl ValidatorWorker {
             }
         }
 
+        // Calculate global timeout: agent (with retry) + test + 30s buffer
+        // Agent runs twice on timeout (original + retry), so total = 2 * agent_timeout + test_timeout + buffer
+        let test_timeout_secs = task.config.test_timeout_secs as u64;
+        let global_timeout_secs = (timeout_secs * 2) + test_timeout_secs + 30;
+        info!(
+            "Task {} global timeout: {}s (agent: {}s * 2, test: {}s, buffer: 30s)",
+            task_id, global_timeout_secs, timeout_secs, test_timeout_secs
+        );
+
         // Run the agent binary against this task
         let instruction = task.instruction();
         let llm_proxy_url = format!("http://{}:{}", validator_hostname, validator_port);
 
-        // First attempt
-        let mut agent_result = self
-            .run_agent_loop(
-                task_container.as_ref(),
-                binary_path,
-                instruction,
-                timeout_secs,
-                agent_hash,
-                task_id,
-                &llm_proxy_url,
-                container_endpoint.as_deref(),
-            )
-            .await;
+        // Wrap entire execution (agent + tests) in global timeout to prevent hung tasks
+        let execution_future = async {
+            // First attempt
+            let mut agent_result = self
+                .run_agent_loop(
+                    task_container.as_ref(),
+                    binary_path,
+                    instruction,
+                    timeout_secs,
+                    agent_hash,
+                    task_id,
+                    &llm_proxy_url,
+                    container_endpoint.as_deref(),
+                )
+                .await;
 
-        // Retry once on timeout
-        if let Ok(ref result) = agent_result {
-            if result.timed_out {
-                warn!(
-                    "Task {} timed out, retrying once (steps executed: {})",
-                    task_id, result.steps
-                );
+            // Retry once on timeout
+            if let Ok(ref result) = agent_result {
+                if result.timed_out {
+                    warn!(
+                        "Task {} timed out, retrying once (steps executed: {})",
+                        task_id, result.steps
+                    );
 
-                // Kill any existing agent process
-                let _ = task_container
-                    .exec(&["pkill", "-9", "-f", "/agent/agent"])
-                    .await;
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                    // Kill any existing agent process
+                    let _ = task_container
+                        .exec(&["pkill", "-9", "-f", "/agent/agent"])
+                        .await;
+                    tokio::time::sleep(Duration::from_secs(1)).await;
 
-                // Retry the agent loop
-                agent_result = self
-                    .run_agent_loop(
-                        task_container.as_ref(),
-                        binary_path,
-                        instruction,
-                        timeout_secs,
-                        agent_hash,
-                        task_id,
-                        &llm_proxy_url,
-                        container_endpoint.as_deref(),
-                    )
-                    .await;
+                    // Retry the agent loop
+                    agent_result = self
+                        .run_agent_loop(
+                            task_container.as_ref(),
+                            binary_path,
+                            instruction,
+                            timeout_secs,
+                            agent_hash,
+                            task_id,
+                            &llm_proxy_url,
+                            container_endpoint.as_deref(),
+                        )
+                        .await;
 
-                if let Ok(ref retry_result) = agent_result {
-                    if retry_result.timed_out {
-                        warn!("Task {} timed out again after retry", task_id);
-                    } else if retry_result.completed {
-                        info!("Task {} succeeded on retry", task_id);
+                    if let Ok(ref retry_result) = agent_result {
+                        if retry_result.timed_out {
+                            warn!("Task {} timed out again after retry", task_id);
+                        } else if retry_result.completed {
+                            info!("Task {} succeeded on retry", task_id);
+                        }
                     }
                 }
             }
-        }
 
-        // Extract results
-        let (agent_completed, agent_stderr, steps_executed, timed_out) = match agent_result {
-            Ok(result) => (
-                result.completed,
-                result.logs,
-                result.steps,
-                result.timed_out,
-            ),
-            Err(e) => {
-                // Log the error with full context instead of silently ignoring
-                error!("Agent loop failed for task {}: {:?}", task_id, e);
-                // Return error details in stderr so they're visible in UI
-                let error_msg =
-                    format!("Agent execution error: {}\n\nFull error chain:\n{:?}", e, e);
-                (false, error_msg, 0, false)
-            }
-        };
+            // Extract results
+            let (agent_completed, agent_stderr, steps_executed, timed_out) = match agent_result {
+                Ok(result) => (
+                    result.completed,
+                    result.logs,
+                    result.steps,
+                    result.timed_out,
+                ),
+                Err(e) => {
+                    // Log the error with full context instead of silently ignoring
+                    error!("Agent loop failed for task {}: {:?}", task_id, e);
+                    // Return error details in stderr so they're visible in UI
+                    let error_msg =
+                        format!("Agent execution error: {}\n\nFull error chain:\n{:?}", e, e);
+                    (false, error_msg, 0, false)
+                }
+            };
 
-        // Kill agent process before running tests if it didn't complete or timed out
-        // This ensures the agent doesn't interfere with test execution or consume resources
-        if !agent_completed || timed_out {
-            info!(
+            // Kill agent process before running tests if it didn't complete or timed out
+            // This ensures the agent doesn't interfere with test execution or consume resources
+            if !agent_completed || timed_out {
+                info!(
                 "Killing agent process before running tests (task={}, completed={}, timed_out={})",
                 task_id, agent_completed, timed_out
             );
-            let kill_result = task_container
-                .exec(&["pkill", "-9", "-f", "/agent/agent"])
-                .await;
-            match kill_result {
-                Ok(_) => debug!("Agent process killed successfully"),
-                Err(e) => debug!(
-                    "Failed to kill agent process (may already be stopped): {}",
-                    e
-                ),
+                let kill_result = task_container
+                    .exec(&["pkill", "-9", "-f", "/agent/agent"])
+                    .await;
+                match kill_result {
+                    Ok(_) => debug!("Agent process killed successfully"),
+                    Err(e) => debug!(
+                        "Failed to kill agent process (may already be stopped): {}",
+                        e
+                    ),
+                }
+                // Give the process a moment to fully terminate
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            // Give the process a moment to fully terminate
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
 
-        // Run verification (test script) with test timeout
-        // ALWAYS run tests, even if agent timed out - the agent might have done partial work that passes
-        let test_timeout_secs = task.config.test_timeout_secs as u64;
-        let (test_passed, test_output) = match self
-            .run_test_script(
-                task_container.as_ref(),
-                &task.test_script,
-                test_timeout_secs,
-            )
-            .await
-        {
-            Ok((passed, output)) => {
-                // If agent didn't complete, prepend that info to the test output
-                let full_output = if agent_completed {
-                    output
-                } else {
-                    let agent_status = if agent_stderr.is_empty() {
-                        format!(
-                            "Agent did not complete after {} steps (no stderr)",
-                            steps_executed
-                        )
+            // Run verification (test script) with test timeout
+            // ALWAYS run tests, even if agent timed out - the agent might have done partial work that passes
+            let (test_passed, test_output) = match self
+                .run_test_script(
+                    task_container.as_ref(),
+                    &task.test_script,
+                    test_timeout_secs,
+                )
+                .await
+            {
+                Ok((passed, output)) => {
+                    // If agent didn't complete, prepend that info to the test output
+                    let full_output = if agent_completed {
+                        output
                     } else {
-                        format!(
-                            "Agent did not complete after {} steps. Stderr:\n{}",
-                            steps_executed,
-                            if agent_stderr.len() > 1000 {
-                                format!("{}... (truncated)", &agent_stderr[..1000])
-                            } else {
-                                agent_stderr.clone()
-                            }
-                        )
+                        let agent_status = if agent_stderr.is_empty() {
+                            format!(
+                                "Agent did not complete after {} steps (no stderr)",
+                                steps_executed
+                            )
+                        } else {
+                            format!(
+                                "Agent did not complete after {} steps. Stderr:\n{}",
+                                steps_executed,
+                                if agent_stderr.len() > 1000 {
+                                    format!("{}... (truncated)", &agent_stderr[..1000])
+                                } else {
+                                    agent_stderr.clone()
+                                }
+                            )
+                        };
+                        format!("{}\n\n--- Test Output ---\n{}", agent_status, output)
                     };
-                    format!("{}\n\n--- Test Output ---\n{}", agent_status, output)
-                };
-                (passed, Some(full_output))
-            }
-            Err(e) => (false, Some(format!("Test error: {}", e))),
+                    (passed, Some(full_output))
+                }
+                Err(e) => (false, Some(format!("Test error: {}", e))),
+            };
+
+            Ok::<_, anyhow::Error>((
+                agent_completed,
+                agent_stderr,
+                steps_executed,
+                timed_out,
+                test_passed,
+                test_output,
+            ))
         };
+
+        // Execute with global timeout
+        let execution_result =
+            tokio::time::timeout(Duration::from_secs(global_timeout_secs), execution_future).await;
+
+        let (agent_completed, agent_stderr, steps_executed, timed_out, test_passed, test_output) =
+            match execution_result {
+                Ok(Ok(result)) => result,
+                Ok(Err(e)) => {
+                    error!("Task execution error: {}", e);
+                    // Force kill container on error
+                    let _ = task_container.stop().await;
+                    let _ = task_container.remove().await;
+                    return Err(e);
+                }
+                Err(_) => {
+                    error!(
+                        "Task {} exceeded global timeout of {}s - force killing container",
+                        task_id, global_timeout_secs
+                    );
+                    // Force kill the container
+                    let _ = task_container.stop().await;
+                    let _ = task_container.remove().await;
+
+                    return Ok(TaskResult {
+                    passed: false,
+                    duration_ms: (global_timeout_secs * 1000) as i64,
+                    error: Some("global_timeout".to_string()),
+                    agent_stderr: Some(format!(
+                        "Task exceeded global timeout of {}s (agent: {}s * 2, test: {}s, buffer: 30s). Container force-killed.",
+                        global_timeout_secs, timeout_secs, test_timeout_secs
+                    )),
+                    test_output: Some("Global timeout - container was force-killed".to_string()),
+                    steps_executed: Some(0),
+                    timed_out: true,
+                });
+                }
+            };
 
         // Force cleanup - always stop and remove container
         if let Err(e) = task_container.stop().await {
