@@ -11,7 +11,7 @@
 //!    c. Increment reassignment_count
 //!    d. Log the reassignment (new validator will pick up via manual poll)
 
-use crate::pg_storage::{PgStorage, StaleAssignment};
+use crate::pg_storage::{AgentNeedingValidators, PgStorage, StaleAssignment};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -42,6 +42,14 @@ pub trait AssignmentStorage: Send + Sync {
         new_validator: &str,
         reason: &str,
     ) -> anyhow::Result<()>;
+
+    async fn get_agents_needing_validators(&self) -> anyhow::Result<Vec<AgentNeedingValidators>>;
+
+    async fn assign_additional_validator(
+        &self,
+        agent_hash: &str,
+        validator_hotkey: &str,
+    ) -> anyhow::Result<()>;
 }
 
 #[async_trait]
@@ -69,6 +77,18 @@ impl AssignmentStorage for PgStorage {
         reason: &str,
     ) -> anyhow::Result<()> {
         PgStorage::reassign_validator(self, agent_hash, old_validator, new_validator, reason).await
+    }
+
+    async fn get_agents_needing_validators(&self) -> anyhow::Result<Vec<AgentNeedingValidators>> {
+        PgStorage::get_agents_needing_validators(self).await
+    }
+
+    async fn assign_additional_validator(
+        &self,
+        agent_hash: &str,
+        validator_hotkey: &str,
+    ) -> anyhow::Result<()> {
+        PgStorage::assign_additional_validator(self, agent_hash, validator_hotkey).await
     }
 }
 
@@ -133,7 +153,97 @@ impl<S: AssignmentStorage> AssignmentMonitor<S> {
             if let Err(e) = self.check_and_reassign_stale().await {
                 error!("Error checking stale assignments: {}", e);
             }
+
+            // Also check for agents that need more validators
+            if let Err(e) = self.check_and_assign_missing_validators().await {
+                error!("Error assigning missing validators: {}", e);
+            }
         }
+    }
+
+    /// Check for agents that need more validators and assign them
+    async fn check_and_assign_missing_validators(&self) -> anyhow::Result<()> {
+        let agents = self.storage.get_agents_needing_validators().await?;
+
+        if agents.is_empty() {
+            return Ok(());
+        }
+
+        info!(
+            "Found {} agents needing additional validators",
+            agents.len()
+        );
+
+        // Fetch all active validators once
+        let all_validators = self.fetch_active_validators().await?;
+        if all_validators.is_empty() {
+            warn!("No active validators available from platform-server");
+            return Ok(());
+        }
+
+        for agent in agents {
+            let short_hash = &agent.agent_hash[..16.min(agent.agent_hash.len())];
+
+            info!(
+                "Agent {} needs {} more validators (has {}/3 active, {} completed)",
+                short_hash,
+                agent.validators_needed,
+                agent.active_validators,
+                agent.validators_completed
+            );
+
+            // Get validators already assigned (including cancelled ones to avoid re-assigning failed validators)
+            let excluded_validators = self
+                .storage
+                .get_validators_assigned_to_agent(&agent.agent_hash)
+                .await
+                .unwrap_or_default();
+
+            // Filter available validators
+            let available: Vec<&String> = all_validators
+                .iter()
+                .filter(|v| !excluded_validators.contains(v))
+                .collect();
+
+            if available.is_empty() {
+                warn!(
+                    "No available validators for agent {} (all {} validators already tried)",
+                    short_hash,
+                    all_validators.len()
+                );
+                continue;
+            }
+
+            // Assign as many validators as needed
+            let validators_to_assign = agent.validators_needed.min(available.len() as i32);
+            for i in 0..validators_to_assign as usize {
+                let new_validator = available[i];
+                let short_validator = &new_validator[..16.min(new_validator.len())];
+
+                match self
+                    .storage
+                    .assign_additional_validator(&agent.agent_hash, new_validator)
+                    .await
+                {
+                    Ok(_) => {
+                        info!(
+                            "Assigned new validator {} to agent {} ({}/3 validators now)",
+                            short_validator,
+                            short_hash,
+                            agent.active_validators + i as i32 + 1
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to assign validator {} to agent {}: {}",
+                            short_validator, short_hash, e
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Check for stale assignments and reassign to new validators

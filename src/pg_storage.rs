@@ -556,6 +556,16 @@ pub struct StaleAssignment {
     pub last_task_at: i64,
 }
 
+/// Agent that needs more validators assigned
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentNeedingValidators {
+    pub agent_hash: String,
+    pub validators_completed: i32,
+    pub active_validators: i32,
+    pub validators_needed: i32,
+    pub reassignment_count: i32,
+}
+
 /// Reassignment history record for audit logging
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReassignmentHistory {
@@ -1891,6 +1901,7 @@ impl PgStorage {
                       AND tl.validator_hotkey = va.validator_hotkey
                 ) task_stats ON true
                 WHERE va.status = 'pending'
+                  AND s.status = 'pending'
                   AND s.compile_status = 'success'
                   AND COALESCE(s.reassignment_count, 0) < $2
                   -- Validator hasn't completed their evaluation yet
@@ -1929,6 +1940,94 @@ impl PgStorage {
             .collect();
 
         Ok(assignments)
+    }
+
+    /// Get agents that need more validators assigned
+    /// Returns agents where:
+    /// 1. Status is pending and compile_status is success
+    /// 2. Number of active (pending) validator assignments < required validators (3)
+    /// 3. Has pending_evaluations with status = 'pending'
+    pub async fn get_agents_needing_validators(&self) -> Result<Vec<AgentNeedingValidators>> {
+        let client = self.pool.get().await?;
+
+        const REQUIRED_VALIDATORS: i32 = 3;
+
+        let rows = client
+            .query(
+                "SELECT 
+                    s.agent_hash,
+                    pe.validators_completed,
+                    (SELECT COUNT(*)::INT FROM validator_assignments va 
+                     WHERE va.agent_hash = s.agent_hash AND va.status = 'pending') as active_validators,
+                    COALESCE(s.reassignment_count, 0) as reassignment_count
+                FROM submissions s
+                JOIN pending_evaluations pe ON pe.agent_hash = s.agent_hash
+                WHERE s.status = 'pending'
+                  AND s.compile_status = 'success'
+                  AND pe.status = 'pending'
+                  AND (SELECT COUNT(*) FROM validator_assignments va 
+                       WHERE va.agent_hash = s.agent_hash AND va.status = 'pending') < $1",
+                &[&REQUIRED_VALIDATORS],
+            )
+            .await?;
+
+        let agents = rows
+            .iter()
+            .map(|r| AgentNeedingValidators {
+                agent_hash: r.get(0),
+                validators_completed: r.get(1),
+                active_validators: r.get(2),
+                validators_needed: REQUIRED_VALIDATORS - r.get::<_, i32>(2),
+                reassignment_count: r.get(3),
+            })
+            .collect();
+
+        Ok(agents)
+    }
+
+    /// Assign a new validator to an agent (for filling missing validator slots)
+    pub async fn assign_additional_validator(
+        &self,
+        agent_hash: &str,
+        validator_hotkey: &str,
+    ) -> Result<()> {
+        let mut client = self.pool.get().await?;
+        let transaction = client.transaction().await?;
+
+        let new_id = uuid::Uuid::new_v4().to_string();
+
+        // Create validator assignment
+        transaction
+            .execute(
+                "INSERT INTO validator_assignments (id, agent_hash, validator_hotkey, status, assigned_at)
+                 VALUES ($1, $2, $3, 'pending', NOW())
+                 ON CONFLICT (agent_hash, validator_hotkey) DO NOTHING",
+                &[&new_id, &agent_hash, &validator_hotkey],
+            )
+            .await?;
+
+        // Assign unassigned tasks to this validator
+        // Get tasks that don't have a validator assigned
+        transaction
+            .execute(
+                "UPDATE evaluation_tasks 
+                 SET validator_hotkey = $2
+                 WHERE agent_hash = $1 
+                   AND validator_hotkey IS NULL",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?;
+
+        transaction.commit().await?;
+
+        let short_hash = &agent_hash[..16.min(agent_hash.len())];
+        let short_validator = &validator_hotkey[..16.min(validator_hotkey.len())];
+        info!(
+            "Assigned additional validator {} to agent {}",
+            short_validator, short_hash
+        );
+
+        Ok(())
     }
 
     /// Reassign an agent from one validator to another
@@ -2426,6 +2525,15 @@ impl PgStorage {
             )
             .await?;
 
+        // Also mark the validator assignment as completed
+        transaction
+            .execute(
+                "UPDATE validator_assignments SET status = 'completed' 
+             WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&eval.agent_hash, &eval.validator_hotkey],
+            )
+            .await?;
+
         // Only increment counter if this is a NEW submission (not an update)
         let new_completed = if !already_submitted {
             transaction
@@ -2577,6 +2685,15 @@ impl PgStorage {
         transaction
             .execute(
                 "UPDATE validator_claims SET status = 'completed' 
+                 WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?;
+
+        // Also mark the validator assignment as completed
+        transaction
+            .execute(
+                "UPDATE validator_assignments SET status = 'completed' 
                  WHERE agent_hash = $1 AND validator_hotkey = $2",
                 &[&agent_hash, &validator_hotkey],
             )
@@ -3107,8 +3224,8 @@ impl PgStorage {
             )
             .await?;
 
-        // Minimum validators required for consensus (absolute minimum is 2)
-        const MIN_VALIDATORS_FOR_CONSENSUS: i32 = 2;
+        // Required validators for consensus - must have exactly 3
+        const REQUIRED_VALIDATORS: i32 = 3;
 
         let mut expired_count = 0u64;
         for row in rows {
@@ -3116,9 +3233,8 @@ impl PgStorage {
             let validators_completed: i32 = row.get(1);
             let total_validators: i32 = row.get(2);
 
-            // When window expires, calculate consensus if we have at least MIN_VALIDATORS_FOR_CONSENSUS
-            // Don't require ALL validators to complete - some may have been stuck/reassigned
-            if validators_completed >= MIN_VALIDATORS_FOR_CONSENSUS {
+            // Only calculate consensus when we have exactly REQUIRED_VALIDATORS (3)
+            if validators_completed >= REQUIRED_VALIDATORS {
                 match self.calculate_and_store_consensus(&agent_hash).await {
                     Ok(score) => {
                         info!(
@@ -3139,28 +3255,24 @@ impl PgStorage {
                     }
                 }
             } else {
-                // Not enough validators - mark as expired (incomplete)
+                // Not enough validators yet - extend the window by 24h to allow more validators to be assigned
+                // Don't mark as expired - keep trying until we get 3 validators
                 info!(
-                    "Agent {} expired with insufficient evaluations ({}/{} validators, need at least {})",
+                    "Agent {} has only {}/{} validators, extending window by 24h to find more validators",
                     &agent_hash[..16],
                     validators_completed,
-                    total_validators,
-                    MIN_VALIDATORS_FOR_CONSENSUS
+                    REQUIRED_VALIDATORS
                 );
-                // Update both pending_evaluations and submissions status
                 client
                     .execute(
-                        "UPDATE pending_evaluations SET status = 'expired' WHERE agent_hash = $1",
+                        "UPDATE pending_evaluations 
+                         SET window_expires_at = NOW() + INTERVAL '24 hours',
+                             status = 'pending'
+                         WHERE agent_hash = $1",
                         &[&agent_hash],
                     )
                     .await?;
-                client
-                    .execute(
-                        "UPDATE submissions SET status = 'expired' WHERE agent_hash = $1 AND status = 'pending'",
-                        &[&agent_hash],
-                    )
-                    .await?;
-                expired_count += 1;
+                // Don't count as expired - we're extending it
             }
         }
 

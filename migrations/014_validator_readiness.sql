@@ -22,6 +22,13 @@ ALTER TABLE evaluation_tasks ADD COLUMN IF NOT EXISTS task_index INTEGER DEFAULT
 -- Index for validator-specific task queries
 CREATE INDEX IF NOT EXISTS idx_eval_tasks_validator ON evaluation_tasks(agent_hash, validator_hotkey);
 
--- Drop old unique constraint and add new one including validator
-DROP INDEX IF EXISTS evaluation_tasks_agent_hash_task_id_key;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_tasks_unique ON evaluation_tasks(agent_hash, validator_hotkey, task_id);
+-- Create partial unique index for assigned tasks (validator_hotkey NOT NULL)
+-- This allows same task_id to exist for different validators per agent
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_tasks_unique 
+ON evaluation_tasks(agent_hash, validator_hotkey, task_id) 
+WHERE validator_hotkey IS NOT NULL;
+
+-- Keep unique constraint for unassigned tasks (one per agent per task_id)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_tasks_unassigned 
+ON evaluation_tasks(agent_hash, task_id) 
+WHERE validator_hotkey IS NULL;
