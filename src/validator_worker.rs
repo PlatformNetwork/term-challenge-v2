@@ -1167,6 +1167,27 @@ impl ValidatorWorker {
             }
         };
 
+        // Kill agent process before running tests if it didn't complete or timed out
+        // This ensures the agent doesn't interfere with test execution or consume resources
+        if !agent_completed || timed_out {
+            info!(
+                "Killing agent process before running tests (task={}, completed={}, timed_out={})",
+                task_id, agent_completed, timed_out
+            );
+            let kill_result = task_container
+                .exec(&["pkill", "-9", "-f", "/agent/agent"])
+                .await;
+            match kill_result {
+                Ok(_) => debug!("Agent process killed successfully"),
+                Err(e) => debug!(
+                    "Failed to kill agent process (may already be stopped): {}",
+                    e
+                ),
+            }
+            // Give the process a moment to fully terminate
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
         // Run verification (test script) with test timeout
         // ALWAYS run tests, even if agent timed out - the agent might have done partial work that passes
         let test_timeout_secs = task.config.test_timeout_secs as u64;
