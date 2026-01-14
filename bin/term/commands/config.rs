@@ -117,3 +117,238 @@ async fn fetch_config(platform_url: &str) -> Result<ChallengeConfig> {
         max_total_cost_usd: data["max_total_cost_usd"].as_f64().unwrap_or(0.0),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_challenge_id_constant() {
+        assert_eq!(CHALLENGE_ID, "term-challenge");
+    }
+
+    #[test]
+    fn test_challenge_config_from_json_complete() {
+        let json_data = serde_json::json!({
+            "challenge_id": "term-challenge",
+            "dataset": "terminal-bench-v2",
+            "dataset_version": "1.0.0",
+            "test_mode": true,
+            "min_stake_tao": 100,
+            "tasks_per_evaluation": 50,
+            "max_steps_per_task": 100,
+            "max_concurrent_tasks": 5,
+            "max_cost_per_task_usd": 0.5,
+            "max_total_cost_usd": 25.0
+        });
+
+        let config = ChallengeConfig {
+            challenge_id: json_data["challenge_id"].as_str().unwrap().to_string(),
+            dataset: json_data["dataset"].as_str().unwrap().to_string(),
+            dataset_version: json_data["dataset_version"].as_str().unwrap().to_string(),
+            test_mode: json_data["test_mode"].as_bool().unwrap(),
+            min_stake_tao: json_data["min_stake_tao"].as_u64().unwrap(),
+            tasks_per_evaluation: json_data["tasks_per_evaluation"].as_u64().unwrap() as u32,
+            max_steps_per_task: json_data["max_steps_per_task"].as_u64().unwrap() as u32,
+            max_concurrent_tasks: json_data["max_concurrent_tasks"].as_u64().unwrap() as u32,
+            max_cost_per_task_usd: json_data["max_cost_per_task_usd"].as_f64().unwrap(),
+            max_total_cost_usd: json_data["max_total_cost_usd"].as_f64().unwrap(),
+        };
+
+        assert_eq!(config.challenge_id, "term-challenge");
+        assert_eq!(config.dataset, "terminal-bench-v2");
+        assert_eq!(config.dataset_version, "1.0.0");
+        assert!(config.test_mode);
+        assert_eq!(config.min_stake_tao, 100);
+        assert_eq!(config.tasks_per_evaluation, 50);
+        assert_eq!(config.max_steps_per_task, 100);
+        assert_eq!(config.max_concurrent_tasks, 5);
+        assert_eq!(config.max_cost_per_task_usd, 0.5);
+        assert_eq!(config.max_total_cost_usd, 25.0);
+    }
+
+    #[test]
+    fn test_challenge_config_defaults() {
+        let json_data = serde_json::json!({});
+
+        let config = ChallengeConfig {
+            challenge_id: json_data["challenge_id"]
+                .as_str()
+                .unwrap_or(CHALLENGE_ID)
+                .to_string(),
+            dataset: json_data["dataset"]
+                .as_str()
+                .unwrap_or("terminal-bench")
+                .to_string(),
+            dataset_version: json_data["dataset_version"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string(),
+            test_mode: json_data["test_mode"].as_bool().unwrap_or(false),
+            min_stake_tao: json_data["min_stake_tao"].as_u64().unwrap_or(0),
+            tasks_per_evaluation: json_data["tasks_per_evaluation"].as_u64().unwrap_or(0) as u32,
+            max_steps_per_task: json_data["max_steps_per_task"].as_u64().unwrap_or(0) as u32,
+            max_concurrent_tasks: json_data["max_concurrent_tasks"].as_u64().unwrap_or(0) as u32,
+            max_cost_per_task_usd: json_data["max_cost_per_task_usd"].as_f64().unwrap_or(0.0),
+            max_total_cost_usd: json_data["max_total_cost_usd"].as_f64().unwrap_or(0.0),
+        };
+
+        assert_eq!(config.challenge_id, "term-challenge");
+        assert_eq!(config.dataset, "terminal-bench");
+        assert_eq!(config.dataset_version, "unknown");
+        assert!(!config.test_mode);
+        assert_eq!(config.min_stake_tao, 0);
+        assert_eq!(config.tasks_per_evaluation, 0);
+        assert_eq!(config.max_steps_per_task, 0);
+        assert_eq!(config.max_concurrent_tasks, 0);
+        assert_eq!(config.max_cost_per_task_usd, 0.0);
+        assert_eq!(config.max_total_cost_usd, 0.0);
+    }
+
+    #[test]
+    fn test_challenge_config_partial_data() {
+        let json_data = serde_json::json!({
+            "challenge_id": "custom-challenge",
+            "min_stake_tao": 500,
+            "test_mode": true
+        });
+
+        let config = ChallengeConfig {
+            challenge_id: json_data["challenge_id"]
+                .as_str()
+                .unwrap_or(CHALLENGE_ID)
+                .to_string(),
+            dataset: json_data["dataset"]
+                .as_str()
+                .unwrap_or("terminal-bench")
+                .to_string(),
+            dataset_version: json_data["dataset_version"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string(),
+            test_mode: json_data["test_mode"].as_bool().unwrap_or(false),
+            min_stake_tao: json_data["min_stake_tao"].as_u64().unwrap_or(0),
+            tasks_per_evaluation: json_data["tasks_per_evaluation"].as_u64().unwrap_or(0) as u32,
+            max_steps_per_task: json_data["max_steps_per_task"].as_u64().unwrap_or(0) as u32,
+            max_concurrent_tasks: json_data["max_concurrent_tasks"].as_u64().unwrap_or(0) as u32,
+            max_cost_per_task_usd: json_data["max_cost_per_task_usd"].as_f64().unwrap_or(0.0),
+            max_total_cost_usd: json_data["max_total_cost_usd"].as_f64().unwrap_or(0.0),
+        };
+
+        assert_eq!(config.challenge_id, "custom-challenge");
+        assert_eq!(config.dataset, "terminal-bench");
+        assert_eq!(config.dataset_version, "unknown");
+        assert!(config.test_mode);
+        assert_eq!(config.min_stake_tao, 500);
+    }
+
+    #[test]
+    fn test_challenge_config_test_mode_false() {
+        let json_data = serde_json::json!({
+            "test_mode": false
+        });
+
+        let config = ChallengeConfig {
+            challenge_id: CHALLENGE_ID.to_string(),
+            dataset: "terminal-bench".to_string(),
+            dataset_version: "unknown".to_string(),
+            test_mode: json_data["test_mode"].as_bool().unwrap_or(true),
+            min_stake_tao: 0,
+            tasks_per_evaluation: 0,
+            max_steps_per_task: 0,
+            max_concurrent_tasks: 0,
+            max_cost_per_task_usd: 0.0,
+            max_total_cost_usd: 0.0,
+        };
+
+        assert!(!config.test_mode);
+    }
+
+    #[test]
+    fn test_challenge_config_large_numbers() {
+        let json_data = serde_json::json!({
+            "min_stake_tao": 1000000,
+            "tasks_per_evaluation": 10000,
+            "max_steps_per_task": 5000,
+            "max_concurrent_tasks": 100,
+            "max_cost_per_task_usd": 100.0,
+            "max_total_cost_usd": 10000.0
+        });
+
+        let config = ChallengeConfig {
+            challenge_id: CHALLENGE_ID.to_string(),
+            dataset: "terminal-bench".to_string(),
+            dataset_version: "unknown".to_string(),
+            test_mode: false,
+            min_stake_tao: json_data["min_stake_tao"].as_u64().unwrap(),
+            tasks_per_evaluation: json_data["tasks_per_evaluation"].as_u64().unwrap() as u32,
+            max_steps_per_task: json_data["max_steps_per_task"].as_u64().unwrap() as u32,
+            max_concurrent_tasks: json_data["max_concurrent_tasks"].as_u64().unwrap() as u32,
+            max_cost_per_task_usd: json_data["max_cost_per_task_usd"].as_f64().unwrap(),
+            max_total_cost_usd: json_data["max_total_cost_usd"].as_f64().unwrap(),
+        };
+
+        assert_eq!(config.min_stake_tao, 1000000);
+        assert_eq!(config.tasks_per_evaluation, 10000);
+        assert_eq!(config.max_steps_per_task, 5000);
+        assert_eq!(config.max_concurrent_tasks, 100);
+        assert_eq!(config.max_cost_per_task_usd, 100.0);
+        assert_eq!(config.max_total_cost_usd, 10000.0);
+    }
+
+    #[test]
+    fn test_challenge_config_zero_values() {
+        let json_data = serde_json::json!({
+            "min_stake_tao": 0,
+            "tasks_per_evaluation": 0,
+            "max_steps_per_task": 0,
+            "max_concurrent_tasks": 0,
+            "max_cost_per_task_usd": 0.0,
+            "max_total_cost_usd": 0.0
+        });
+
+        let config = ChallengeConfig {
+            challenge_id: CHALLENGE_ID.to_string(),
+            dataset: "terminal-bench".to_string(),
+            dataset_version: "unknown".to_string(),
+            test_mode: false,
+            min_stake_tao: json_data["min_stake_tao"].as_u64().unwrap(),
+            tasks_per_evaluation: json_data["tasks_per_evaluation"].as_u64().unwrap() as u32,
+            max_steps_per_task: json_data["max_steps_per_task"].as_u64().unwrap() as u32,
+            max_concurrent_tasks: json_data["max_concurrent_tasks"].as_u64().unwrap() as u32,
+            max_cost_per_task_usd: json_data["max_cost_per_task_usd"].as_f64().unwrap(),
+            max_total_cost_usd: json_data["max_total_cost_usd"].as_f64().unwrap(),
+        };
+
+        assert_eq!(config.min_stake_tao, 0);
+        assert_eq!(config.tasks_per_evaluation, 0);
+        assert_eq!(config.max_steps_per_task, 0);
+        assert_eq!(config.max_concurrent_tasks, 0);
+        assert_eq!(config.max_cost_per_task_usd, 0.0);
+        assert_eq!(config.max_total_cost_usd, 0.0);
+    }
+
+    #[test]
+    fn test_challenge_config_fractional_costs() {
+        let json_data = serde_json::json!({
+            "max_cost_per_task_usd": 0.123456,
+            "max_total_cost_usd": 12.3456789
+        });
+
+        let config = ChallengeConfig {
+            challenge_id: CHALLENGE_ID.to_string(),
+            dataset: "terminal-bench".to_string(),
+            dataset_version: "unknown".to_string(),
+            test_mode: false,
+            min_stake_tao: 0,
+            tasks_per_evaluation: 0,
+            max_steps_per_task: 0,
+            max_concurrent_tasks: 0,
+            max_cost_per_task_usd: json_data["max_cost_per_task_usd"].as_f64().unwrap(),
+            max_total_cost_usd: json_data["max_total_cost_usd"].as_f64().unwrap(),
+        };
+
+        assert!((config.max_cost_per_task_usd - 0.123456).abs() < 1e-6);
+        assert!((config.max_total_cost_usd - 12.3456789).abs() < 1e-6);
+    }
+}

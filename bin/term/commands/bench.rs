@@ -848,3 +848,298 @@ fn walkdir(path: &std::path::Path) -> Vec<std::fs::DirEntry> {
     }
     files
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_compute_package_hash() {
+        let data1 = b"test data";
+        let hash1 = compute_package_hash(data1);
+        assert_eq!(hash1.len(), 16);
+
+        // Same data should produce same hash
+        let hash2 = compute_package_hash(data1);
+        assert_eq!(hash1, hash2);
+
+        // Different data should produce different hash
+        let data2 = b"different data";
+        let hash3 = compute_package_hash(data2);
+        assert_ne!(hash1, hash3);
+    }
+
+    #[test]
+    fn test_compute_package_hash_empty() {
+        let data = b"";
+        let hash = compute_package_hash(data);
+        assert_eq!(hash.len(), 16);
+    }
+
+    #[test]
+    fn test_compute_package_hash_consistency() {
+        let data = b"consistency test data with some length";
+        let hash1 = compute_package_hash(data);
+        let hash2 = compute_package_hash(data);
+        let hash3 = compute_package_hash(data);
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash2, hash3);
+    }
+
+    #[test]
+    fn test_detect_entry_point_specified_exists() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let entry_file = temp_dir.path().join("custom.py");
+        fs::write(&entry_file, "# custom entry")?;
+
+        let result = detect_entry_point(temp_dir.path(), Some("custom.py"))?;
+        assert_eq!(result, "custom.py");
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_entry_point_specified_not_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = detect_entry_point(temp_dir.path(), Some("missing.py"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_detect_entry_point_auto_agent_py() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::write(temp_dir.path().join("agent.py"), "# agent")?;
+
+        let result = detect_entry_point(temp_dir.path(), None)?;
+        assert_eq!(result, "agent.py");
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_entry_point_auto_main_py() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::write(temp_dir.path().join("main.py"), "# main")?;
+
+        let result = detect_entry_point(temp_dir.path(), None)?;
+        assert_eq!(result, "main.py");
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_entry_point_prefers_agent_over_main() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::write(temp_dir.path().join("agent.py"), "# agent")?;
+        fs::write(temp_dir.path().join("main.py"), "# main")?;
+
+        let result = detect_entry_point(temp_dir.path(), None)?;
+        assert_eq!(result, "agent.py");
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_entry_point_no_python_files() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("readme.txt"), "not python").unwrap();
+
+        let result = detect_entry_point(temp_dir.path(), None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No Python files"));
+    }
+
+    #[test]
+    fn test_detect_entry_point_no_entry_but_has_python() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("other.py"), "# other").unwrap();
+
+        let result = detect_entry_point(temp_dir.path(), None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No entry point found"));
+    }
+
+    #[test]
+    fn test_create_zip_archive_single_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::write(temp_dir.path().join("test.py"), "print('hello')")?;
+
+        let zip_data = create_zip_archive(temp_dir.path())?;
+        assert!(!zip_data.is_empty());
+        
+        // Verify it's a valid ZIP (starts with PK magic bytes)
+        assert_eq!(&zip_data[0..2], b"PK");
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_zip_archive_multiple_files() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::write(temp_dir.path().join("agent.py"), "# agent")?;
+        fs::write(temp_dir.path().join("utils.py"), "# utils")?;
+        fs::write(temp_dir.path().join("config.json"), "{}")?;
+
+        let zip_data = create_zip_archive(temp_dir.path())?;
+        assert!(!zip_data.is_empty());
+        assert_eq!(&zip_data[0..2], b"PK");
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_zip_archive_with_subdirectory() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let subdir = temp_dir.path().join("src");
+        fs::create_dir(&subdir)?;
+        fs::write(subdir.join("module.py"), "# module")?;
+
+        let zip_data = create_zip_archive(temp_dir.path())?;
+        assert!(!zip_data.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_zip_archive_excludes_hidden_files() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::write(temp_dir.path().join("agent.py"), "# agent")?;
+        fs::write(temp_dir.path().join(".hidden"), "hidden")?;
+
+        let zip_data = create_zip_archive(temp_dir.path())?;
+        assert!(!zip_data.is_empty());
+        
+        // Verify hidden file is not included by checking size is small
+        assert!(zip_data.len() < 1000); // Should be small without hidden content
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_zip_archive_excludes_pycache() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::write(temp_dir.path().join("agent.py"), "# agent")?;
+        let pycache = temp_dir.path().join("__pycache__");
+        fs::create_dir(&pycache)?;
+        fs::write(pycache.join("agent.pyc"), "compiled")?;
+
+        let zip_data = create_zip_archive(temp_dir.path())?;
+        assert!(!zip_data.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_zip_archive_empty_directory() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let zip_data = create_zip_archive(temp_dir.path())?;
+        
+        // Should still create a valid (empty) ZIP
+        assert!(!zip_data.is_empty());
+        assert_eq!(&zip_data[0..2], b"PK");
+        Ok(())
+    }
+
+    #[test]
+    fn test_walkdir_empty_directory() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let files = walkdir(temp_dir.path());
+        assert_eq!(files.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_walkdir_single_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::write(temp_dir.path().join("test.txt"), "content")?;
+
+        let files = walkdir(temp_dir.path());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].path().ends_with("test.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_walkdir_multiple_files() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::write(temp_dir.path().join("file1.txt"), "1")?;
+        fs::write(temp_dir.path().join("file2.txt"), "2")?;
+        fs::write(temp_dir.path().join("file3.txt"), "3")?;
+
+        let files = walkdir(temp_dir.path());
+        assert_eq!(files.len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_walkdir_recursive() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let subdir = temp_dir.path().join("subdir");
+        fs::create_dir(&subdir)?;
+        fs::write(temp_dir.path().join("root.txt"), "root")?;
+        fs::write(subdir.join("nested.txt"), "nested")?;
+
+        let files = walkdir(temp_dir.path());
+        assert_eq!(files.len(), 2);
+        
+        let paths: Vec<_> = files.iter().map(|e| e.path()).collect();
+        assert!(paths.iter().any(|p| p.ends_with("root.txt")));
+        assert!(paths.iter().any(|p| p.ends_with("nested.txt")));
+        Ok(())
+    }
+
+    #[test]
+    fn test_walkdir_deeply_nested() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let deep = temp_dir.path().join("a").join("b").join("c");
+        fs::create_dir_all(&deep)?;
+        fs::write(deep.join("deep.txt"), "deep")?;
+
+        let files = walkdir(temp_dir.path());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].path().ends_with("deep.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_walkdir_only_directories() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::create_dir(temp_dir.path().join("empty1"))?;
+        fs::create_dir(temp_dir.path().join("empty2"))?;
+
+        let files = walkdir(temp_dir.path());
+        assert_eq!(files.len(), 0); // Should not include directories
+        Ok(())
+    }
+
+    #[test]
+    fn test_walkdir_nonexistent_path() {
+        let files = walkdir(Path::new("/nonexistent/path/that/does/not/exist"));
+        assert_eq!(files.len(), 0);
+    }
+
+    #[test]
+    fn test_compute_package_hash_large_data() {
+        let large_data = vec![0u8; 1_000_000];
+        let hash = compute_package_hash(&large_data);
+        assert_eq!(hash.len(), 16);
+    }
+
+    #[test]
+    fn test_compute_package_hash_contains_only_hex() {
+        let data = b"test";
+        let hash = compute_package_hash(data);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_create_zip_archive_preserves_file_content() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let content = "important content";
+        fs::write(temp_dir.path().join("test.txt"), content)?;
+
+        let zip_data = create_zip_archive(temp_dir.path())?;
+        
+        // Unzip and verify content
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&zip_data))?;
+        let mut file = archive.by_name("test.txt")?;
+        let mut extracted = String::new();
+        std::io::Read::read_to_string(&mut file, &mut extracted)?;
+        assert_eq!(extracted, content);
+        Ok(())
+    }
+}

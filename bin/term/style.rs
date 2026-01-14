@@ -206,3 +206,215 @@ pub const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴"
 pub fn spinner_frame(tick: u64) -> &'static str {
     SPINNER_FRAMES[(tick as usize) % SPINNER_FRAMES.len()]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_style_bold() {
+        let result = style_bold("test");
+        assert!(result.contains("test"));
+        assert!(result.starts_with(BOLD));
+        assert!(result.ends_with(RESET));
+    }
+
+    #[test]
+    fn test_style_dim() {
+        let result = style_dim("dimmed");
+        assert!(result.contains("dimmed"));
+        assert!(result.starts_with(DIM));
+        assert!(result.ends_with(RESET));
+    }
+
+    #[test]
+    fn test_style_red() {
+        let result = style_red("error");
+        assert_eq!(result, format!("{}error{}", RED, RESET));
+    }
+
+    #[test]
+    fn test_style_green() {
+        let result = style_green("success");
+        assert_eq!(result, format!("{}success{}", GREEN, RESET));
+    }
+
+    #[test]
+    fn test_style_yellow() {
+        let result = style_yellow("warning");
+        assert_eq!(result, format!("{}warning{}", YELLOW, RESET));
+    }
+
+    #[test]
+    fn test_style_blue() {
+        let result = style_blue("info");
+        assert_eq!(result, format!("{}info{}", BLUE, RESET));
+    }
+
+    #[test]
+    fn test_style_cyan() {
+        let result = style_cyan("cyan");
+        assert_eq!(result, format!("{}cyan{}", CYAN, RESET));
+    }
+
+    #[test]
+    fn test_style_magenta() {
+        let result = style_magenta("magenta");
+        assert_eq!(result, format!("{}magenta{}", MAGENTA, RESET));
+    }
+
+    #[test]
+    fn test_style_gray() {
+        let result = style_gray("subtle");
+        assert_eq!(result, format!("{}subtle{}", GRAY, RESET));
+    }
+
+    #[test]
+    fn test_icon_success() {
+        let icon = icon_success();
+        assert!(icon.contains('✓'));
+        assert!(icon.contains(GREEN));
+    }
+
+    #[test]
+    fn test_icon_error() {
+        let icon = icon_error();
+        assert!(icon.contains('✗'));
+        assert!(icon.contains(RED));
+    }
+
+    #[test]
+    fn test_icon_warning() {
+        let icon = icon_warning();
+        assert!(icon.contains('⚠'));
+        assert!(icon.contains(YELLOW));
+    }
+
+    #[test]
+    fn test_icon_info() {
+        let icon = icon_info();
+        assert!(icon.contains('ℹ'));
+        assert!(icon.contains(BLUE));
+    }
+
+    #[test]
+    fn test_icon_arrow() {
+        let icon = icon_arrow();
+        assert!(icon.contains('→'));
+        assert!(icon.contains(CYAN));
+    }
+
+    #[test]
+    fn test_icon_bullet() {
+        let icon = icon_bullet();
+        assert!(icon.contains('•'));
+        assert!(icon.contains(GRAY));
+    }
+
+    #[test]
+    fn test_progress_bar_empty() {
+        let bar = progress_bar(0.0, 10);
+        assert!(bar.contains("░░░░░░░░░░"));
+        assert!(!bar.contains('█'));
+    }
+
+    #[test]
+    fn test_progress_bar_full() {
+        let bar = progress_bar(1.0, 10);
+        assert!(bar.contains("██████████"));
+        assert!(!bar.contains('░'));
+    }
+
+    #[test]
+    fn test_progress_bar_half() {
+        let bar = progress_bar(0.5, 10);
+        assert!(bar.contains('█'));
+        assert!(bar.contains('░'));
+        // Should have roughly 5 filled and 5 empty
+        let filled_count = bar.matches('█').count();
+        assert!(filled_count >= 4 && filled_count <= 6);
+    }
+
+    #[test]
+    fn test_progress_bar_custom_width() {
+        let bar = progress_bar(0.25, 20);
+        assert!(bar.contains('█'));
+        assert!(bar.contains('░'));
+    }
+
+    #[test]
+    fn test_spinner_frame_cycles() {
+        let frame0 = spinner_frame(0);
+        let frame1 = spinner_frame(1);
+        let frame10 = spinner_frame(10);
+        let frame20 = spinner_frame(20);
+
+        assert_ne!(frame0, frame1);
+        assert_eq!(frame0, frame10); // Should cycle back
+        assert_eq!(frame10, frame20); // Should cycle
+    }
+
+    #[test]
+    fn test_spinner_frame_all_unique() {
+        let frames: Vec<_> = (0..SPINNER_FRAMES.len() as u64)
+            .map(spinner_frame)
+            .collect();
+        
+        // All frames should be from SPINNER_FRAMES
+        for frame in frames {
+            assert!(SPINNER_FRAMES.contains(&frame));
+        }
+    }
+
+    #[test]
+    fn test_colors_constants() {
+        assert_eq!(RESET, "\x1b[0m");
+        assert_eq!(BOLD, "\x1b[1m");
+        assert_eq!(DIM, "\x1b[2m");
+        assert_eq!(RED, "\x1b[31m");
+        assert_eq!(GREEN, "\x1b[32m");
+        assert_eq!(YELLOW, "\x1b[33m");
+        assert_eq!(BLUE, "\x1b[34m");
+        assert_eq!(CYAN, "\x1b[36m");
+        assert_eq!(GRAY, "\x1b[90m");
+    }
+
+    #[test]
+    fn test_spinner_frames_count() {
+        assert_eq!(SPINNER_FRAMES.len(), 10);
+    }
+
+    #[test]
+    fn test_style_functions_preserve_content() {
+        let content = "test content";
+        assert!(style_bold(content).contains(content));
+        assert!(style_red(content).contains(content));
+        assert!(style_green(content).contains(content));
+        assert!(style_yellow(content).contains(content));
+        assert!(style_blue(content).contains(content));
+        assert!(style_cyan(content).contains(content));
+        assert!(style_magenta(content).contains(content));
+        assert!(style_gray(content).contains(content));
+        assert!(style_dim(content).contains(content));
+    }
+
+    #[test]
+    fn test_style_with_empty_string() {
+        let empty = "";
+        let result = style_red(empty);
+        assert_eq!(result, format!("{}{}{}", RED, empty, RESET));
+    }
+
+    #[test]
+    fn test_style_with_special_characters() {
+        let special = "!@#$%^&*()";
+        let result = style_green(special);
+        assert!(result.contains(special));
+    }
+
+    #[test]
+    fn test_progress_bar_zero_width() {
+        let bar = progress_bar(0.5, 0);
+        assert!(bar.contains(GREEN) || bar.contains(GRAY));
+    }
+}

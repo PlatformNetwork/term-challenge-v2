@@ -105,3 +105,151 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_args_default_values() {
+        let args = Args::parse_from(&["term-server"]);
+        assert_eq!(args.platform_url, "https://chain.platform.network");
+        assert_eq!(args.challenge_id, "term-challenge");
+        assert_eq!(args.host, "0.0.0.0");
+        assert_eq!(args.port, 8081);
+        assert!(!args.test);
+        assert!(args.config.is_none());
+    }
+
+    #[test]
+    fn test_args_custom_platform_url() {
+        let args = Args::parse_from(&[
+            "term-server",
+            "--platform-url",
+            "https://custom.platform.example.com",
+        ]);
+        assert_eq!(args.platform_url, "https://custom.platform.example.com");
+    }
+
+    #[test]
+    fn test_args_custom_challenge_id() {
+        let args = Args::parse_from(&["term-server", "--challenge-id", "custom-challenge"]);
+        assert_eq!(args.challenge_id, "custom-challenge");
+    }
+
+    #[test]
+    fn test_args_custom_host() {
+        let args = Args::parse_from(&["term-server", "--host", "127.0.0.1"]);
+        assert_eq!(args.host, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_args_custom_port() {
+        let args = Args::parse_from(&["term-server", "--port", "3000"]);
+        assert_eq!(args.port, 3000);
+    }
+
+    #[test]
+    fn test_args_custom_port_short() {
+        let args = Args::parse_from(&["term-server", "-p", "9090"]);
+        assert_eq!(args.port, 9090);
+    }
+
+    #[test]
+    fn test_args_test_mode_flag() {
+        let args = Args::parse_from(&["term-server", "--test"]);
+        assert!(args.test);
+    }
+
+    #[test]
+    fn test_args_config_path() {
+        let args = Args::parse_from(&["term-server", "--config", "/path/to/config.json"]);
+        assert_eq!(args.config, Some("/path/to/config.json".to_string()));
+    }
+
+    #[test]
+    fn test_args_all_custom() {
+        let args = Args::parse_from(&[
+            "term-server",
+            "--platform-url",
+            "https://test.example.com",
+            "--challenge-id",
+            "test-challenge",
+            "--host",
+            "localhost",
+            "--port",
+            "8888",
+            "--config",
+            "config.json",
+            "--test",
+        ]);
+
+        assert_eq!(args.platform_url, "https://test.example.com");
+        assert_eq!(args.challenge_id, "test-challenge");
+        assert_eq!(args.host, "localhost");
+        assert_eq!(args.port, 8888);
+        assert_eq!(args.config, Some("config.json".to_string()));
+        assert!(args.test);
+    }
+
+    #[test]
+    fn test_args_test_mode_false_by_default() {
+        let args = Args::parse_from(&["term-server"]);
+        assert!(!args.test);
+    }
+
+    #[test]
+    fn test_args_port_range_min() {
+        let args = Args::parse_from(&["term-server", "--port", "1"]);
+        assert_eq!(args.port, 1);
+    }
+
+    #[test]
+    fn test_args_port_range_max() {
+        let args = Args::parse_from(&["term-server", "--port", "65535"]);
+        assert_eq!(args.port, 65535);
+    }
+
+    #[test]
+    fn test_args_host_localhost() {
+        let args = Args::parse_from(&["term-server", "--host", "localhost"]);
+        assert_eq!(args.host, "localhost");
+    }
+
+    #[test]
+    fn test_args_challenge_id_with_hyphen() {
+        let args = Args::parse_from(&["term-server", "--challenge-id", "multi-word-challenge"]);
+        assert_eq!(args.challenge_id, "multi-word-challenge");
+    }
+
+    #[test]
+    fn test_args_config_none_by_default() {
+        let args = Args::parse_from(&["term-server"]);
+        assert!(args.config.is_none());
+    }
+
+    #[test]
+    fn test_args_platform_url_http() {
+        let args = Args::parse_from(&["term-server", "--platform-url", "http://local.test"]);
+        assert_eq!(args.platform_url, "http://local.test");
+    }
+
+    #[test]
+    fn test_args_platform_url_with_port() {
+        let args = Args::parse_from(&[
+            "term-server",
+            "--platform-url",
+            "https://platform.example.com:8443",
+        ]);
+        assert_eq!(args.platform_url, "https://platform.example.com:8443");
+    }
+
+    #[test]
+    fn test_args_debug_trait() {
+        let args = Args::parse_from(&["term-server"]);
+        let debug_str = format!("{:?}", args);
+        assert!(debug_str.contains("Args"));
+        assert!(debug_str.contains("platform_url"));
+    }
+}
+
