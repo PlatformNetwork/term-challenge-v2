@@ -643,11 +643,11 @@ pub async fn get_agent_code(
         ));
     }
 
-    // 3. Check visibility - time-based (48h)
+    // 3. Check visibility - time-based (24h)
     // Note: manually_validated does NOT bypass this - it only affects leaderboard eligibility
     let now = chrono::Utc::now().timestamp();
     let hours_since = (now - submission.created_at) as f64 / 3600.0;
-    const VISIBILITY_HOURS: f64 = 48.0;
+    const VISIBILITY_HOURS: f64 = 24.0;
 
     if hours_since < VISIBILITY_HOURS {
         let hours_remaining = VISIBILITY_HOURS - hours_since;
