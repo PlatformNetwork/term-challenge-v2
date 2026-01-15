@@ -1299,29 +1299,31 @@ class LLM:
                 # OpenAI format: {"type": "function", "function": {"name": ..., "arguments": ...}}
                 if tc.get("type") == "function":
                     func = tc.get("function", {})
+                    raw_args = func.get("arguments", "{}")
                     try:
-                        args = json.loads(func.get("arguments", "{}"))
+                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                     except (json.JSONDecodeError, TypeError):
-                        args = func.get("arguments", {})
-                        if isinstance(args, str):
-                            args = {}
+                        args = {} if isinstance(raw_args, str) else raw_args
                     function_calls.append(FunctionCall(
                         name=func.get("name", ""),
                         arguments=args,
                         id=tc.get("id"),
+                        raw_arguments=raw_args if isinstance(raw_args, str) else None,
                     ))
                 # Direct format: {"name": ..., "arguments": ...}
                 elif tc.get("name"):
+                    raw_args = tc.get("arguments", {})
                     try:
-                        args = tc.get("arguments", {})
+                        args = raw_args
                         if isinstance(args, str):
                             args = json.loads(args)
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     function_calls.append(FunctionCall(
                         name=tc.get("name", ""),
-                        arguments=args,
+                        arguments=args if isinstance(args, dict) else {},
                         id=tc.get("id"),
+                        raw_arguments=raw_args if isinstance(raw_args, str) else None,
                     ))
         
         return LLMResponse(
@@ -1343,14 +1345,16 @@ class LLM:
         for tc in message.get("tool_calls", []) or []:
             if tc.get("type") == "function":
                 func = tc.get("function", {})
+                raw_args = func.get("arguments", "{}")
                 try:
-                    args = json.loads(func.get("arguments", "{}"))
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                 except:
                     args = {}
                 function_calls.append(FunctionCall(
                     name=func.get("name", ""),
-                    arguments=args,
+                    arguments=args if isinstance(args, dict) else {},
                     id=tc.get("id"),
+                    raw_arguments=raw_args if isinstance(raw_args, str) else None,
                 ))
         
         usage = data.get("usage", {})

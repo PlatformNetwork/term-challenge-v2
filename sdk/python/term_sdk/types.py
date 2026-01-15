@@ -254,10 +254,82 @@ class Response:
 
 @dataclass
 class FunctionCall:
-    """A function call from the LLM."""
+    """A function call from the LLM.
+    
+    Attributes:
+        name: Function name
+        arguments: Parsed arguments dict (may be empty if parsing failed)
+        id: Optional call ID
+        raw_arguments: Original raw arguments string (preserved on parse failure)
+    """
     name: str
     arguments: Dict[str, Any]
     id: Optional[str] = None
+    raw_arguments: Optional[str] = None
+    
+    def get_arg(self, key: str, default: Any = None) -> Any:
+        """Get argument value, with fallback to default."""
+        return self.arguments.get(key, default)
+    
+    def has_args(self) -> bool:
+        """Check if arguments were successfully parsed."""
+        return bool(self.arguments)
+    
+    def try_parse_raw(self) -> Dict[str, Any]:
+        """Try to recover arguments from raw_arguments string.
+        
+        Attempts multiple parsing strategies:
+        1. Standard JSON parse
+        2. Extract JSON from markdown code blocks
+        3. Fix common JSON issues (trailing commas, single quotes)
+        
+        Returns:
+            Parsed dict or empty dict if all strategies fail
+        """
+        if not self.raw_arguments:
+            return self.arguments
+        
+        raw = self.raw_arguments.strip()
+        
+        # Strategy 1: Direct JSON parse
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategy 2: Extract from markdown code blocks
+        if "```" in raw:
+            match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    pass
+        
+        # Strategy 3: Find JSON object boundaries
+        start = raw.find('{')
+        end = raw.rfind('}')
+        if start >= 0 and end > start:
+            try:
+                return json.loads(raw[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+        
+        # Strategy 4: Fix common issues
+        fixed = raw
+        # Replace single quotes with double quotes
+        fixed = re.sub(r"'([^']*)':", r'"\1":', fixed)
+        fixed = re.sub(r":\s*'([^']*)'", r': "\1"', fixed)
+        # Remove trailing commas
+        fixed = re.sub(r',\s*}', '}', fixed)
+        fixed = re.sub(r',\s*]', ']', fixed)
+        
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+        
+        return self.arguments
 
 
 @dataclass
