@@ -766,6 +766,7 @@ class LLM:
         
         if self._use_platform_bridge:
             # Send through platform bridge with raw_request flag
+            # This tells the proxy to pass the body directly to OpenRouter
             proxy_payload = {
                 "agent_hash": self._agent_hash,
                 "messages": body.get("messages", []),
@@ -773,6 +774,7 @@ class LLM:
                 "max_tokens": body.get("max_tokens", self.max_tokens),
                 "temperature": body.get("temperature", self.temperature),
                 "task_id": os.environ.get("TERM_TASK_ID"),
+                "raw_request": True,  # Enable raw mode for full control
                 "extra_params": {
                     k: v for k, v in body.items() 
                     if k not in ("messages", "model", "max_tokens", "temperature")
