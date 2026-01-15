@@ -1901,11 +1901,15 @@ impl PgStorage {
                     EXTRACT(EPOCH FROM va.assigned_at)::BIGINT as assigned_at,
                     COALESCE(s.reassignment_count, 0) as reassignment_count,
                     COALESCE(task_stats.tasks_done, 0) as tasks_completed,
-                    COALESCE(EXTRACT(EPOCH FROM task_stats.last_task)::BIGINT, 0) as last_task_at
+                    COALESCE(EXTRACT(EPOCH FROM task_stats.last_activity)::BIGINT, 0) as last_task_at
                 FROM validator_assignments va
                 JOIN submissions s ON s.agent_hash = va.agent_hash
                 LEFT JOIN LATERAL (
-                    SELECT COUNT(*)::INT as tasks_done, MAX(completed_at) as last_task
+                    SELECT 
+                        COUNT(*)::INT as tasks_done, 
+                        -- Use GREATEST of started_at and completed_at to detect activity
+                        -- A task that started recently means validator is ACTIVE
+                        GREATEST(MAX(started_at), MAX(completed_at)) as last_activity
                     FROM task_logs tl 
                     WHERE tl.agent_hash = va.agent_hash 
                       AND tl.validator_hotkey = va.validator_hotkey
@@ -1921,13 +1925,13 @@ impl PgStorage {
                         AND ve.validator_hotkey = va.validator_hotkey
                   )
                   -- Either: no activity AND assigned > timeout_minutes ago
-                  -- Or: has activity but last task > 3 hours ago (stuck)
+                  -- Or: has activity but last activity > 3 hours ago (stuck)
                   AND (
                       (COALESCE(task_stats.tasks_done, 0) = 0 
                        AND va.assigned_at < NOW() - ($1 || ' minutes')::INTERVAL)
                       OR
                       (COALESCE(task_stats.tasks_done, 0) > 0 
-                       AND task_stats.last_task < NOW() - make_interval(hours => $3))
+                       AND task_stats.last_activity < NOW() - make_interval(hours => $3))
                   )",
                 &[
                     &timeout_minutes.to_string(),
