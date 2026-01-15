@@ -2641,12 +2641,41 @@ pub struct LlmProxyRequest {
     pub raw_request: Option<bool>,
 }
 
+/// LLM message supporting full OpenAI format with tool_calls
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmMessage {
     pub role: String,
-    pub content: String,
+    /// Content can be String, null, or array (for multimodal)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<serde_json::Value>,
+    /// Tool calls from assistant (OpenAI format)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<LlmToolCallInput>>,
+    /// Tool call ID for tool response messages (role: tool)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Optional name field (for some providers)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
+/// Tool call input from agent (OpenAI format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmToolCallInput {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub function: LlmFunctionCallInput,
+}
+
+/// Function call input from agent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmFunctionCallInput {
+    pub name: String,
+    pub arguments: String,
+}
+
+/// Tool call output in response (for backwards compatibility)
 #[derive(Debug, Serialize, Clone)]
 pub struct LlmToolCall {
     pub id: Option<String>,
@@ -2655,6 +2684,7 @@ pub struct LlmToolCall {
     pub function: LlmFunctionCall,
 }
 
+/// Function call output in response
 #[derive(Debug, Serialize, Clone)]
 pub struct LlmFunctionCall {
     pub name: String,
