@@ -359,6 +359,13 @@ pub async fn submit_agent(
         &source_hash[..16]
     );
 
+    // Get active checkpoint for this submission
+    let checkpoint_id = state
+        .storage
+        .get_active_checkpoint()
+        .await
+        .unwrap_or_else(|_| "checkpoint1".to_string());
+
     // Create submission
     let submission_id = uuid::Uuid::new_v4().to_string();
     let submission = Submission {
@@ -392,6 +399,8 @@ pub async fn submit_agent(
         // Code visibility & decay (defaults)
         disable_public_code: false,
         disable_decay: false,
+        // Checkpoint assignment
+        checkpoint_id,
     };
 
     // Store submission
@@ -800,6 +809,9 @@ fn extract_package_files(
 #[derive(Debug, Deserialize)]
 pub struct LeaderboardQuery {
     pub limit: Option<i64>,
+    /// Filter by checkpoint ID (e.g., "checkpoint1", "checkpoint2")
+    /// If not provided, uses the currently active checkpoint
+    pub checkpoint: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -831,15 +843,31 @@ pub struct LeaderboardEntryResponse {
 ///
 /// No authentication required. Does NOT include source code.
 /// Returns only fully evaluated agents (status='completed') sorted by tasks_passed.
+///
+/// Query parameters:
+/// - limit: Maximum number of entries (default: 100, max: 1000)
+/// - checkpoint: Filter by checkpoint ID (default: active checkpoint)
 pub async fn get_leaderboard(
     State(state): State<Arc<ApiState>>,
     Query(query): Query<LeaderboardQuery>,
 ) -> Result<Json<LeaderboardResponse>, (StatusCode, String)> {
     let limit = query.limit.unwrap_or(100).min(1000);
 
+    // Determine which checkpoint to use
+    let checkpoint_id: Option<String> = match &query.checkpoint {
+        Some(cp) => Some(cp.clone()),
+        None => {
+            // Use active checkpoint by default
+            state.storage.get_active_checkpoint().await.ok()
+        }
+    };
+
+    // Convert owned String to &str for the query
+    let checkpoint_ref = checkpoint_id.as_deref();
+
     let entries = state
         .storage
-        .get_agent_leaderboard(limit)
+        .get_agent_leaderboard_by_checkpoint(limit, checkpoint_ref)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -908,6 +936,116 @@ pub async fn get_leaderboard(
     Ok(Json(LeaderboardResponse {
         entries: response_entries,
         total,
+    }))
+}
+
+// ============================================================================
+// CHECKPOINT ENDPOINTS
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct CheckpointResponse {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub tasks_count: i32,
+    pub is_active: bool,
+    pub submissions_count: i64,
+    pub created_at: String,
+    pub activated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CheckpointsListResponse {
+    pub checkpoints: Vec<CheckpointResponse>,
+    pub active_checkpoint: String,
+}
+
+/// GET /api/v1/checkpoints - List all available checkpoints
+///
+/// No authentication required. Returns list of checkpoints with metadata.
+pub async fn list_checkpoints(
+    State(state): State<Arc<ApiState>>,
+) -> Result<Json<CheckpointsListResponse>, (StatusCode, String)> {
+    let checkpoints = state
+        .storage
+        .list_checkpoints()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let active = state
+        .storage
+        .get_active_checkpoint()
+        .await
+        .unwrap_or_else(|_| "checkpoint1".to_string());
+
+    let mut responses = Vec::new();
+    for cp in checkpoints {
+        let submissions_count = state
+            .storage
+            .count_submissions_by_checkpoint(&cp.id)
+            .await
+            .unwrap_or(0);
+
+        responses.push(CheckpointResponse {
+            id: cp.id,
+            name: cp.name,
+            description: cp.description,
+            tasks_count: cp.tasks_count,
+            is_active: cp.is_active,
+            submissions_count,
+            created_at: chrono::DateTime::from_timestamp(cp.created_at, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default(),
+            activated_at: cp.activated_at.map(|ts| {
+                chrono::DateTime::from_timestamp(ts, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default()
+            }),
+        });
+    }
+
+    Ok(Json(CheckpointsListResponse {
+        checkpoints: responses,
+        active_checkpoint: active,
+    }))
+}
+
+/// GET /api/v1/checkpoints/:id - Get checkpoint details
+///
+/// No authentication required.
+pub async fn get_checkpoint(
+    State(state): State<Arc<ApiState>>,
+    Path(checkpoint_id): Path<String>,
+) -> Result<Json<CheckpointResponse>, (StatusCode, String)> {
+    let cp = state
+        .storage
+        .get_checkpoint(&checkpoint_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Checkpoint not found".to_string()))?;
+
+    let submissions_count = state
+        .storage
+        .count_submissions_by_checkpoint(&cp.id)
+        .await
+        .unwrap_or(0);
+
+    Ok(Json(CheckpointResponse {
+        id: cp.id,
+        name: cp.name,
+        description: cp.description,
+        tasks_count: cp.tasks_count,
+        is_active: cp.is_active,
+        submissions_count,
+        created_at: chrono::DateTime::from_timestamp(cp.created_at, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default(),
+        activated_at: cp.activated_at.map(|ts| {
+            chrono::DateTime::from_timestamp(ts, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default()
+        }),
     }))
 }
 

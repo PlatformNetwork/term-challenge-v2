@@ -264,6 +264,12 @@ pub struct Submission {
     pub disable_public_code: bool,
     /// When true, time decay is not applied to this agent (admin-controlled)
     pub disable_decay: bool,
+
+    // ========================================================================
+    // CHECKPOINT SYSTEM
+    // ========================================================================
+    /// Checkpoint ID this submission belongs to (e.g., "checkpoint1", "checkpoint2")
+    pub checkpoint_id: String,
 }
 
 /// Submission without source code (for listings)
@@ -883,31 +889,70 @@ impl PgStorage {
     /// - minimum 8 tasks passed total (across all validators)
     /// - winner = best success rate (tasks_passed/tasks_total), ties broken by earliest submission
     pub async fn get_eligible_winner(&self) -> Result<Option<WinnerEntry>> {
+        self.get_eligible_winner_by_checkpoint(None).await
+    }
+
+    /// Get the winning agent for weight calculation, filtered by checkpoint
+    /// If checkpoint_id is None, considers all checkpoints
+    pub async fn get_eligible_winner_by_checkpoint(
+        &self,
+        checkpoint_id: Option<&str>,
+    ) -> Result<Option<WinnerEntry>> {
         let client = self.pool.get().await?;
 
-        let row = client
-            .query_opt(
-                "SELECT 
-                    s.agent_hash,
-                    s.miner_hotkey,
-                    s.name,
-                    s.created_at,
-                    SUM(ve.tasks_passed)::INTEGER as total_tasks_passed,
-                    COUNT(DISTINCT ve.validator_hotkey)::INTEGER as num_validators,
-                    COALESCE(s.disable_decay, false) as disable_decay,
-                    (SELECT MAX(tl.completed_at) FROM task_logs tl WHERE tl.agent_hash = s.agent_hash) as last_task_at
-                FROM submissions s
-                JOIN validator_evaluations ve ON s.agent_hash = ve.agent_hash
-                WHERE s.manually_validated = true
-                  AND s.status = 'completed'
-                GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.created_at, s.disable_decay
-                HAVING COUNT(DISTINCT ve.validator_hotkey) >= 2
-                   AND SUM(ve.tasks_passed) >= 8
-                ORDER BY (SUM(ve.tasks_passed)::FLOAT / NULLIF(SUM(ve.tasks_total), 0)) DESC NULLS LAST, s.created_at ASC
-                LIMIT 1",
-                &[],
-            )
-            .await?;
+        let row = match checkpoint_id {
+            Some(cp) => {
+                client
+                    .query_opt(
+                        "SELECT 
+                            s.agent_hash,
+                            s.miner_hotkey,
+                            s.name,
+                            s.created_at,
+                            SUM(ve.tasks_passed)::INTEGER as total_tasks_passed,
+                            COUNT(DISTINCT ve.validator_hotkey)::INTEGER as num_validators,
+                            COALESCE(s.disable_decay, false) as disable_decay,
+                            (SELECT MAX(tl.completed_at) FROM task_logs tl WHERE tl.agent_hash = s.agent_hash) as last_task_at
+                        FROM submissions s
+                        JOIN validator_evaluations ve ON s.agent_hash = ve.agent_hash
+                        WHERE s.manually_validated = true
+                          AND s.status = 'completed'
+                          AND s.checkpoint_id = $1
+                        GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.created_at, s.disable_decay
+                        HAVING COUNT(DISTINCT ve.validator_hotkey) >= 2
+                           AND SUM(ve.tasks_passed) >= 8
+                        ORDER BY (SUM(ve.tasks_passed)::FLOAT / NULLIF(SUM(ve.tasks_total), 0)) DESC NULLS LAST, s.created_at ASC
+                        LIMIT 1",
+                        &[&cp],
+                    )
+                    .await?
+            }
+            None => {
+                client
+                    .query_opt(
+                        "SELECT 
+                            s.agent_hash,
+                            s.miner_hotkey,
+                            s.name,
+                            s.created_at,
+                            SUM(ve.tasks_passed)::INTEGER as total_tasks_passed,
+                            COUNT(DISTINCT ve.validator_hotkey)::INTEGER as num_validators,
+                            COALESCE(s.disable_decay, false) as disable_decay,
+                            (SELECT MAX(tl.completed_at) FROM task_logs tl WHERE tl.agent_hash = s.agent_hash) as last_task_at
+                        FROM submissions s
+                        JOIN validator_evaluations ve ON s.agent_hash = ve.agent_hash
+                        WHERE s.manually_validated = true
+                          AND s.status = 'completed'
+                        GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.created_at, s.disable_decay
+                        HAVING COUNT(DISTINCT ve.validator_hotkey) >= 2
+                           AND SUM(ve.tasks_passed) >= 8
+                        ORDER BY (SUM(ve.tasks_passed)::FLOAT / NULLIF(SUM(ve.tasks_total), 0)) DESC NULLS LAST, s.created_at ASC
+                        LIMIT 1",
+                        &[],
+                    )
+                    .await?
+            }
+        };
 
         Ok(row.map(|r| {
             // Use last task completion time if available, otherwise fall back to submission created_at
@@ -979,33 +1024,74 @@ impl PgStorage {
 
     /// Get leaderboard entries (only fully evaluated agents with status='completed')
     /// Sorted by success rate descending, then by submission time
+    /// If checkpoint_id is provided, filters to only that checkpoint
     pub async fn get_agent_leaderboard(&self, limit: i64) -> Result<Vec<AgentLeaderboardEntry>> {
+        self.get_agent_leaderboard_by_checkpoint(limit, None).await
+    }
+
+    /// Get leaderboard entries filtered by checkpoint
+    /// If checkpoint_id is None, returns all checkpoints
+    pub async fn get_agent_leaderboard_by_checkpoint(
+        &self,
+        limit: i64,
+        checkpoint_id: Option<&str>,
+    ) -> Result<Vec<AgentLeaderboardEntry>> {
         let client = self.pool.get().await?;
 
-        let rows = client
-            .query(
-                "SELECT 
-                    s.agent_hash,
-                    s.miner_hotkey,
-                    s.name,
-                    s.status,
-                    s.created_at,
-                    s.manually_validated,
-                    COALESCE(SUM(ve.tasks_passed), 0)::INTEGER as total_tasks_passed,
-                    COALESCE(SUM(ve.tasks_total), 0)::INTEGER as total_tasks,
-                    COUNT(DISTINCT ve.validator_hotkey)::INTEGER as num_validators,
-                    COALESCE(SUM(ve.total_cost_usd), 0.0)::FLOAT8 as total_cost_usd,
-                    COALESCE(s.disable_decay, false) as disable_decay
-                FROM submissions s
-                LEFT JOIN validator_evaluations ve ON s.agent_hash = ve.agent_hash
-                WHERE s.status = 'completed'
-                GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.status, s.created_at, s.manually_validated, s.disable_decay
-                HAVING COUNT(DISTINCT ve.validator_hotkey) >= 1
-                ORDER BY (SUM(ve.tasks_passed)::FLOAT / NULLIF(SUM(ve.tasks_total), 0)) DESC NULLS LAST, s.created_at ASC
-                LIMIT $1",
-                &[&limit],
-            )
-            .await?;
+        let rows = match checkpoint_id {
+            Some(cp) => {
+                client
+                    .query(
+                        "SELECT 
+                            s.agent_hash,
+                            s.miner_hotkey,
+                            s.name,
+                            s.status,
+                            s.created_at,
+                            s.manually_validated,
+                            COALESCE(SUM(ve.tasks_passed), 0)::INTEGER as total_tasks_passed,
+                            COALESCE(SUM(ve.tasks_total), 0)::INTEGER as total_tasks,
+                            COUNT(DISTINCT ve.validator_hotkey)::INTEGER as num_validators,
+                            COALESCE(SUM(ve.total_cost_usd), 0.0)::FLOAT8 as total_cost_usd,
+                            COALESCE(s.disable_decay, false) as disable_decay
+                        FROM submissions s
+                        LEFT JOIN validator_evaluations ve ON s.agent_hash = ve.agent_hash
+                        WHERE s.status = 'completed' AND s.checkpoint_id = $2
+                        GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.status, s.created_at, s.manually_validated, s.disable_decay
+                        HAVING COUNT(DISTINCT ve.validator_hotkey) >= 1
+                        ORDER BY (SUM(ve.tasks_passed)::FLOAT / NULLIF(SUM(ve.tasks_total), 0)) DESC NULLS LAST, s.created_at ASC
+                        LIMIT $1",
+                        &[&limit, &cp],
+                    )
+                    .await?
+            }
+            None => {
+                client
+                    .query(
+                        "SELECT 
+                            s.agent_hash,
+                            s.miner_hotkey,
+                            s.name,
+                            s.status,
+                            s.created_at,
+                            s.manually_validated,
+                            COALESCE(SUM(ve.tasks_passed), 0)::INTEGER as total_tasks_passed,
+                            COALESCE(SUM(ve.tasks_total), 0)::INTEGER as total_tasks,
+                            COUNT(DISTINCT ve.validator_hotkey)::INTEGER as num_validators,
+                            COALESCE(SUM(ve.total_cost_usd), 0.0)::FLOAT8 as total_cost_usd,
+                            COALESCE(s.disable_decay, false) as disable_decay
+                        FROM submissions s
+                        LEFT JOIN validator_evaluations ve ON s.agent_hash = ve.agent_hash
+                        WHERE s.status = 'completed'
+                        GROUP BY s.agent_hash, s.miner_hotkey, s.name, s.status, s.created_at, s.manually_validated, s.disable_decay
+                        HAVING COUNT(DISTINCT ve.validator_hotkey) >= 1
+                        ORDER BY (SUM(ve.tasks_passed)::FLOAT / NULLIF(SUM(ve.tasks_total), 0)) DESC NULLS LAST, s.created_at ASC
+                        LIMIT $1",
+                        &[&limit],
+                    )
+                    .await?
+            }
+        };
 
         Ok(rows
             .iter()
@@ -1179,8 +1265,8 @@ impl PgStorage {
 
         debug!("Inserting into submissions table...");
         client.execute(
-            "INSERT INTO submissions (id, agent_hash, miner_hotkey, source_code, source_hash, name, version, epoch, status, api_key, api_provider, cost_limit_usd, total_cost_usd, is_package, package_data, package_format, entry_point)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            "INSERT INTO submissions (id, agent_hash, miner_hotkey, source_code, source_hash, name, version, epoch, status, api_key, api_provider, cost_limit_usd, total_cost_usd, is_package, package_data, package_format, entry_point, checkpoint_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
              ON CONFLICT(agent_hash) DO UPDATE SET
                 source_code = EXCLUDED.source_code,
                 source_hash = EXCLUDED.source_hash,
@@ -1193,7 +1279,8 @@ impl PgStorage {
                 is_package = EXCLUDED.is_package,
                 package_data = EXCLUDED.package_data,
                 package_format = EXCLUDED.package_format,
-                entry_point = EXCLUDED.entry_point",
+                entry_point = EXCLUDED.entry_point,
+                checkpoint_id = EXCLUDED.checkpoint_id",
             &[
                 &submission.id, &submission.agent_hash, &submission.miner_hotkey,
                 &submission.source_code, &submission.source_hash, &submission.name,
@@ -1201,6 +1288,7 @@ impl PgStorage {
                 &encrypted_api_key, &submission.api_provider, &(cost_limit as f32),
                 &(submission.total_cost_usd as f32), &submission.is_package,
                 &submission.package_data, &submission.package_format, &submission.entry_point,
+                &submission.checkpoint_id,
             ],
         ).await.map_err(|e| {
             tracing::error!("Failed to insert submission: {:?}", e);
@@ -1494,7 +1582,8 @@ impl PgStorage {
                     COALESCE(api_provider, 'openrouter'), COALESCE(cost_limit_usd, 80.0)::FLOAT8, 
                     COALESCE(total_cost_usd, 0.0)::FLOAT8, EXTRACT(EPOCH FROM created_at)::BIGINT,
                     COALESCE(is_package, false), package_data, package_format, entry_point,
-                    COALESCE(disable_public_code, false), COALESCE(disable_decay, false)
+                    COALESCE(disable_public_code, false), COALESCE(disable_decay, false),
+                    COALESCE(checkpoint_id, 'checkpoint1')
              FROM submissions WHERE agent_hash = $1",
                 &[&agent_hash],
             )
@@ -1523,6 +1612,8 @@ impl PgStorage {
             // Code visibility & decay
             disable_public_code: r.get(18),
             disable_decay: r.get(19),
+            // Checkpoint
+            checkpoint_id: r.get(20),
             // Compilation fields - defaults (not fetched in this query)
             binary: None,
             binary_size: 0,
@@ -5579,5 +5670,133 @@ impl PgStorage {
             .collect();
 
         Ok(available)
+    }
+}
+
+// =============================================================================
+// Checkpoint System Operations
+// =============================================================================
+
+/// Checkpoint metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointInfo {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub tasks_count: i32,
+    pub is_active: bool,
+    pub created_at: i64,
+    pub activated_at: Option<i64>,
+}
+
+impl PgStorage {
+    /// Get the currently active checkpoint ID
+    /// Returns "checkpoint1" as fallback if no active checkpoint is set
+    pub async fn get_active_checkpoint(&self) -> Result<String> {
+        let client = self.pool.get().await?;
+
+        let row = client
+            .query_opt(
+                "SELECT id FROM checkpoints WHERE is_active = true LIMIT 1",
+                &[],
+            )
+            .await?;
+
+        Ok(row
+            .map(|r| r.get::<_, String>(0))
+            .unwrap_or_else(|| "checkpoint1".to_string()))
+    }
+
+    /// Set the active checkpoint
+    pub async fn set_active_checkpoint(&self, checkpoint_id: &str) -> Result<()> {
+        let client = self.pool.get().await?;
+
+        // First deactivate all checkpoints
+        client
+            .execute("UPDATE checkpoints SET is_active = false", &[])
+            .await?;
+
+        // Activate the specified checkpoint
+        let updated = client
+            .execute(
+                "UPDATE checkpoints SET is_active = true, activated_at = NOW() WHERE id = $1",
+                &[&checkpoint_id],
+            )
+            .await?;
+
+        if updated == 0 {
+            return Err(anyhow::anyhow!("Checkpoint '{}' not found", checkpoint_id));
+        }
+
+        info!("Set active checkpoint to: {}", checkpoint_id);
+        Ok(())
+    }
+
+    /// List all available checkpoints
+    pub async fn list_checkpoints(&self) -> Result<Vec<CheckpointInfo>> {
+        let client = self.pool.get().await?;
+
+        let rows = client
+            .query(
+                "SELECT id, name, description, tasks_count, is_active, 
+                        EXTRACT(EPOCH FROM created_at)::BIGINT as created_at,
+                        EXTRACT(EPOCH FROM activated_at)::BIGINT as activated_at
+                 FROM checkpoints 
+                 ORDER BY created_at ASC",
+                &[],
+            )
+            .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| CheckpointInfo {
+                id: r.get(0),
+                name: r.get(1),
+                description: r.get(2),
+                tasks_count: r.get(3),
+                is_active: r.get(4),
+                created_at: r.get(5),
+                activated_at: r.get(6),
+            })
+            .collect())
+    }
+
+    /// Get checkpoint info by ID
+    pub async fn get_checkpoint(&self, checkpoint_id: &str) -> Result<Option<CheckpointInfo>> {
+        let client = self.pool.get().await?;
+
+        let row = client
+            .query_opt(
+                "SELECT id, name, description, tasks_count, is_active,
+                        EXTRACT(EPOCH FROM created_at)::BIGINT as created_at,
+                        EXTRACT(EPOCH FROM activated_at)::BIGINT as activated_at
+                 FROM checkpoints WHERE id = $1",
+                &[&checkpoint_id],
+            )
+            .await?;
+
+        Ok(row.map(|r| CheckpointInfo {
+            id: r.get(0),
+            name: r.get(1),
+            description: r.get(2),
+            tasks_count: r.get(3),
+            is_active: r.get(4),
+            created_at: r.get(5),
+            activated_at: r.get(6),
+        }))
+    }
+
+    /// Count submissions per checkpoint
+    pub async fn count_submissions_by_checkpoint(&self, checkpoint_id: &str) -> Result<i64> {
+        let client = self.pool.get().await?;
+
+        let row = client
+            .query_one(
+                "SELECT COUNT(*) FROM submissions WHERE checkpoint_id = $1",
+                &[&checkpoint_id],
+            )
+            .await?;
+
+        Ok(row.get(0))
     }
 }

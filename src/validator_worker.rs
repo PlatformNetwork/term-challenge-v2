@@ -37,8 +37,11 @@ const MAX_CONCURRENT_TASKS_PER_AGENT: usize = 2;
 const MAX_CONCURRENT_TASK_CONTAINERS: usize = 8;
 
 /// Dataset to load tasks from
-const TASK_DATASET_NAME: &str = "terminal-bench";
-const TASK_DATASET_VERSION: &str = "2.0";
+const TASK_DATASET_NAME: &str = "checkpoint2";
+const TASK_DATASET_VERSION: &str = "1.0";
+
+/// Path to local registry file (if exists, use instead of remote)
+const LOCAL_REGISTRY_PATH: &str = "./registry.json";
 
 /// Result of an evaluation
 #[derive(Debug)]
@@ -170,7 +173,7 @@ impl ValidatorWorker {
         })
     }
 
-    /// Load tasks from terminal-bench@2.0 registry
+    /// Load tasks from registry (local file or remote)
     async fn load_tasks(&self) -> Result<()> {
         // Check if already loaded
         {
@@ -185,12 +188,20 @@ impl ValidatorWorker {
             TASK_DATASET_NAME, TASK_DATASET_VERSION
         );
 
-        // Download dataset
-        let mut client = RegistryClient::new();
+        // Load from local registry file (required)
+        info!("Loading registry from: {}", LOCAL_REGISTRY_PATH);
+        let mut client = RegistryClient::from_file(LOCAL_REGISTRY_PATH).context(format!(
+            "Failed to load registry from {}",
+            LOCAL_REGISTRY_PATH
+        ))?;
+
         let task_paths = client
             .download_dataset(TASK_DATASET_NAME, TASK_DATASET_VERSION, false)
             .await
-            .context("Failed to download terminal-bench@2.0 dataset")?;
+            .context(format!(
+                "Failed to download {}@{} dataset",
+                TASK_DATASET_NAME, TASK_DATASET_VERSION
+            ))?;
 
         info!("Downloaded {} tasks from registry", task_paths.len());
 

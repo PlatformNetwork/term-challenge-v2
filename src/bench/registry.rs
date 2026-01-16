@@ -1,4 +1,8 @@
 //! Registry client for downloading Terminal-Bench datasets
+//!
+//! Supports two registry formats:
+//! 1. Direct format: JSON array of datasets (legacy)
+//! 2. Config format: JSON object with `active_checkpoint` and `checkpoints_dir` fields
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -9,6 +13,52 @@ use tracing::{debug, info, warn};
 /// Default registry URL (Harbor's registry)
 pub const DEFAULT_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/laude-institute/harbor/83745559edb7b1e6f21483a90604f83e201c4a10/registry.json";
+
+/// Registry configuration file format (new checkpoint system)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryConfig {
+    /// Active checkpoint name (e.g., "checkpoint2")
+    pub active_checkpoint: String,
+    /// Directory containing checkpoint files (e.g., "./checkpoints")
+    pub checkpoints_dir: String,
+}
+
+impl RegistryConfig {
+    /// Get the path to the active checkpoint file
+    pub fn active_checkpoint_path(&self, base_dir: &Path) -> PathBuf {
+        base_dir
+            .join(&self.checkpoints_dir)
+            .join(format!("{}.json", self.active_checkpoint))
+    }
+
+    /// Get the path to a specific checkpoint file
+    pub fn checkpoint_path(&self, base_dir: &Path, checkpoint_name: &str) -> PathBuf {
+        base_dir
+            .join(&self.checkpoints_dir)
+            .join(format!("{}.json", checkpoint_name))
+    }
+
+    /// List all available checkpoints
+    pub fn list_checkpoints(&self, base_dir: &Path) -> Result<Vec<String>> {
+        let checkpoints_dir = base_dir.join(&self.checkpoints_dir);
+        let mut checkpoints = Vec::new();
+
+        if checkpoints_dir.exists() {
+            for entry in std::fs::read_dir(&checkpoints_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().map(|e| e == "json").unwrap_or(false) {
+                    if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
+                        checkpoints.push(name.to_string());
+                    }
+                }
+            }
+        }
+
+        checkpoints.sort();
+        Ok(checkpoints)
+    }
+}
 
 /// Cache directory for downloaded tasks
 pub fn cache_dir() -> PathBuf {
@@ -93,14 +143,98 @@ impl RegistryClient {
     }
 
     /// Create with local registry file
+    ///
+    /// Supports two formats:
+    /// 1. Direct format: JSON array of datasets
+    /// 2. Config format: JSON object with `active_checkpoint` and `checkpoints_dir`
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        let content = std::fs::read_to_string(path.as_ref())?;
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path)?;
+
+        // Try to parse as config format first (new checkpoint system)
+        if let Ok(config) = serde_json::from_str::<RegistryConfig>(&content) {
+            let base_dir = path.parent().unwrap_or(Path::new("."));
+            let checkpoint_path = config.active_checkpoint_path(base_dir);
+
+            info!(
+                "Loading checkpoint '{}' from {:?}",
+                config.active_checkpoint, checkpoint_path
+            );
+
+            let checkpoint_content =
+                std::fs::read_to_string(&checkpoint_path).with_context(|| {
+                    format!("Failed to load checkpoint file: {:?}", checkpoint_path)
+                })?;
+
+            let registry: Registry =
+                serde_json::from_str(&checkpoint_content).with_context(|| {
+                    format!("Failed to parse checkpoint JSON: {:?}", checkpoint_path)
+                })?;
+
+            return Ok(Self {
+                registry_url: String::new(),
+                cache_dir: cache_dir(),
+                registry: Some(registry),
+            });
+        }
+
+        // Fallback to direct format (legacy)
         let registry: Registry = serde_json::from_str(&content)?;
         Ok(Self {
             registry_url: String::new(),
             cache_dir: cache_dir(),
             registry: Some(registry),
         })
+    }
+
+    /// Create with a specific checkpoint file
+    pub fn from_checkpoint(config_path: impl AsRef<Path>, checkpoint_name: &str) -> Result<Self> {
+        let config_path = config_path.as_ref();
+        let content = std::fs::read_to_string(config_path)?;
+
+        let config: RegistryConfig = serde_json::from_str(&content).with_context(|| {
+            "Registry config must have active_checkpoint and checkpoints_dir fields"
+        })?;
+
+        let base_dir = config_path.parent().unwrap_or(Path::new("."));
+        let checkpoint_path = config.checkpoint_path(base_dir, checkpoint_name);
+
+        info!(
+            "Loading specific checkpoint '{}' from {:?}",
+            checkpoint_name, checkpoint_path
+        );
+
+        let checkpoint_content = std::fs::read_to_string(&checkpoint_path)
+            .with_context(|| format!("Failed to load checkpoint file: {:?}", checkpoint_path))?;
+
+        let registry: Registry = serde_json::from_str(&checkpoint_content)
+            .with_context(|| format!("Failed to parse checkpoint JSON: {:?}", checkpoint_path))?;
+
+        Ok(Self {
+            registry_url: String::new(),
+            cache_dir: cache_dir(),
+            registry: Some(registry),
+        })
+    }
+
+    /// Get the registry configuration (if loaded from config format)
+    pub fn load_config(path: impl AsRef<Path>) -> Result<RegistryConfig> {
+        let content = std::fs::read_to_string(path.as_ref())?;
+        let config: RegistryConfig = serde_json::from_str(&content)?;
+        Ok(config)
+    }
+
+    /// List available checkpoints from a config file
+    pub fn list_available_checkpoints(config_path: impl AsRef<Path>) -> Result<Vec<String>> {
+        let config = Self::load_config(config_path.as_ref())?;
+        let base_dir = config_path.as_ref().parent().unwrap_or(Path::new("."));
+        config.list_checkpoints(base_dir)
+    }
+
+    /// Get the active checkpoint name from a config file
+    pub fn get_active_checkpoint(config_path: impl AsRef<Path>) -> Result<String> {
+        let config = Self::load_config(config_path)?;
+        Ok(config.active_checkpoint)
     }
 
     /// Set custom cache directory
@@ -522,5 +656,40 @@ mod tests {
         assert!(key.contains("_"));
         // Check that git_url / and : are replaced
         assert!(!key.contains("github.com:8080"));
+    }
+
+    #[test]
+    fn test_registry_config_serialization() {
+        let config = RegistryConfig {
+            active_checkpoint: "checkpoint2".to_string(),
+            checkpoints_dir: "./checkpoints".to_string(),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: RegistryConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.active_checkpoint, "checkpoint2");
+        assert_eq!(deserialized.checkpoints_dir, "./checkpoints");
+    }
+
+    #[test]
+    fn test_registry_config_checkpoint_path() {
+        let config = RegistryConfig {
+            active_checkpoint: "checkpoint2".to_string(),
+            checkpoints_dir: "./checkpoints".to_string(),
+        };
+
+        let base_dir = Path::new("/root/project");
+        let path = config.active_checkpoint_path(base_dir);
+        assert_eq!(
+            path,
+            PathBuf::from("/root/project/./checkpoints/checkpoint2.json")
+        );
+
+        let specific_path = config.checkpoint_path(base_dir, "checkpoint1");
+        assert_eq!(
+            specific_path,
+            PathBuf::from("/root/project/./checkpoints/checkpoint1.json")
+        );
     }
 }

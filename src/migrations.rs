@@ -213,6 +213,10 @@ pub const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         "018_task_retry_tracking",
         include_str!("../migrations/018_task_retry_tracking.sql"),
     ),
+    (
+        "019_checkpoint_system",
+        include_str!("../migrations/019_checkpoint_system.sql"),
+    ),
 ];
 
 /// Run embedded migrations (when migrations dir is not available)
