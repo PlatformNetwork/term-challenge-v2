@@ -250,8 +250,15 @@ impl<S: AssignmentStorage> AssignmentMonitor<S> {
     }
 
     /// Check for stale assignments and reassign to new validators
+    /// DISABLED: This was causing duplicate task evaluations when validators were
+    /// incorrectly flagged as stale while still actively working on tasks.
     async fn check_and_reassign_stale(&self) -> anyhow::Result<()> {
+        // DISABLED - return early to prevent duplicate evaluations
+        debug!("Stale assignment check disabled");
+        return Ok(());
+
         // Get stale assignments from database
+        #[allow(unreachable_code)]
         let stale = self
             .storage
             .get_stale_assignments(
@@ -683,12 +690,9 @@ mod tests {
         let monitor = AssignmentMonitor::new(storage.clone(), server.base_url(), short_config());
         monitor.check_and_reassign_stale().await.unwrap();
 
+        // DISABLED: stale reassignment is now disabled to prevent duplicate evaluations
         let records = storage.recorded_reassignments().await;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].0, "agent_a");
-        assert_eq!(records[0].1, "validator_a");
-        assert_eq!(records[0].2, "validator_b");
-        assert_eq!(records[0].3, "no_activity"); // Changed from "timeout" - now uses specific reason
+        assert_eq!(records.len(), 0); // No reassignments expected
     }
 
     #[tokio::test]
@@ -913,8 +917,9 @@ mod tests {
         let monitor = AssignmentMonitor::new(storage.clone(), server.base_url(), short_config());
         monitor.check_and_reassign_stale().await.unwrap();
 
+        // DISABLED: stale reassignment is now disabled
         let records = storage.recorded_reassignments().await;
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 0);
     }
 
     #[tokio::test]
@@ -946,10 +951,9 @@ mod tests {
         let monitor = AssignmentMonitor::new(storage.clone(), server.base_url(), short_config());
         monitor.check_and_reassign_stale().await.unwrap();
 
+        // DISABLED: stale reassignment is now disabled
         let records = storage.recorded_reassignments().await;
-        assert_eq!(records.len(), 1);
-        // validator_b is excluded, so it should reassign to validator_c
-        assert_eq!(records[0].2, "validator_c");
+        assert_eq!(records.len(), 0);
     }
 
     #[tokio::test]
@@ -972,8 +976,9 @@ mod tests {
         // Should not panic with short strings
         monitor.check_and_reassign_stale().await.unwrap();
 
+        // DISABLED: stale reassignment is now disabled
         let records = storage.recorded_reassignments().await;
-        assert_eq!(records.len(), 1);
+        assert_eq!(records.len(), 0);
     }
 
     #[tokio::test]
