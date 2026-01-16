@@ -218,27 +218,28 @@ class LLM:
         max_tokens: Default maximum response tokens
         timeout: Request timeout in seconds (default: 300, or LLM_TIMEOUT env var)
         enable_cache: Enable prompt caching for Anthropic via OpenRouter (default: True)
-        cache_ttl: Cache TTL - "5m" or "1h" (default: "1h")
-        cache_min_chars: Minimum content length to cache (default: 0 = cache all)
+        cache_ttl: Cache TTL - "5min" or "1h" (default: "5min")
+        cache_min_chars: Minimum content length to cache (default: 4000 = ~1024 tokens)
     
     Prompt Caching (OpenRouter + Anthropic):
-        Automatically caches prompts for Anthropic models via OpenRouter
-        to reduce inference costs. Caching is enabled by default.
+        Intelligent auto-detection caching for Anthropic models via OpenRouter.
+        Caching is enabled by default but only triggers when beneficial:
         
-        - Caches up to 4 messages (Anthropic limit)
-        - Prioritizes system prompts and long messages
-        - Never caches the last user message (it changes per request)
-        - Default TTL: 1 hour
+        - System prompts > 1024 tokens (~4000 chars)
+        - Repeated messages (same content seen multiple times)
+        - Never caches the last user message
+        - Maximum 4 cache breakpoints (Anthropic limit)
+        - Default TTL: 5 minutes
         
         Example:
-            # Default: cache all eligible messages with 1h TTL
+            # Default: auto-detect when to cache
             llm = LLM()
             
-            # Disable caching
+            # Disable caching completely
             llm = LLM(enable_cache=False)
             
-            # Only cache messages > 1000 chars
-            llm = LLM(cache_min_chars=1000)
+            # Force cache all messages (old behavior)
+            llm = LLM(cache_min_chars=0)
     
     Environment Variables:
         - OPENROUTER_API_KEY: OpenRouter API key
@@ -281,8 +282,8 @@ class LLM:
         timeout: Optional[int] = None,
         # Prompt caching options (OpenRouter + Anthropic)
         enable_cache: bool = True,
-        cache_ttl: str = "1h",
-        cache_min_chars: int = 0,
+        cache_ttl: str = "5min",
+        cache_min_chars: int = 4000,  # ~1024 tokens minimum for Anthropic
     ):
         self.provider = provider
         self.temperature = temperature
@@ -342,8 +343,11 @@ class LLM:
         
         # Prompt caching configuration (OpenRouter + Anthropic)
         self._enable_cache = enable_cache
-        self._cache_ttl = cache_ttl  # "5m" or "1h"
+        self._cache_ttl = cache_ttl  # "5min" or "1h"
         self._cache_min_chars = cache_min_chars
+        
+        # Track seen message hashes for detecting repeated patterns
+        self._seen_message_hashes: set = set()
     
     def _get_model(self, model: Optional[str]) -> str:
         if model:
@@ -381,6 +385,69 @@ class LLM:
             )
         return 0
     
+    def _get_message_content_hash(self, msg: Dict[str, Any]) -> int:
+        """Get a hash of the message content for duplicate detection."""
+        content = msg.get("content")
+        if content is None:
+            return hash("")
+        if isinstance(content, str):
+            return hash(content)
+        if isinstance(content, list):
+            # Hash all text parts concatenated
+            text_parts = "".join(
+                part.get("text", "") 
+                for part in content 
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+            return hash(text_parts)
+        return hash(str(content))
+    
+    def _should_cache_message(self, msg: Dict[str, Any], is_last_user: bool = False) -> bool:
+        """
+        Determine if a message should be cached using smart auto-detection.
+        
+        Cache triggers:
+        1. System prompts with content >= cache_min_chars (~1024 tokens)
+        2. Repeated messages (same content seen before)
+        
+        Never cache:
+        - Last user message (changes every request)
+        - Empty or None content
+        
+        Args:
+            msg: Message dict with 'role' and 'content'
+            is_last_user: True if this is the last user message
+        
+        Returns:
+            True if message should be cached
+        """
+        # Never cache last user message
+        if is_last_user:
+            return False
+        
+        content_len = self._get_message_content_length(msg)
+        
+        # Skip empty content
+        if content_len == 0:
+            return False
+        
+        role = msg.get("role", "")
+        
+        # Rule 1: System prompts >= minimum threshold (default 4000 chars ~= 1024 tokens)
+        if role == "system" and content_len >= self._cache_min_chars:
+            return True
+        
+        # Rule 2: Repeated message pattern
+        content_hash = self._get_message_content_hash(msg)
+        if content_hash in self._seen_message_hashes:
+            # Message seen before - worth caching
+            return True
+        
+        # Add to seen hashes for future detection
+        self._seen_message_hashes.add(content_hash)
+        
+        return False
+    
     def _select_messages_to_cache(
         self, 
         messages: List[Dict[str, Any]]
@@ -388,11 +455,15 @@ class LLM:
         """
         Select up to 4 message indices to cache (Anthropic limit).
         
-        Strategy:
-        1. Never cache the last user message (changes every request)
-        2. Always prioritize system prompts
-        3. Prioritize longer messages (more token savings)
-        4. Prioritize earlier messages (more stable)
+        Uses smart auto-detection via _should_cache_message():
+        1. System prompts >= cache_min_chars (~1024 tokens)
+        2. Repeated messages (same content seen before)
+        3. Never cache the last user message
+        
+        Prioritization (when > 4 candidates):
+        - System messages first
+        - Longer messages (more token savings)
+        - Earlier messages (more stable)
         
         Returns:
             List of message indices to cache (max 4)
@@ -403,22 +474,14 @@ class LLM:
         for i, msg in enumerate(messages):
             role = msg.get("role", "")
             content_len = self._get_message_content_length(msg)
-            is_last = (i == num_messages - 1)
+            is_last_user = (i == num_messages - 1) and role == "user"
             
-            # Skip last user message (changes every request)
-            if is_last and role == "user":
+            # Use smart auto-detection
+            if not self._should_cache_message(msg, is_last_user):
                 continue
             
-            # Skip messages below minimum threshold
-            if content_len < self._cache_min_chars:
-                continue
-            
-            # Skip if content is None or empty
-            if content_len == 0:
-                continue
-            
-            # Calculate priority score
-            # - System messages get huge bonus (always cache)
+            # Calculate priority score for ranking
+            # - System messages get huge bonus (always cache first)
             # - Longer messages score higher (more savings)
             # - Earlier messages get slight bonus (more stable)
             position_bonus = (num_messages - i) / num_messages  # 1.0 for first, decreasing

@@ -3111,6 +3111,9 @@ pub struct LlmUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Detailed prompt token breakdown (cached_tokens, cache_write_tokens, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<serde_json::Value>,
 }
 
 /// POST /api/v1/llm/chat - LLM proxy for agent requests
@@ -3677,6 +3680,7 @@ async fn make_llm_request(
         prompt_tokens: usage_obj["prompt_tokens"].as_u64().unwrap_or(0) as u32,
         completion_tokens: usage_obj["completion_tokens"].as_u64().unwrap_or(0) as u32,
         total_tokens: usage_obj["total_tokens"].as_u64().unwrap_or(0) as u32,
+        prompt_tokens_details: usage_obj.get("prompt_tokens_details").cloned(),
     });
 
     // Try to use provider-reported cost first (OpenRouter, some providers include this)

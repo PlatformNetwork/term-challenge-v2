@@ -152,8 +152,8 @@ class TestPromptCaching:
     def test_caching_default_enabled(self):
         llm = LLM()
         assert llm._enable_cache is True
-        assert llm._cache_ttl == "1h"
-        assert llm._cache_min_chars == 0
+        assert llm._cache_ttl == "5min"  # Default is now 5min (Anthropic default)
+        assert llm._cache_min_chars == 4000  # ~1024 tokens minimum for auto-detect
     
     def test_caching_custom_config(self):
         llm = LLM(enable_cache=False, cache_ttl="5m", cache_min_chars=1000)
@@ -198,7 +198,8 @@ class TestPromptCaching:
         assert llm._get_message_content_length(msg) == 0
     
     def test_select_messages_to_cache_max_4(self):
-        llm = LLM()
+        # Use cache_min_chars=0 to test max 4 logic without auto-detect filtering
+        llm = LLM(cache_min_chars=0)
         messages = [
             {"role": "system", "content": "System prompt"},
             {"role": "user", "content": "A" * 1000},
@@ -212,20 +213,21 @@ class TestPromptCaching:
         assert 5 not in selected  # Last user message not cached
     
     def test_select_messages_prioritizes_system(self):
+        # Large system prompt triggers auto-detection
         llm = LLM()
         messages = [
-            {"role": "system", "content": "Short system"},
-            {"role": "user", "content": "A" * 10000},  # Much longer but user
+            {"role": "system", "content": "A" * 5000},  # Large system - should be cached
+            {"role": "user", "content": "B" * 10000},  # Much longer but user (not last)
             {"role": "user", "content": "Last"},
         ]
         selected = llm._select_messages_to_cache(messages)
-        assert 0 in selected  # System always cached even if short
+        assert 0 in selected  # Large system always cached
     
     def test_select_messages_skips_last_user(self):
         llm = LLM()
         messages = [
-            {"role": "system", "content": "System"},
-            {"role": "user", "content": "A" * 10000},  # Last user - very long but skipped
+            {"role": "system", "content": "A" * 5000},  # Large system
+            {"role": "user", "content": "B" * 10000},  # Last user - very long but skipped
         ]
         selected = llm._select_messages_to_cache(messages)
         assert 1 not in selected  # Last user not cached
@@ -240,20 +242,44 @@ class TestPromptCaching:
         ]
         selected = llm._select_messages_to_cache(messages)
         assert 0 not in selected  # System too short
-        assert 1 in selected  # Long enough
+        # Note: user message at index 1 won't be cached either (not repeated, not system)
     
     def test_select_messages_prioritizes_longer(self):
+        # With auto-detection, only system prompts >= min_chars or repeated messages are cached
+        # Use a large system prompt and test priority ordering
         llm = LLM()
+        large_system = "A" * 5000  # > 4000 threshold
         messages = [
-            {"role": "user", "content": "A" * 100},
-            {"role": "assistant", "content": "B" * 5000},  # Longest
-            {"role": "user", "content": "C" * 200},
-            {"role": "assistant", "content": "D" * 3000},  # Second longest
+            {"role": "system", "content": large_system},  # Should be cached
+            {"role": "user", "content": "B" * 100},
+            {"role": "assistant", "content": "C" * 3000},
             {"role": "user", "content": "Last"},
         ]
         selected = llm._select_messages_to_cache(messages)
-        assert 1 in selected  # Longest assistant message
-        assert 3 in selected  # Second longest assistant message
+        assert 0 in selected  # Large system is cached
+        # Assistant message not cached (not repeated, not system)
+        assert 2 not in selected
+    
+    def test_select_messages_repeated_message(self):
+        # Test that repeated messages are detected and cached
+        llm = LLM()
+        repeated_content = "This is a repeated message"
+        
+        # First call: message is seen but not repeated yet (assistant, not last user)
+        messages1 = [
+            {"role": "assistant", "content": repeated_content},
+            {"role": "user", "content": "First question"},
+        ]
+        selected1 = llm._select_messages_to_cache(messages1)
+        assert 0 not in selected1  # First time seeing it, not cached yet
+        
+        # Second call: same content is now repeated - should be cached
+        messages2 = [
+            {"role": "assistant", "content": repeated_content},  # Now seen before!
+            {"role": "user", "content": "New question"},
+        ]
+        selected2 = llm._select_messages_to_cache(messages2)
+        assert 0 in selected2  # Repeated message is now cached
     
     def test_add_cache_control_string_content(self):
         llm = LLM(cache_ttl="5m")
@@ -335,9 +361,11 @@ class TestPromptCaching:
         assert result[0]["content"] == "System"
     
     def test_prepare_messages_full_flow(self):
+        # Use large system prompt to trigger auto-detection
         llm = LLM(cache_ttl="1h")
+        large_system = "You are a helpful assistant. " * 200  # ~6000 chars > 4000 threshold
         messages = [
-            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "system", "content": large_system},
             {"role": "user", "content": "What is 2+2?"},
         ]
         result = llm._prepare_messages_with_cache(messages, "anthropic/claude-3.5-sonnet")
@@ -345,7 +373,7 @@ class TestPromptCaching:
         # System should be cached (multipart format)
         assert isinstance(result[0]["content"], list)
         assert result[0]["content"][0]["type"] == "text"
-        assert result[0]["content"][0]["text"] == "You are a helpful assistant."
+        assert result[0]["content"][0]["text"] == large_system
         assert result[0]["content"][0]["cache_control"]["type"] == "ephemeral"
         assert result[0]["content"][0]["cache_control"]["ttl"] == "1h"
         
@@ -354,9 +382,11 @@ class TestPromptCaching:
         assert result[1]["content"] == "What is 2+2?"
     
     def test_prepare_messages_conversation_history(self):
+        # Use large system to trigger caching
         llm = LLM()
+        large_system = "System prompt " * 400  # ~5600 chars > 4000 threshold
         messages = [
-            {"role": "system", "content": "System prompt"},
+            {"role": "system", "content": large_system},
             {"role": "user", "content": "First question"},
             {"role": "assistant", "content": "First answer with lots of detail " * 100},
             {"role": "user", "content": "Second question"},
@@ -365,11 +395,8 @@ class TestPromptCaching:
         ]
         result = llm._prepare_messages_with_cache(messages, "anthropic/claude-3.5-sonnet")
         
-        # System (index 0) should be cached
+        # System (index 0) should be cached (large enough)
         assert isinstance(result[0]["content"], list)
-        
-        # Long assistant message (index 2) should be cached
-        assert isinstance(result[2]["content"], list)
         
         # Last user message (index 5) should NOT be cached
         assert isinstance(result[5]["content"], str)
