@@ -243,6 +243,11 @@ impl RegistryClient {
         self
     }
 
+    /// Get the loaded registry (if any)
+    pub fn registry(&self) -> Option<&Registry> {
+        self.registry.as_ref()
+    }
+
     /// Fetch registry from URL
     pub async fn fetch_registry(&mut self) -> Result<&Registry> {
         if self.registry.is_some() {

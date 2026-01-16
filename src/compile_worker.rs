@@ -9,7 +9,7 @@
 //! 3. Stores binary in DB
 //! 4. Marks as 'success' or 'failed'
 //! 5. Clears and reassigns validators from platform-server
-//! 6. Assigns real evaluation tasks from terminal-bench@2.0 registry
+//! 6. Assigns evaluation tasks from active checkpoint
 //! 7. Notifies assigned validators via WebSocket that binary is ready
 
 use crate::bench::registry::RegistryClient;
@@ -24,7 +24,7 @@ use tokio::sync::RwLock;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
-/// Number of tasks to assign per agent (first N from terminal-bench@2.0)
+/// Number of tasks to assign per agent (from active checkpoint)
 const TASKS_PER_AGENT: usize = 30;
 
 /// Number of validators to assign per agent (30 tasks / 10 per validator = 3)
@@ -33,9 +33,13 @@ const VALIDATORS_PER_AGENT: usize = 3;
 /// Maximum wait time for ready validators (15 minutes)
 const MAX_VALIDATOR_WAIT_SECS: u64 = 15 * 60;
 
-/// Dataset to load tasks from
-const TASK_DATASET_NAME: &str = "terminal-bench";
-const TASK_DATASET_VERSION: &str = "2.0";
+/// Default registry path (can be overridden by REGISTRY_PATH env var)
+const DEFAULT_REGISTRY_PATH: &str = "./registry.json";
+
+/// Get the registry path from environment or use default
+fn get_registry_path() -> String {
+    std::env::var("REGISTRY_PATH").unwrap_or_else(|_| DEFAULT_REGISTRY_PATH.to_string())
+}
 
 /// Validator info from platform-server
 #[derive(Debug, Deserialize)]
@@ -120,19 +124,33 @@ impl CompileWorker {
         }
     }
 
-    /// Load evaluation tasks from terminal-bench@2.0 registry
+    /// Load evaluation tasks from active checkpoint in registry
     async fn load_evaluation_tasks(&self) -> anyhow::Result<()> {
-        info!(
-            "Loading evaluation tasks from {}@{}...",
-            TASK_DATASET_NAME, TASK_DATASET_VERSION
-        );
+        let registry_path = get_registry_path();
+        info!("Loading evaluation tasks from registry: {}", registry_path);
 
-        let mut registry_client = RegistryClient::new();
-        let dataset = registry_client
-            .get_dataset(TASK_DATASET_NAME, TASK_DATASET_VERSION)
-            .await?;
+        // Load registry from checkpoint file
+        let registry_client = RegistryClient::from_file(&registry_path).map_err(|e| {
+            anyhow::anyhow!("Failed to load registry from {}: {}", registry_path, e)
+        })?;
 
-        // Get first N tasks, sorted by name for determinism
+        // Get active checkpoint name for logging
+        let active_checkpoint = RegistryClient::get_active_checkpoint(&registry_path)
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        info!("Using active checkpoint: {}", active_checkpoint);
+
+        // Get the dataset from the loaded registry (first dataset in checkpoint)
+        let registry = registry_client
+            .registry()
+            .ok_or_else(|| anyhow::anyhow!("Registry not loaded"))?;
+
+        let dataset = registry
+            .datasets
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No datasets found in checkpoint"))?;
+
+        // Get tasks, sorted by name for determinism
         let mut task_sources = dataset.tasks.clone();
         task_sources.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -146,8 +164,9 @@ impl CompileWorker {
             .collect();
 
         info!(
-            "Loaded {} evaluation tasks: {:?}",
+            "Loaded {} evaluation tasks from checkpoint '{}': {:?}",
             tasks.len(),
+            active_checkpoint,
             tasks.iter().map(|t| &t.task_id).collect::<Vec<_>>()
         );
 
