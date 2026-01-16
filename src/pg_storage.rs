@@ -2412,9 +2412,13 @@ impl PgStorage {
         Ok(jobs)
     }
 
-    /// Get validator jobs with compile status (for get_my_jobs endpoint)
-    /// Returns all jobs assigned to this validator that haven't been evaluated yet,
-    /// regardless of compile status. Allows validators to see pending compilations.
+    /// Get validator jobs with compile status (for get_my_jobs endpoint).
+    ///
+    /// Returns all jobs assigned to this validator that:
+    /// 1. Haven't been evaluated yet, OR
+    /// 2. Have uncompleted tasks (for handling task reassignments after initial eval).
+    ///
+    /// This allows validators to pick up newly assigned tasks even after submitting evaluation.
     pub async fn get_validator_jobs_with_status(
         &self,
         validator_hotkey: &str,
@@ -2422,12 +2426,13 @@ impl PgStorage {
     ) -> Result<Vec<ValidatorJobInfo>> {
         let client = self.pool.get().await?;
 
-        // Get all jobs assigned to this validator that haven't been evaluated yet
-        // Join with submissions to get compile_status and submission_id
-        // IMPORTANT: Only return jobs where submission status is 'pending' (not 'completed', 'banned', etc.)
+        // Get jobs where:
+        // - Assignment is pending and submission is pending with successful compile
+        // - Either: no validator_evaluation exists yet
+        // - Or: there are evaluation_tasks without corresponding task_logs (uncompleted tasks)
         let rows = client
             .query(
-                "SELECT 
+                "SELECT DISTINCT
                     va.agent_hash,
                     s.miner_hotkey,
                     s.id as submission_id,
@@ -2436,10 +2441,27 @@ impl PgStorage {
                 FROM validator_assignments va
                 JOIN submissions s ON s.agent_hash = va.agent_hash
                 WHERE va.validator_hotkey = $1
+                  AND va.status = 'pending'
                   AND s.status = 'pending'
-                  AND va.agent_hash NOT IN (
-                    SELECT agent_hash FROM validator_evaluations 
-                    WHERE validator_hotkey = $1
+                  AND s.compile_status = 'success'
+                  AND (
+                      -- No evaluation submitted yet
+                      va.agent_hash NOT IN (
+                          SELECT agent_hash FROM validator_evaluations 
+                          WHERE validator_hotkey = $1
+                      )
+                      OR
+                      -- Has uncompleted tasks (for task reassignments)
+                      EXISTS (
+                          SELECT 1 FROM evaluation_tasks et
+                          WHERE et.agent_hash = va.agent_hash
+                            AND et.validator_hotkey = $1
+                            AND NOT EXISTS (
+                                SELECT 1 FROM task_logs tl
+                                WHERE tl.agent_hash = et.agent_hash
+                                  AND tl.task_id = et.task_id
+                            )
+                      )
                   )
                 ORDER BY va.assigned_at ASC
                 LIMIT $2",
@@ -5325,6 +5347,7 @@ impl PgStorage {
     }
 
     /// Get tasks assigned to a specific validator for an agent
+    /// Only returns tasks that don't have a task_log yet (not yet completed)
     pub async fn get_validator_tasks(
         &self,
         agent_hash: &str,
@@ -5332,11 +5355,17 @@ impl PgStorage {
     ) -> Result<Vec<TaskAssignment>> {
         let client = self.pool.get().await?;
 
+        // Only return tasks that haven't been completed yet (no task_log entry)
         let rows = client
             .query(
-                "SELECT task_id, task_name FROM evaluation_tasks 
-                 WHERE agent_hash = $1 AND validator_hotkey = $2
-                 ORDER BY task_index ASC",
+                "SELECT et.task_id, et.task_name FROM evaluation_tasks et
+                 WHERE et.agent_hash = $1 AND et.validator_hotkey = $2
+                   AND NOT EXISTS (
+                       SELECT 1 FROM task_logs tl
+                       WHERE tl.agent_hash = et.agent_hash
+                         AND tl.task_id = et.task_id
+                   )
+                 ORDER BY et.task_index ASC",
                 &[&agent_hash, &validator_hotkey],
             )
             .await?;
