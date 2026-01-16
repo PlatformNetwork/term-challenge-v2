@@ -836,6 +836,9 @@ pub async fn get_config(State(state): State<Arc<ChallengeServerState>>) -> Json<
 #[derive(Debug, Deserialize)]
 pub struct LeaderboardQuery {
     pub limit: Option<usize>,
+    /// Filter by checkpoint ID (e.g., "checkpoint1", "checkpoint2")
+    /// If not provided, uses the currently active checkpoint
+    pub checkpoint: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -876,9 +879,21 @@ pub async fn get_leaderboard(
         )
     })?;
 
-    // Get leaderboard from PostgreSQL storage
+    // Determine which checkpoint to use
+    let checkpoint_id: Option<String> = match &query.checkpoint {
+        Some(cp) => Some(cp.clone()),
+        None => {
+            // Use active checkpoint by default
+            pg.get_active_checkpoint().await.ok()
+        }
+    };
+
+    // Convert owned String to &str for the query
+    let checkpoint_ref = checkpoint_id.as_deref();
+
+    // Get leaderboard from PostgreSQL storage (filtered by checkpoint)
     let lb = pg
-        .get_agent_leaderboard(limit as i64)
+        .get_agent_leaderboard_by_checkpoint(limit as i64, checkpoint_ref)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
