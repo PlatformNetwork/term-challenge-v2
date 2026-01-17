@@ -4,41 +4,111 @@
 //! This challenge evaluates AI agents on terminal-based tasks.
 //! Agents are run in Docker containers and scored based on task completion.
 //!
-//! ## Architecture (Centralized)
+//! ## Module Structure
 //!
-//! ```text
-//! ┌─────────────────┐     ┌──────────────────────┐
-//! │     Miner       │────▶│   Platform Server    │
-//! │   (term CLI)    │     │ (chain.platform.net) │
-//! └─────────────────┘     │                      │
-//!                         │    ┌──────────┐      │
-//! ┌─────────────────┐     │    │PostgreSQL│      │
-//! │  Term Challenge │◀────│    └──────────┘      │
-//! │   (container)   │     │                      │
-//! └─────────────────┘     └──────────────────────┘
-//! ```
-//!
-//! ## Flow
-//!
-//! 1. Miner submits agent via POST to platform-server
-//! 2. Platform-server proxies /evaluate to term-challenge container
-//! 3. Term-challenge runs evaluation and returns results
-//! 4. Platform-server stores results and computes weights
-//! 5. Validators fetch weights from platform-server
+//! The crate is organized into thematic modules:
+//! - `core/`: Fundamental types (Hotkey, ChallengeId, TaskResult)
+//! - `crypto/`: Authentication and encryption
+//! - `util/`: Shared utilities (timestamp, hash, encoding)
+//! - `storage/`: Data persistence (local, postgres, chain)
+//! - `cache/`: Caching systems
+//! - `client/`: HTTP and WebSocket clients
+//! - `chain/`: Blockchain integration
+//! - `weights/`: Weight calculation and emission
+//! - `evaluation/`: Evaluation pipeline
+//! - `validation/`: Code validation
+//! - `worker/`: Background workers
+//! - `container/`: Docker management
+//! - `task/`: Task definitions
+//! - `agent/`: Agent management
+//! - `admin/`: Administration
+//! - `server/`: Challenge server
+//! - `api/`: REST API
+//! - `bench/`: Benchmarking framework
 
 // ============================================================================
-// CORE MODULES
+// NEW MODULAR STRUCTURE
 // ============================================================================
 
+/// Shared utility functions
+pub mod util;
+
+/// Core types and traits
+pub mod core;
+
+/// Cryptographic utilities (auth, x25519, ss58, api_key)
+pub mod crypto;
+
+/// Data persistence layer
+pub mod storage;
+
+/// Caching systems
+pub mod cache;
+
+/// HTTP and WebSocket clients
+pub mod client;
+
+/// Blockchain integration (block_sync, epoch, evaluation)
+pub mod chain;
+
+/// Weight calculation and emission
+pub mod weights;
+
+/// Evaluation pipeline
+pub mod evaluation;
+
+/// Code validation
+pub mod validation;
+
+/// Background workers
+pub mod worker;
+
+/// Container management
+pub mod container;
+
+/// Task definitions and registry
+pub mod task;
+
+/// Agent management
+pub mod agent;
+
+/// Administration (sudo, subnet control)
+pub mod admin;
+
+/// Challenge server
+pub mod server;
+
+/// REST API
+pub mod api;
+
+/// Benchmarking framework
+pub mod bench;
+
+// ============================================================================
+// LEGACY MODULES (renamed to avoid conflicts, will be removed)
+// ============================================================================
+
+#[path = "task_legacy.rs"]
+pub mod task_legacy;
+
+#[path = "server_legacy.rs"]
+pub mod server_legacy;
+
+#[path = "api_legacy.rs"]
+pub mod api_legacy;
+
+// Legacy modules still at root (to be migrated)
 pub mod agent_queue;
 pub mod agent_registry;
 pub mod agent_submission;
 pub mod assignment_monitor;
-pub mod bench;
 pub mod block_sync;
 pub mod blockchain_evaluation;
+pub mod central_client;
+pub mod chain_storage;
 pub mod challenge;
 pub mod code_visibility;
+pub mod compat;
 pub mod compile_worker;
 pub mod compiler;
 pub mod config;
@@ -52,65 +122,45 @@ pub mod evaluation_pipeline;
 pub mod evaluator;
 pub mod llm_client;
 pub mod llm_review;
+pub mod local_storage;
 pub mod metagraph_cache;
+pub mod migrations;
 pub mod package_validator;
+pub mod pg_storage;
 pub mod platform_llm;
+pub mod platform_ws_client;
 pub mod python_whitelist;
 pub mod reward_decay;
 pub mod scoring;
 pub mod subnet_control;
 pub mod sudo;
-pub mod task;
 pub mod task_execution;
 pub mod task_stream_cache;
 pub mod terminal_harness;
 pub mod time_decay;
 pub mod timeout_retry_monitor;
 pub mod validator_distribution;
-pub mod x25519_encryption;
-
-// ============================================================================
-// CENTRALIZED API MODULES
-// ============================================================================
-
-/// Compatibility layer for SDK types
-pub mod compat;
-
-/// Client for connecting to platform-server
-pub mod central_client;
-
-/// WebSocket client for platform server (validator notifications)
-pub mod platform_ws_client;
-
-/// WebSocket client for receiving events from platform-server (validator mode)
+pub mod validator_worker;
 pub mod validator_ws_client;
 
-/// Main evaluation worker for validator mode
-pub mod validator_worker;
+// ============================================================================
+// RE-EXPORTS FROM NEW MODULES
+// ============================================================================
 
-/// Local SQLite storage for caching (validator mode)
-pub mod local_storage;
+// Auth re-exports (from crypto module)
+pub mod auth {
+    //! Re-exports from crypto::auth for backwards compatibility.
+    pub use crate::crypto::auth::*;
+}
 
-/// PostgreSQL storage for server mode (subnet owner)
-pub mod pg_storage;
-
-/// Always-on challenge server
-pub mod server;
-
-/// Chain storage adapter (uses central API)
-pub mod chain_storage;
-
-/// Authentication and authorization (SS58 validation, signature verification)
-pub mod auth;
-
-/// REST API endpoints (submissions, leaderboard, validators)
-pub mod api;
-
-/// Database migrations
-pub mod migrations;
+// x25519 re-exports (from crypto module)
+pub mod x25519_encryption {
+    //! Re-exports from crypto::x25519 for backwards compatibility.
+    pub use crate::crypto::x25519::*;
+}
 
 // ============================================================================
-// RE-EXPORTS
+// LEGACY RE-EXPORTS (for backwards compatibility)
 // ============================================================================
 
 pub use compat::{
@@ -182,10 +232,13 @@ pub use sudo::{
     SudoError, SudoKey, SudoLevel, SudoPermission, TaskDifficulty as SudoTaskDifficulty,
     WeightStrategy,
 };
-pub use task::{
+
+// Task re-exports from legacy module
+pub use task_legacy::{
     AddTaskRequest, Difficulty, Task, TaskConfig, TaskDescription, TaskInfo, TaskRegistry,
     TaskResult,
 };
+
 pub use task_execution::{
     EvaluationProgress, EvaluationResult, EvaluationStatus, LLMCallInfo, ProgressStore,
     TaskExecutionResult, TaskExecutionState, TaskExecutor, TaskStatus,
@@ -198,10 +251,12 @@ pub use validator_distribution::{
     CodePackage, DistributionConfig, ValidatorDistributor, ValidatorInfo,
 };
 
-pub use api::{
+// API re-exports from legacy module
+pub use api_legacy::{
     claim_jobs, download_binary, get_agent_details, get_agent_eval_status, get_leaderboard,
     get_my_agent_source, get_my_jobs, get_status, list_my_agents, submit_agent, ApiState,
 };
+
 pub use auth::{
     create_submit_message, is_timestamp_valid, is_valid_ss58_hotkey, verify_signature, AuthManager,
 };
@@ -223,6 +278,10 @@ pub use timeout_retry_monitor::{
 };
 pub use validator_worker::{EvalResult as ValidatorEvalResult, ValidatorWorker};
 pub use validator_ws_client::{ValidatorEvent, ValidatorWsClient};
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
 
 /// Root validator hotkey
 pub const ROOT_VALIDATOR_HOTKEY: &str = "5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At";

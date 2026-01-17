@@ -2,6 +2,9 @@
 //!
 //! Handles secure code distribution to validators based on stake ranking.
 //! Top validators receive source code, others receive obfuscated code.
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256, Sha512};
+use std::collections::HashMap;
 use thiserror::Error;
 use tracing::{info, warn};
 

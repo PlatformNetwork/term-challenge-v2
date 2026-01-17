@@ -4,6 +4,10 @@
 //! Manages the agent interaction loop.
 
 use crate::docker::ContainerRun;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
+use tracing::{debug, error, info, warn};
 
 /// What the agent receives each step
 #[derive(Debug, Clone, Serialize, Deserialize)]

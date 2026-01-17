@@ -952,7 +952,7 @@ pub async fn get_leaderboard(
 /// - Hex-encoded 32-byte seed (with or without 0x prefix)
 /// - URI format with derivation path (e.g., "mnemonic words//path")
 /// - BIP39 mnemonic phrase (12 or 24 words)
-fn load_validator_keypair() -> anyhow::Result<sp_core::sr25519::Pair> {
+pub fn load_validator_keypair() -> anyhow::Result<sp_core::sr25519::Pair> {
     use sp_core::{sr25519, Pair};
 
     let secret = std::env::var("VALIDATOR_SECRET")

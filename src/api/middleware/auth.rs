@@ -34,7 +34,7 @@ pub fn validate_signed_request(
     }
 
     // Validate timestamp
-    if !is_timestamp_valid(timestamp, DEFAULT_TIMESTAMP_WINDOW_SECS) {
+    if !is_timestamp_valid(timestamp) {
         return Err(ApiError::Unauthorized(
             "Request timestamp expired or invalid".to_string(),
         ));

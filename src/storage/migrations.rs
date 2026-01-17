@@ -144,79 +144,79 @@ fn parse_migration_version(filename: &str) -> Option<i32> {
 pub const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
     (
         "001_initial_schema",
-        include_str!("../migrations/001_initial_schema.sql"),
+        include_str!("../../migrations/001_initial_schema.sql"),
     ),
     (
         "002_add_api_keys_and_versioning",
-        include_str!("../migrations/002_add_api_keys_and_versioning.sql"),
+        include_str!("../../migrations/002_add_api_keys_and_versioning.sql"),
     ),
     (
         "003_add_epoch_submission_limit",
-        include_str!("../migrations/003_add_epoch_submission_limit.sql"),
+        include_str!("../../migrations/003_add_epoch_submission_limit.sql"),
     ),
     (
         "004_validator_assignments",
-        include_str!("../migrations/004_validator_assignments.sql"),
+        include_str!("../../migrations/004_validator_assignments.sql"),
     ),
     (
         "005_task_logs",
-        include_str!("../migrations/005_task_logs.sql"),
+        include_str!("../../migrations/005_task_logs.sql"),
     ),
     (
         "006_agent_binary",
-        include_str!("../migrations/006_agent_binary.sql"),
+        include_str!("../../migrations/006_agent_binary.sql"),
     ),
     (
         "007_verbose_logs",
-        include_str!("../migrations/007_verbose_logs.sql"),
+        include_str!("../../migrations/007_verbose_logs.sql"),
     ),
     (
         "008_llm_usage",
-        include_str!("../migrations/008_llm_usage.sql"),
+        include_str!("../../migrations/008_llm_usage.sql"),
     ),
     (
         "009_validator_assignment_status",
-        include_str!("../migrations/009_validator_assignment_status.sql"),
+        include_str!("../../migrations/009_validator_assignment_status.sql"),
     ),
     (
         "010_reassignment_tracking",
-        include_str!("../migrations/010_reassignment_tracking.sql"),
+        include_str!("../../migrations/010_reassignment_tracking.sql"),
     ),
     (
         "011_package_submissions",
-        include_str!("../migrations/011_package_submissions.sql"),
+        include_str!("../../migrations/011_package_submissions.sql"),
     ),
     (
         "012_manual_validation",
-        include_str!("../migrations/012_manual_validation.sql"),
+        include_str!("../../migrations/012_manual_validation.sql"),
     ),
     (
         "013_cancellation_history",
-        include_str!("../migrations/013_cancellation_history.sql"),
+        include_str!("../../migrations/013_cancellation_history.sql"),
     ),
     (
         "014_validator_readiness",
-        include_str!("../migrations/014_validator_readiness.sql"),
+        include_str!("../../migrations/014_validator_readiness.sql"),
     ),
     (
         "015_public_code_visibility",
-        include_str!("../migrations/015_public_code_visibility.sql"),
+        include_str!("../../migrations/015_public_code_visibility.sql"),
     ),
     (
         "016_disable_decay",
-        include_str!("../migrations/016_disable_decay.sql"),
+        include_str!("../../migrations/016_disable_decay.sql"),
     ),
     (
         "017_forced_weights",
-        include_str!("../migrations/017_forced_weights.sql"),
+        include_str!("../../migrations/017_forced_weights.sql"),
     ),
     (
         "018_task_retry_tracking",
-        include_str!("../migrations/018_task_retry_tracking.sql"),
+        include_str!("../../migrations/018_task_retry_tracking.sql"),
     ),
     (
         "019_checkpoint_system",
-        include_str!("../migrations/019_checkpoint_system.sql"),
+        include_str!("../../migrations/019_checkpoint_system.sql"),
     ),
 ];
 

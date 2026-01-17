@@ -1369,7 +1369,8 @@ impl ValidatorWorker {
         // Create sandbox config
         let config = SandboxConfig {
             image: task.config.docker_image.clone(),
-            memory_bytes,
+            name: None,
+            memory_bytes: memory_bytes as i64,
             cpu_cores: task.config.cpu_limit,
             env,
             working_dir: "/app".to_string(),
@@ -1380,6 +1381,10 @@ impl ValidatorWorker {
                 "-f".to_string(),
                 "/dev/null".to_string(),
             ]),
+            challenge_id: "term-challenge".to_string(),
+            owner_id: agent_hash.to_string(),
+            auto_remove: true,
+            user: None,
         };
 
         // The rest of the implementation would continue here...

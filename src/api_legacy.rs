@@ -2561,12 +2561,8 @@ pub struct GetProgressResponse {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct CompletedTaskInfo {
-    pub task_id: String,
-    pub passed: bool,
-    pub score: f64,
-}
+// Re-export CompletedTaskInfo from api module to avoid duplication
+pub use crate::api::routes::validator::CompletedTaskInfo;
 
 /// POST /api/v1/validator/get_evaluation_progress - Get progress for resuming evaluation
 ///
