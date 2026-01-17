@@ -1,18 +1,9 @@
-//! X25519-based API Key Encryption
+//! X25519 encryption utilities.
 //!
-//! Provides secure asymmetric encryption for API keys using X25519 key exchange.
-//! Only the validator with the private key (derived from sr25519 seed) can decrypt.
+//! This module provides asymmetric encryption using X25519 ECDH key exchange
+//! with ChaCha20-Poly1305 symmetric encryption for the actual data.
 //!
-//! # Security Model
-//!
-//! 1. Validator's X25519 keypair is derived from their sr25519 seed
-//! 2. Miner generates ephemeral X25519 keypair for each encryption
-//! 3. Shared secret computed via ECDH
-//! 4. API key encrypted with ChaCha20-Poly1305 using derived key
-//!
-//! This provides:
-//! - Confidentiality: Only validator can decrypt
-//! - Forward secrecy: Each encryption uses fresh ephemeral key
+//! Used for secure API key transmission between validators.
 
 use chacha20poly1305::{
     aead::{Aead, KeyInit},

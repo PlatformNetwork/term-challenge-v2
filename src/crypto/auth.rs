@@ -1,10 +1,11 @@
-//! Authentication and Authorization Module
+//! Authentication and authorization utilities.
 //!
-//! Provides:
+//! This module provides:
 //! - SS58 hotkey validation
 //! - Sr25519 signature verification
+//! - Message creation helpers for signed requests
+//! - Timestamp validation
 //! - Validator whitelist management
-//! - Message creation helpers
 
 use sp_core::crypto::Ss58Codec;
 use sp_core::sr25519::{Public, Signature};
