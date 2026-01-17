@@ -3815,10 +3815,19 @@ async fn make_llm_request(
         let mut b = serde_json::json!({
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens.unwrap_or(64000),
             "temperature": temperature.unwrap_or(0.7),
         });
-        // Merge extra_params (tools, tool_choice, etc.) into body
+        // Check if max_completion_tokens is in extra_params (for o-series models)
+        // If not, use max_tokens
+        let has_max_completion_tokens = extra_params
+            .as_ref()
+            .and_then(|e| e.as_object())
+            .map(|o| o.contains_key("max_completion_tokens"))
+            .unwrap_or(false);
+        if !has_max_completion_tokens {
+            b["max_tokens"] = serde_json::json!(max_tokens.unwrap_or(64000));
+        }
+        // Merge extra_params (tools, tool_choice, max_completion_tokens, etc.) into body
         if let Some(extra) = extra_params {
             if let (Some(base), Some(extra_obj)) = (b.as_object_mut(), extra.as_object()) {
                 for (key, value) in extra_obj {
@@ -3828,13 +3837,24 @@ async fn make_llm_request(
         }
         b
     } else {
-        // Standard request body
-        serde_json::json!({
+        // Standard request body - check for max_completion_tokens in extra_params
+        let has_max_completion_tokens = extra_params
+            .as_ref()
+            .and_then(|e| e.as_object())
+            .map(|o| o.contains_key("max_completion_tokens"))
+            .unwrap_or(false);
+
+        let mut b = serde_json::json!({
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens.unwrap_or(64000),
             "temperature": temperature.unwrap_or(0.7),
-        })
+        });
+        // Use max_completion_tokens if provided in extra_params (for o-series models)
+        // Otherwise use max_tokens (for other models)
+        if !has_max_completion_tokens {
+            b["max_tokens"] = serde_json::json!(max_tokens.unwrap_or(64000));
+        }
+        b
     };
 
     // Merge extra_params if provided and not in raw_request mode (and not Responses API)
@@ -4247,11 +4267,19 @@ async fn make_llm_stream_request(
         let mut b = serde_json::json!({
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens.unwrap_or(4096),
             "temperature": temperature.unwrap_or(0.7),
             "stream": true,
         });
-        // Merge extra_params (tools, tool_choice, etc.) into body
+        // Check if max_completion_tokens is in extra_params (for o-series models)
+        let has_max_completion_tokens = extra_params
+            .as_ref()
+            .and_then(|e| e.as_object())
+            .map(|o| o.contains_key("max_completion_tokens"))
+            .unwrap_or(false);
+        if !has_max_completion_tokens {
+            b["max_tokens"] = serde_json::json!(max_tokens.unwrap_or(4096));
+        }
+        // Merge extra_params (tools, tool_choice, max_completion_tokens, etc.) into body
         if let Some(extra) = extra_params {
             if let (Some(base), Some(extra_obj)) = (b.as_object_mut(), extra.as_object()) {
                 for (key, value) in extra_obj {
@@ -4261,14 +4289,23 @@ async fn make_llm_stream_request(
         }
         b
     } else {
-        // Standard request body
-        serde_json::json!({
+        // Standard request body - check for max_completion_tokens in extra_params
+        let has_max_completion_tokens = extra_params
+            .as_ref()
+            .and_then(|e| e.as_object())
+            .map(|o| o.contains_key("max_completion_tokens"))
+            .unwrap_or(false);
+
+        let mut b = serde_json::json!({
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens.unwrap_or(4096),
             "temperature": temperature.unwrap_or(0.7),
             "stream": true,
-        })
+        });
+        if !has_max_completion_tokens {
+            b["max_tokens"] = serde_json::json!(max_tokens.unwrap_or(4096));
+        }
+        b
     };
 
     // Merge extra_params if provided and not in raw_request mode (and not Responses API)

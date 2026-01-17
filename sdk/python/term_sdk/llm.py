@@ -1387,15 +1387,23 @@ class LLM:
                 "model": model,
                 "messages": messages,
                 "temperature": temp,
-                "max_tokens": tokens,
                 "stream": False,
             }
+            
+            # Use max_completion_tokens if provided in extra_body, otherwise use max_tokens
+            # This allows users to choose which parameter to use for different models
+            # (o-series models require max_completion_tokens, others use max_tokens)
+            if extra_body and "max_completion_tokens" in extra_body:
+                # User explicitly set max_completion_tokens, don't add max_tokens
+                pass
+            else:
+                payload["max_tokens"] = tokens
             
             if tools:
                 payload["tools"] = [t.to_dict() for t in tools]
                 payload["tool_choice"] = "auto"
             
-            # Add extra_body parameters (e.g., thinking, top_p, etc.)
+            # Add extra_body parameters (e.g., thinking, top_p, max_completion_tokens, etc.)
             if extra_body:
                 payload.update(extra_body)
             
@@ -1855,9 +1863,14 @@ class LLM:
             "model": model,
             "messages": messages,
             "temperature": temp,
-            "max_tokens": tokens,
             "stream": True,
         }
+        
+        # Use max_completion_tokens if provided in extra_body, otherwise use max_tokens
+        if extra_body and "max_completion_tokens" in extra_body:
+            pass  # User explicitly set max_completion_tokens
+        else:
+            payload["max_tokens"] = tokens
         
         # Add extra_body parameters
         if extra_body:
