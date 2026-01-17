@@ -103,7 +103,20 @@ class CostLimitExceeded(LLMError):
 
 @dataclass
 class LLMResponse:
-    """Response from LLM."""
+    """Response from LLM.
+    
+    Attributes:
+        text: The response text content
+        model: The model used
+        tokens: Total tokens used
+        cost: Cost in USD (after cache discount if applicable)
+        latency_ms: Response latency in milliseconds
+        function_calls: List of function/tool calls
+        raw: Raw response data
+        cached_tokens: Number of tokens read from cache (reduces cost)
+        prompt_tokens: Number of input/prompt tokens
+        completion_tokens: Number of output/completion tokens
+    """
     text: str
     model: str
     tokens: int = 0
@@ -111,6 +124,10 @@ class LLMResponse:
     latency_ms: int = 0
     function_calls: List[FunctionCall] = field(default_factory=list)
     raw: Optional[Dict[str, Any]] = None
+    # Cache info (OpenRouter with usage: {include: true})
+    cached_tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     
     def json(self) -> Optional[Dict]:
         """Parse response text as JSON."""
@@ -1939,7 +1956,11 @@ class LLM:
         completion_tokens = usage.get("completion_tokens", 0)
         total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
         
-        cost = data.get("cost_usd", 0.0)
+        # Extract cached tokens from prompt_tokens_details (OpenRouter with usage: {include: true})
+        prompt_details = usage.get("prompt_tokens_details", {}) or {}
+        cached_tokens = prompt_details.get("cached_tokens", 0) or 0
+        
+        cost = data.get("cost_usd", 0.0) or 0.0
         latency_ms = int((time.time() - start) * 1000)
         
         self.total_tokens += total_tokens
@@ -1947,7 +1968,12 @@ class LLM:
         self.request_count += 1
         self._update_model_stats(response_model, total_tokens, cost)
         
-        _log(f"[platform] {response_model}: {total_tokens} tokens, ${cost:.4f}, {latency_ms}ms")
+        # Log with cache info if available
+        if cached_tokens > 0:
+            cache_pct = (cached_tokens / prompt_tokens * 100) if prompt_tokens > 0 else 0
+            _log(f"[platform] {response_model}: {total_tokens} tokens ({cached_tokens} cached, {cache_pct:.0f}%), ${cost:.4f}, {latency_ms}ms")
+        else:
+            _log(f"[platform] {response_model}: {total_tokens} tokens, ${cost:.4f}, {latency_ms}ms")
         
         # Parse function calls / tool calls if present in platform response
         function_calls = []
@@ -2010,6 +2036,9 @@ class LLM:
             latency_ms=latency_ms,
             function_calls=function_calls,
             raw=data,
+            cached_tokens=cached_tokens,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
     def _parse_response(self, data: Dict, model: str, start: float) -> LLMResponse:
@@ -2038,9 +2067,13 @@ class LLM:
         completion_tokens = usage.get("completion_tokens", 0)
         total_tokens = prompt_tokens + completion_tokens
         
+        # Extract cached tokens from prompt_tokens_details (OpenRouter with usage: {include: true})
+        prompt_details = usage.get("prompt_tokens_details", {}) or {}
+        cached_tokens = prompt_details.get("cached_tokens", 0) or 0
+        
         # Use provider-reported cost if available (OpenRouter returns usage.cost)
         # OpenAI doesn't return cost, so default to 0
-        cost = usage.get("cost", 0.0)
+        cost = usage.get("cost", 0.0) or 0.0
         latency_ms = int((time.time() - start) * 1000)
         
         self.total_tokens += total_tokens
@@ -2048,7 +2081,12 @@ class LLM:
         self.request_count += 1
         self._update_model_stats(model, total_tokens, cost)
         
-        _log(f"{model}: {total_tokens} tokens, ${cost:.4f}, {latency_ms}ms")
+        # Log with cache info if available
+        if cached_tokens > 0:
+            cache_pct = (cached_tokens / prompt_tokens * 100) if prompt_tokens > 0 else 0
+            _log(f"{model}: {total_tokens} tokens ({cached_tokens} cached, {cache_pct:.0f}%), ${cost:.4f}, {latency_ms}ms")
+        else:
+            _log(f"{model}: {total_tokens} tokens, ${cost:.4f}, {latency_ms}ms")
         
         return LLMResponse(
             text=text,
@@ -2058,6 +2096,9 @@ class LLM:
             latency_ms=latency_ms,
             function_calls=function_calls,
             raw=data,
+            cached_tokens=cached_tokens,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
     
     def _update_model_stats(self, model: str, tokens: int, cost: float):

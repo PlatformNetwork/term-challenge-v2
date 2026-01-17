@@ -3892,6 +3892,15 @@ async fn make_llm_request(
         }
     }
 
+    // For OpenRouter: add usage: {include: true} to get cost and cache info in response
+    // This enables prompt_tokens_details.cached_tokens and usage.cost fields
+    // See: https://openrouter.ai/docs/guides/guides/usage-accounting
+    if provider == "openrouter" {
+        if let Some(base) = body.as_object_mut() {
+            base.insert("usage".to_string(), serde_json::json!({"include": true}));
+        }
+    }
+
     // Transform request for Anthropic Messages API format
     // Only for direct Anthropic API - OpenRouter handles the transformation itself
     // OpenRouter uses OpenAI-compatible format (messages array with system role)
@@ -4015,6 +4024,24 @@ async fn make_llm_request(
     // OpenRouter returns cost in usage.cost, OpenAI doesn't return cost
     // If provider doesn't report cost, it will be None (SDK will use 0)
     let cost_usd = provider_cost;
+
+    // Log cache information if available (OpenRouter with usage: {include: true})
+    // cached_tokens = tokens read from cache (reduces cost)
+    let cached_tokens = json["usage"]["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .unwrap_or(0);
+    if cached_tokens > 0 {
+        let prompt_tokens = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
+        let cache_hit_ratio = if prompt_tokens > 0 {
+            (cached_tokens as f64 / prompt_tokens as f64) * 100.0
+        } else {
+            0.0
+        };
+        info!(
+            "LLM cache hit: {} cached of {} prompt tokens ({:.1}% hit rate)",
+            cached_tokens, prompt_tokens, cache_hit_ratio
+        );
+    }
 
     // Extract tool_calls if present (OpenAI/OpenRouter format)
     let tool_calls = json["choices"][0]["message"]["tool_calls"]
@@ -4369,6 +4396,15 @@ async fn make_llm_stream_request(
                     base.insert(key.clone(), value.clone());
                 }
             }
+        }
+    }
+
+    // For OpenRouter: add usage: {include: true} to get cost and cache info in final SSE chunk
+    // This enables prompt_tokens_details.cached_tokens and usage.cost fields
+    // See: https://openrouter.ai/docs/guides/guides/usage-accounting
+    if provider == "openrouter" {
+        if let Some(base) = body.as_object_mut() {
+            base.insert("usage".to_string(), serde_json::json!({"include": true}));
         }
     }
 
