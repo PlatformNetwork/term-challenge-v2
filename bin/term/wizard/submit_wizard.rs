@@ -1,5 +1,5 @@
 //! Submit Wizard - Interactive CLI (non-TUI)
-//! 
+//!
 //! Supports both single-file agents and ZIP packages for multi-file projects.
 
 use anyhow::Result;
@@ -38,11 +38,12 @@ pub async fn run_submit_wizard(rpc_url: &str) -> Result<()> {
 
     // Step 1: Select agent (file, directory, or ZIP)
     let agent_package = select_agent_file()?;
-    
+
     // Determine default name and entry point based on package type
     let (default_name, entry_point, display_name) = match &agent_package {
         AgentPackage::SingleFile { path, .. } => {
-            let name = path.file_stem()
+            let name = path
+                .file_stem()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "agent".to_string());
             let entry = path.file_name().unwrap().to_string_lossy().to_string();
@@ -50,21 +51,26 @@ pub async fn run_submit_wizard(rpc_url: &str) -> Result<()> {
             (name, entry, display)
         }
         AgentPackage::Directory { path, entry_point } => {
-            let name = path.file_name()
+            let name = path
+                .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "agent".to_string());
-            let display = format!("{}/ (directory)", path.file_name().unwrap().to_string_lossy());
+            let display = format!(
+                "{}/ (directory)",
+                path.file_name().unwrap().to_string_lossy()
+            );
             (name, entry_point.clone(), display)
         }
         AgentPackage::ZipFile { path, entry_point } => {
-            let name = path.file_stem()
+            let name = path
+                .file_stem()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "agent".to_string());
             let display = path.file_name().unwrap().to_string_lossy().to_string();
             (name, entry_point.clone(), display)
         }
     };
-    
+
     let default_name: String = default_name
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
@@ -134,11 +140,7 @@ pub async fn run_submit_wizard(rpc_url: &str) -> Result<()> {
         .with_prompt("  Max cost per task (USD)")
         .default(10.0)
         .interact_text()?;
-    println!(
-        "  {} Cost limit: ${}",
-        style("✓").green(),
-        cost_limit
-    );
+    println!("  {} Cost limit: ${}", style("✓").green(), cost_limit);
 
     // Step 5: Create package
     println!();
@@ -165,7 +167,13 @@ pub async fn run_submit_wizard(rpc_url: &str) -> Result<()> {
 
     // Step 6: Review and confirm
     println!();
-    print_review_simple(&agent_name, &miner_hotkey, &api_provider, cost_limit, package_data.len());
+    print_review_simple(
+        &agent_name,
+        &miner_hotkey,
+        &api_provider,
+        cost_limit,
+        package_data.len(),
+    );
 
     let confirmed = Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("  Submit agent to network?")
@@ -244,24 +252,27 @@ enum AgentPackage {
 
 fn select_agent_file() -> Result<AgentPackage> {
     println!("  {}", style("Step 1: Select Agent").bold());
-    println!("  {}", style("(Python file, directory, or ZIP package)").dim());
+    println!(
+        "  {}",
+        style("(Python file, directory, or ZIP package)").dim()
+    );
     println!();
 
     let current_dir = std::env::current_dir()?;
 
     // Find Python files, directories with agent.py, and ZIP files
     let mut items: Vec<(String, PathBuf, &str)> = Vec::new();
-    
+
     if let Ok(entries) = std::fs::read_dir(&current_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             let name = path.file_name().unwrap().to_string_lossy().to_string();
-            
+
             // Skip hidden files/dirs
             if name.starts_with('.') {
                 continue;
             }
-            
+
             if path.is_file() {
                 if let Some(ext) = path.extension() {
                     if ext == "py" {
@@ -319,21 +330,25 @@ fn select_agent_file() -> Result<AgentPackage> {
         match *kind {
             "file" => {
                 let source = std::fs::read_to_string(path)?;
-                Ok(AgentPackage::SingleFile { path: path.clone(), source })
-            }
-            "dir" => {
-                Ok(AgentPackage::Directory { 
-                    path: path.clone(), 
-                    entry_point: "agent.py".to_string() 
+                Ok(AgentPackage::SingleFile {
+                    path: path.clone(),
+                    source,
                 })
             }
+            "dir" => Ok(AgentPackage::Directory {
+                path: path.clone(),
+                entry_point: "agent.py".to_string(),
+            }),
             "zip" => {
                 // Ask for entry point
                 let entry_point: String = Input::with_theme(&ColorfulTheme::default())
                     .with_prompt("  Entry point file in ZIP")
                     .default("agent.py".to_string())
                     .interact_text()?;
-                Ok(AgentPackage::ZipFile { path: path.clone(), entry_point })
+                Ok(AgentPackage::ZipFile {
+                    path: path.clone(),
+                    entry_point,
+                })
             }
             _ => anyhow::bail!("Unknown type"),
         }
@@ -369,19 +384,29 @@ fn resolve_agent_path(path: PathBuf) -> Result<AgentPackage> {
 }
 
 /// Allowed file extensions for packaging
-const ALLOWED_EXTENSIONS: &[&str] = &["py", "txt", "json", "yaml", "yml", "toml", "md", "csv", "xml"];
+const ALLOWED_EXTENSIONS: &[&str] = &[
+    "py", "txt", "json", "yaml", "yml", "toml", "md", "csv", "xml",
+];
 
 /// Directories to skip when packaging
-const SKIP_DIRS: &[&str] = &["__pycache__", ".git", ".venv", "venv", "node_modules", ".pytest_cache", ".mypy_cache"];
+const SKIP_DIRS: &[&str] = &[
+    "__pycache__",
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    ".pytest_cache",
+    ".mypy_cache",
+];
 
 /// Create a ZIP package from a directory
 fn create_zip_package(dir: &PathBuf) -> Result<Vec<u8>> {
     let mut buffer = std::io::Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut buffer);
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-        
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
         add_directory_to_zip(&mut zip, dir, dir, &options)?;
         zip.finish()?;
     }
@@ -398,12 +423,12 @@ fn add_directory_to_zip<W: Write + std::io::Seek>(
         let entry = entry?;
         let path = entry.path();
         let name = path.file_name().unwrap().to_string_lossy();
-        
+
         // Skip hidden files/dirs
         if name.starts_with('.') {
             continue;
         }
-        
+
         if path.is_dir() {
             // Skip unwanted directories
             if SKIP_DIRS.contains(&name.as_ref()) {
@@ -412,18 +437,19 @@ fn add_directory_to_zip<W: Write + std::io::Seek>(
             add_directory_to_zip(zip, base_dir, &path, options)?;
         } else if path.is_file() {
             // Check extension
-            let ext = path.extension()
+            let ext = path
+                .extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
-            
+
             if !ALLOWED_EXTENSIONS.contains(&ext.as_str()) {
                 continue;
             }
-            
+
             // Get relative path
             let rel_path = path.strip_prefix(base_dir)?;
             let zip_path = rel_path.to_string_lossy();
-            
+
             // Add file to ZIP
             zip.start_file(zip_path.to_string(), *options)?;
             let content = std::fs::read(&path)?;
@@ -438,9 +464,9 @@ fn create_single_file_zip(path: &PathBuf, source: &str) -> Result<Vec<u8>> {
     let mut buffer = std::io::Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut buffer);
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-        
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
         let filename = path.file_name().unwrap().to_string_lossy();
         zip.start_file(filename.to_string(), options)?;
         zip.write_all(source.as_bytes())?;
@@ -925,10 +951,7 @@ async fn submit_agent(
 /// Simple API key configuration (for Bridge API)
 fn configure_api_key_simple() -> Result<(String, String)> {
     println!("  {}", style("Step 3: Configure API Key").bold());
-    println!(
-        "  {}",
-        style("Your LLM API key for evaluation").dim()
-    );
+    println!("  {}", style("Your LLM API key for evaluation").dim());
     println!();
 
     // First, select provider
@@ -1017,7 +1040,7 @@ async fn submit_agent_bridge(
     // Create signature message: "submit_agent:{sha256_of_package_b64}"
     let content_hash = hex::encode(Sha256::digest(package_b64.as_bytes()));
     let sign_message = format!("submit_agent:{}", content_hash);
-    
+
     // Sign with sr25519
     let signature = signing_key.sign(sign_message.as_bytes());
     let signature_hex = hex::encode(signature.0);
@@ -1050,7 +1073,7 @@ async fn submit_agent_bridge(
     };
 
     let client = reqwest::Client::new();
-    
+
     // Use Bridge API endpoint
     let url = format!("{}/api/v1/bridge/term-challenge/submit", platform_url);
 
@@ -1067,17 +1090,29 @@ async fn submit_agent_bridge(
         Ok(resp) => {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            
+
             // Try to parse as JSON
             if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
-                let success = data.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-                let agent_hash = data.get("agent_hash").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let error = data.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
-                
+                let success = data
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let agent_hash = data
+                    .get("agent_hash")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let error = data
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
                 if success {
                     Ok(agent_hash.unwrap_or_else(|| "unknown".to_string()))
                 } else {
-                    Err(anyhow::anyhow!(error.unwrap_or_else(|| format!("Server returned success=false ({})", status))))
+                    Err(anyhow::anyhow!(error.unwrap_or_else(|| format!(
+                        "Server returned success=false ({})",
+                        status
+                    ))))
                 }
             } else if status.is_success() {
                 // Non-JSON success response
