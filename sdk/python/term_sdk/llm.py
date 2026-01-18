@@ -1131,13 +1131,8 @@ class LLM:
         if self.provider == "openai" and _is_openai_responses_model(model) and not self._use_platform_bridge:
             return self._chat_openai_responses(messages, model, tools, temp, tokens, start, extra_body)
         
-        # Use streaming for platform bridge to avoid timeout issues with long-running models
-        # Streaming keeps the connection alive with continuous chunks
-        if self._use_platform_bridge:
-            return self._chat_via_stream_proxy(messages, model, tools, temp, tokens, start, extra_body)
-        
         # Build payload - different format for platform bridge vs direct API
-        if False:  # Platform bridge now uses streaming above
+        if self._use_platform_bridge:
             # Build extra_params: merge extra_body with tools if present
             merged_extra_params: Dict[str, Any] = {}
             if extra_body:
