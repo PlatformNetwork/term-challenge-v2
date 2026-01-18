@@ -1444,12 +1444,11 @@ impl ValidatorWorker {
             }
         }
 
-        // Calculate global timeout: agent (with retry) + test + 30s buffer
-        // Agent runs twice on timeout (original + retry), so total = 2 * agent_timeout + test_timeout + buffer
+        // Calculate global timeout: agent + test + 30s buffer
         let test_timeout_secs = task.config.test_timeout_secs as u64;
-        let global_timeout_secs = (timeout_secs * 2) + test_timeout_secs + 30;
+        let global_timeout_secs = timeout_secs + test_timeout_secs + 30;
         info!(
-            "Task {} global timeout: {}s (agent: {}s * 2, test: {}s, buffer: 30s)",
+            "Task {} global timeout: {}s (agent: {}s, test: {}s, buffer: 30s)",
             task_id, global_timeout_secs, timeout_secs, test_timeout_secs
         );
 
@@ -1472,44 +1471,6 @@ impl ValidatorWorker {
                     container_endpoint.as_deref(),
                 )
                 .await;
-
-            // Retry once on timeout
-            if let Ok(ref result) = agent_result {
-                if result.timed_out {
-                    warn!(
-                        "Task {} timed out, retrying once (steps executed: {})",
-                        task_id, result.steps
-                    );
-
-                    // Kill any existing agent process
-                    let _ = task_container
-                        .exec(&["pkill", "-9", "-f", "/agent/agent"])
-                        .await;
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-
-                    // Retry the agent loop
-                    agent_result = self
-                        .run_agent_loop(
-                            task_container.as_ref(),
-                            binary_path,
-                            instruction,
-                            timeout_secs,
-                            agent_hash,
-                            task_id,
-                            &llm_proxy_url,
-                            container_endpoint.as_deref(),
-                        )
-                        .await;
-
-                    if let Ok(ref retry_result) = agent_result {
-                        if retry_result.timed_out {
-                            warn!("Task {} timed out again after retry", task_id);
-                        } else if retry_result.completed {
-                            info!("Task {} succeeded on retry", task_id);
-                        }
-                    }
-                }
-            }
 
             // Extract results
             let (agent_completed, agent_stderr, steps_executed, timed_out) = match agent_result {
@@ -1622,21 +1583,25 @@ impl ValidatorWorker {
                     let _ = task_container.remove().await;
 
                     return Ok(TaskResult {
-                    passed: false,
-                    duration_ms: (global_timeout_secs * 1000) as i64,
-                    error: Some("global_timeout".to_string()),
-                    agent_stderr: Some(format!(
-                        "Task exceeded global timeout of {}s. Container was force-killed.\n\
-                         Breakdown: agent_timeout={}s × 2 attempts + test_timeout={}s + buffer=30s\n\
+                        passed: false,
+                        duration_ms: (global_timeout_secs * 1000) as i64,
+                        error: Some("global_timeout".to_string()),
+                        agent_stderr: Some(format!(
+                            "Task exceeded global timeout of {}s. Container was force-killed.\n\
+                         Breakdown: agent_timeout={}s + test_timeout={}s + buffer=30s\n\
                          Agent hash: {}\n\
                          Task ID: {}",
-                        global_timeout_secs, timeout_secs, test_timeout_secs, agent_hash, task_id
-                    )),
-                    test_output: Some(format!(
-                        "GLOBAL TIMEOUT - Container force-killed after {}s\n\
+                            global_timeout_secs,
+                            timeout_secs,
+                            test_timeout_secs,
+                            agent_hash,
+                            task_id
+                        )),
+                        test_output: Some(format!(
+                            "GLOBAL TIMEOUT - Container force-killed after {}s\n\
                          The task exceeded the maximum allowed execution time.\n\
                          Timeout breakdown:\n\
-                         - Agent execution: {}s × 2 attempts = {}s\n\
+                         - Agent execution: {}s\n\
                          - Test execution: {}s\n\
                          - Buffer: 30s\n\
                          - Total max: {}s\n\n\
@@ -1645,14 +1610,14 @@ impl ValidatorWorker {
                          - Commands take too long to execute\n\
                          - Test script hangs\n\n\
                          The container and all processes were terminated.",
-                        global_timeout_secs,
-                        timeout_secs, timeout_secs * 2,
-                        test_timeout_secs,
-                        global_timeout_secs
-                    )),
-                    steps_executed: Some(0),
-                    timed_out: true,
-                });
+                            global_timeout_secs,
+                            timeout_secs,
+                            test_timeout_secs,
+                            global_timeout_secs
+                        )),
+                        steps_executed: Some(0),
+                        timed_out: true,
+                    });
                 }
             };
 

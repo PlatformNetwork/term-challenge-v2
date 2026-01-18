@@ -33,6 +33,21 @@ use tracing::{debug, error, info, warn};
 // Validators are assigned after successful compilation for fresh assignment state
 
 // ============================================================================
+// UTILITIES
+// ============================================================================
+
+/// Truncate a string at a UTF-8 safe boundary.
+/// Returns the truncated string with "(truncated)" suffix if the original was longer.
+fn truncate_utf8_safe(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    // Find the byte index at the char boundary
+    let truncated: String = s.chars().take(max_chars).collect();
+    format!("{}...(truncated)", truncated)
+}
+
+// ============================================================================
 // SHARED STATE
 // ============================================================================
 
@@ -3358,12 +3373,7 @@ fn parse_llm_error_response(response_text: &str) -> (String, Option<String>) {
     }
 
     // Fallback: return raw text (truncated)
-    let truncated = if response_text.len() > 200 {
-        format!("{}...", &response_text[..200])
-    } else {
-        response_text.to_string()
-    };
-    (truncated, None)
+    (truncate_utf8_safe(response_text, 200), None)
 }
 
 /// Map LLM provider HTTP status code to appropriate response status
@@ -3903,29 +3913,48 @@ async fn make_llm_request(
             status_code: status.as_u16(),
             message: error_message,
             error_type,
-            raw_response: Some(if response_text.len() > 500 {
-                format!("{}...(truncated)", &response_text[..500])
-            } else {
-                response_text
-            }),
+            raw_response: Some(truncate_utf8_safe(&response_text, 500)),
         }
         .into());
     }
 
-    // Parse response
-    let json: serde_json::Value = serde_json::from_str(&response_text).map_err(|e| {
-        // Include the raw response in the error for debugging
-        let truncated = if response_text.len() > 500 {
-            format!("{}...(truncated)", &response_text[..500])
-        } else {
-            response_text.clone()
-        };
-        anyhow::anyhow!(
-            "Failed to parse response: {} | Raw response: {}",
-            e,
-            truncated
-        )
-    })?;
+    // Parse response - handle non-JSON responses gracefully
+    let json: serde_json::Value = match serde_json::from_str(&response_text) {
+        Ok(json) => json,
+        Err(_parse_err) => {
+            // Response is not valid JSON - this can happen with some provider errors
+            // (e.g., "error code: 504" from nginx/cloudflare proxies)
+            let truncated = truncate_utf8_safe(&response_text, 500);
+
+            // Check if the raw response indicates a known error condition
+            let lower_response = response_text.to_lowercase();
+            let (error_type, status_code) =
+                if lower_response.contains("504") || lower_response.contains("gateway timeout") {
+                    (Some("gateway_timeout".to_string()), 504u16)
+                } else if lower_response.contains("503")
+                    || lower_response.contains("service unavailable")
+                {
+                    (Some("service_unavailable".to_string()), 503u16)
+                } else if lower_response.contains("502") || lower_response.contains("bad gateway") {
+                    (Some("bad_gateway".to_string()), 502u16)
+                } else {
+                    (Some("invalid_response".to_string()), 502u16)
+                };
+
+            warn!(
+                "LLM API: received non-JSON response (detected error type: {:?}): {}",
+                error_type, truncated
+            );
+
+            return Err(LlmApiError {
+                status_code,
+                message: format!("LLM provider returned non-JSON response: {}", truncated),
+                error_type,
+                raw_response: Some(truncated),
+            }
+            .into());
+        }
+    };
 
     // Use specialized parser for Responses API
     if use_responses_api {
@@ -4399,11 +4428,7 @@ async fn make_llm_stream_request(
             status_code: status.as_u16(),
             message: error_message,
             error_type,
-            raw_response: Some(if error_text.len() > 500 {
-                format!("{}...(truncated)", &error_text[..500])
-            } else {
-                error_text
-            }),
+            raw_response: Some(truncate_utf8_safe(&error_text, 500)),
         }
         .into());
     }
