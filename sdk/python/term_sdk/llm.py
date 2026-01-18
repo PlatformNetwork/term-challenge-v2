@@ -1131,8 +1131,13 @@ class LLM:
         if self.provider == "openai" and _is_openai_responses_model(model) and not self._use_platform_bridge:
             return self._chat_openai_responses(messages, model, tools, temp, tokens, start, extra_body)
         
-        # Build payload - different format for platform bridge vs direct API
+        # Use streaming for platform bridge to avoid timeout issues with long-running models
+        # Streaming keeps the connection alive with continuous chunks
         if self._use_platform_bridge:
+            return self._chat_via_stream_proxy(messages, model, tools, temp, tokens, start, extra_body)
+        
+        # Build payload - different format for platform bridge vs direct API
+        if False:  # Platform bridge now uses streaming above
             # Build extra_params: merge extra_body with tools if present
             merged_extra_params: Dict[str, Any] = {}
             if extra_body:
@@ -1767,6 +1772,154 @@ class LLM:
                 message=f"LLM proxy stream request failed: {e}",
                 details={"proxy_url": stream_url}
             )
+    
+    def _chat_via_stream_proxy(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        tools: Optional[List[Tool]],
+        temperature: Optional[float],
+        max_tokens: int,
+        start: float,
+        extra_body: Optional[Dict[str, Any]] = None,
+    ) -> LLMResponse:
+        """Chat via streaming proxy to avoid timeout issues.
+        
+        Uses streaming internally but returns a complete LLMResponse.
+        This prevents connection timeouts for long-running model calls.
+        """
+        # Build extra_params: merge extra_body with tools if present
+        merged_extra_params: Dict[str, Any] = {}
+        if extra_body:
+            merged_extra_params.update(extra_body)
+        if tools:
+            merged_extra_params["tools"] = [t.to_dict() for t in tools]
+            merged_extra_params["tool_choice"] = "auto"
+        
+        stream_url = self._api_url + "/stream"
+        
+        payload = {
+            "agent_hash": self._agent_hash,
+            "messages": messages,
+            "model": model,
+            "max_tokens": max_tokens,
+            "task_id": os.environ.get("TERM_TASK_ID"),
+            "extra_params": merged_extra_params if merged_extra_params else None,
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        
+        headers = {"Content-Type": "application/json"}
+        
+        full_text = ""
+        tool_calls: List[Dict[str, Any]] = []
+        finish_reason = None
+        
+        try:
+            with self._client.stream("POST", stream_url, headers=headers, json=payload) as response:
+                if not response.is_success:
+                    try:
+                        error_text = response.read().decode()
+                        error_data = json.loads(error_text)
+                        error_msg = error_data.get("error", error_text)
+                    except Exception:
+                        error_msg = f"HTTP {response.status_code}"
+                    
+                    # Check for cost_limit_exceeded
+                    error_str = str(error_msg).lower()
+                    if "cost_limit_exceeded" in error_str or "cost limit" in error_str:
+                        import re
+                        limit, used = 0.0, 0.0
+                        match = re.search(r'\$?([\d.]+)\s*used\s*of\s*\$?([\d.]+)', error_str)
+                        if match:
+                            used = float(match.group(1))
+                            limit = float(match.group(2))
+                        raise CostLimitExceeded(message=str(error_msg), limit=limit, used=used)
+                    
+                    raise LLMError(
+                        code="proxy_error",
+                        message=f"Streaming proxy error: {error_msg}",
+                        details={"status_code": response.status_code, "proxy_url": stream_url}
+                    )
+                
+                # Accumulate tool_calls state for streaming
+                current_tool_calls: Dict[int, Dict[str, Any]] = {}
+                
+                for line in response.iter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            choice = chunk.get("choices", [{}])[0]
+                            delta = choice.get("delta", {})
+                            
+                            # Accumulate text content
+                            content = delta.get("content", "")
+                            if content:
+                                full_text += content
+                            
+                            # Accumulate tool calls
+                            if "tool_calls" in delta:
+                                for tc in delta["tool_calls"]:
+                                    idx = tc.get("index", 0)
+                                    if idx not in current_tool_calls:
+                                        current_tool_calls[idx] = {
+                                            "id": tc.get("id", ""),
+                                            "type": tc.get("type", "function"),
+                                            "function": {"name": "", "arguments": ""}
+                                        }
+                                    if "id" in tc and tc["id"]:
+                                        current_tool_calls[idx]["id"] = tc["id"]
+                                    if "function" in tc:
+                                        fn = tc["function"]
+                                        if "name" in fn:
+                                            current_tool_calls[idx]["function"]["name"] = fn["name"]
+                                        if "arguments" in fn:
+                                            current_tool_calls[idx]["function"]["arguments"] += fn["arguments"]
+                            
+                            # Capture finish reason
+                            if choice.get("finish_reason"):
+                                finish_reason = choice["finish_reason"]
+                                
+                        except json.JSONDecodeError:
+                            pass
+                
+                # Convert accumulated tool_calls
+                if current_tool_calls:
+                    tool_calls = [current_tool_calls[i] for i in sorted(current_tool_calls.keys())]
+                    
+        except httpx.RequestError as e:
+            raise LLMError(
+                code="proxy_unavailable",
+                message=f"LLM proxy stream request failed: {e}",
+                details={"proxy_url": stream_url}
+            )
+        
+        latency_ms = int((time.time() - start) * 1000)
+        
+        # Estimate tokens (actual not available in streaming)
+        est_tokens = len(full_text) // 4
+        cost = 0.0  # Cost not available in streaming
+        
+        self.total_tokens += est_tokens
+        self.total_cost += cost
+        self.request_count += 1
+        self._update_model_stats(model, est_tokens, cost)
+        
+        _log(f"[platform] {model}: {est_tokens} tokens, ${cost:.4f}, {latency_ms}ms")
+        
+        return LLMResponse(
+            text=full_text,
+            model=model,
+            tokens=est_tokens,
+            cost=cost,
+            latency_ms=latency_ms,
+            tool_calls=tool_calls if tool_calls else None,
+            finish_reason=finish_reason,
+            raw=None,
+        )
     
     def chat_stream_full(
         self,
