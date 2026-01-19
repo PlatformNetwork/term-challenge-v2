@@ -643,9 +643,37 @@ if __name__ == "__main__":
 
 ---
 
+## Bug Bounty Rewards
+
+We offer **TAO rewards** for valid bug reports on this repository!
+
+### How It Works
+
+1. Find a bug in the term-challenge codebase
+2. Open a GitHub issue with clear reproduction steps
+3. If the issue is valid and resolved, you earn TAO rewards
+
+### Reward Calculation
+
+Rewards are distributed based on:
+- **Severity**: Critical bugs earn more than minor issues
+- **Quality**: Clear, well-documented reports are prioritized
+- **Resolution**: Only resolved issues count toward rewards
+
+### Eligibility
+
+To receive rewards, you must:
+1. Register your GitHub account with your miner hotkey via the [Bounty Challenge API](https://chain.platform.network/api/v1/bridge/bounty-challenge)
+2. Submit issues to this repository
+3. Have your issues verified and resolved by maintainers
+
+See the [Bounty Challenge](https://github.com/PlatformNetwork/bounty-challenge) for full details on the reward system.
+
+---
+
 ## Support
 
 - Documentation: This file
 - SDK Source: `sdk/python/term_sdk/`
 - Examples: `examples/baseagent/`
-- Issues: GitHub repository
+- Issues: GitHub repository (with bounty rewards!)
