@@ -1877,29 +1877,14 @@ impl ValidatorWorker {
                 let elapsed = loop_start.elapsed().as_secs();
                 info!("Agent process exited after {}s", elapsed);
 
-                // Check if agent completed successfully by looking for [DONE] marker
-                let stdout = self
-                    .read_container_file(task_container, "/agent/stdout.log")
-                    .await;
-                let stderr = self
-                    .read_container_file(task_container, "/agent/stderr.log")
-                    .await;
-
-                let completed = stdout.contains("[DONE]")
-                    || stdout.to_lowercase().contains("task completed")
-                    || stdout.to_lowercase().contains("completed successfully");
-
-                if completed {
-                    info!("Agent completed successfully");
-                    self.stream_task_progress(agent_hash, task_id, task_id, "", "", 0, "completed");
-                } else {
-                    info!("Agent exited without completion marker");
-                    self.stream_task_progress(agent_hash, task_id, task_id, "", "", 0, "failed");
-                }
+                // Agent exited - consider it completed (tests will determine pass/fail)
+                // The actual success is determined by running the test script, not by markers
+                info!("Agent execution finished, will run tests to determine result");
+                self.stream_task_progress(agent_hash, task_id, task_id, "", "", 0, "completed");
 
                 let logs = self.read_agent_logs(task_container).await;
                 return Ok(AgentLoopResult {
-                    completed,
+                    completed: true,
                     logs,
                     steps: 0,
                     timed_out: false,
