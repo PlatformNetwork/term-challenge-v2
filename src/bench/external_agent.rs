@@ -277,11 +277,8 @@ impl ExternalAgent {
         let config = Config {
             image: Some(AGENT_BASE_IMAGE.to_string()),
             hostname: Some("agent".to_string()),
-            cmd: Some(vec![
-                "tail".to_string(),
-                "-f".to_string(),
-                "/dev/null".to_string(),
-            ]),
+            entrypoint: Some(vec![]), // Disable image ENTRYPOINT to prevent early exit
+            cmd: Some(vec!["sleep".to_string(), "infinity".to_string()]),
             working_dir: Some("/app".to_string()),
             env: Some(env),
             tty: Some(false),
