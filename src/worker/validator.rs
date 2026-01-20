@@ -1674,15 +1674,16 @@ impl ValidatorWorker {
         })
     }
 
-    /// Run the agent binary using SDK 2.0 architecture
+    /// Run the agent binary using SDK 3.0 CLI architecture
     ///
-    /// SDK 2.0: The agent runs autonomously and executes commands via subprocess.
-    /// Communication:
-    ///   - POST /start - Send instruction, max_steps, timeout_secs to start execution
-    ///   - GET /status - Poll for execution status (running/completed/failed)
+    /// SDK 3.0: The agent runs as a CLI process with --instruction argument.
+    /// No HTTP server - agent runs to completion and exits.
     ///
-    /// If `container_endpoint` is provided (container name for Docker DNS resolution),
-    /// HTTP requests are made directly. Otherwise, falls back to using docker exec with bash /dev/tcp.
+    /// Flow:
+    /// 1. Copy binary to container
+    /// 2. Write instruction to file (avoids shell escaping issues)
+    /// 3. Start agent with: /agent/agent --instruction "$(cat /agent/instruction.txt)"
+    /// 4. Poll process status until completion or timeout
     ///
     /// Returns AgentLoopResult with completion status, logs, steps, and timeout flag
     #[allow(clippy::too_many_arguments)]
@@ -1695,16 +1696,11 @@ impl ValidatorWorker {
         agent_hash: &str,
         task_id: &str,
         llm_proxy_url: &str,
-        container_endpoint: Option<&str>,
+        _container_endpoint: Option<&str>,
     ) -> Result<AgentLoopResult> {
-        const AGENT_PORT: u16 = 8765;
-        const MAX_STEPS: usize = 500;
-        const STATUS_POLL_INTERVAL_MS: u64 = 500;
-        const AGENT_STARTUP_TIMEOUT_MS: u64 = 15000; // 15 seconds to start
-
         let short_hash = &agent_hash[..16.min(agent_hash.len())];
         info!(
-            "Starting agent (SDK 2.0) for {} on task {} (HTTP mode)",
+            "Starting agent (SDK 3.0 CLI mode) for {} on task {}",
             short_hash, task_id
         );
 
@@ -1733,230 +1729,62 @@ impl ValidatorWorker {
             .await
             .context("Failed to make binary executable")?;
 
-        info!("Binary copied successfully, starting HTTP server...");
+        info!("Binary copied successfully");
 
-        // Step 2: Start the agent HTTP server
-        // Environment variables are passed to configure the agent
-        let start_cmd = format!(
-            "AGENT_PORT={} LLM_PROXY_URL='{}' TERM_AGENT_HASH='{}' TERM_TASK_ID='{}' \
-             EVALUATION_MODE=true FORCE_HTTP_SERVER=1 PYTHONUNBUFFERED=1 \
-             nohup /agent/agent > /agent/stdout.log 2>/agent/stderr.log &",
-            AGENT_PORT, llm_proxy_url, agent_hash, task_id
+        // Step 2: Write instruction to file (avoids shell escaping issues)
+        let instruction_b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            instruction.as_bytes(),
+        );
+        task_container
+            .exec(&[
+                "sh",
+                "-c",
+                &format!(
+                    "echo '{}' | base64 -d > /agent/instruction.txt",
+                    instruction_b64
+                ),
+            ])
+            .await
+            .context("Failed to write instruction file")?;
+
+        // Verify instruction was written
+        let verify = task_container
+            .exec(&["sh", "-c", "cat /agent/instruction.txt | head -c 100"])
+            .await?;
+        info!(
+            "Instruction file written: {}...",
+            verify.stdout.chars().take(50).collect::<String>()
         );
 
+        // Step 3: Build environment variables and start agent with --instruction
+        let env_vars = format!(
+            "LLM_PROXY_URL='{}' TERM_AGENT_HASH='{}' TERM_TASK_ID='{}' \
+             EVALUATION_MODE=true PYTHONUNBUFFERED=1",
+            llm_proxy_url, agent_hash, task_id
+        );
+
+        let start_cmd = format!(
+            r#"nohup sh -c 'cd /app && {} /agent/agent --instruction "$(cat /agent/instruction.txt)"' > /agent/stdout.log 2> /agent/stderr.log &"#,
+            env_vars
+        );
+
+        info!("Starting agent with --instruction...");
         task_container
             .exec(&["sh", "-c", &start_cmd])
             .await
-            .context("Failed to start agent HTTP server")?;
+            .context("Failed to start agent")?;
 
-        // Step 3: Wait for agent HTTP server to be ready
-        // Build the agent base URL - use direct HTTP if we have an endpoint (container name), otherwise use exec
-        let agent_base_url =
-            container_endpoint.map(|host| format!("http://{}:{}", host, AGENT_PORT));
+        // Give the process time to start
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
-        info!(
-            "Waiting for agent HTTP server on port {} (mode: {})...",
-            AGENT_PORT,
-            if agent_base_url.is_some() {
-                "direct HTTP"
-            } else {
-                "exec"
-            }
-        );
-
-        let mut agent_ready = false;
-        let startup_start = std::time::Instant::now();
-        let max_attempts = (AGENT_STARTUP_TIMEOUT_MS / 100) as usize;
-
-        for attempt in 1..=max_attempts {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-
-            // Check health endpoint
-            let health_ok = if let Some(ref base_url) = agent_base_url {
-                // Direct HTTP request to container
-                match self
-                    .http_client
-                    .get(format!("{}/health", base_url))
-                    .timeout(Duration::from_secs(2))
-                    .send()
-                    .await
-                {
-                    Ok(resp) if resp.status().is_success() => {
-                        resp.text().await.map(|t| t.contains("ok")).unwrap_or(false)
-                    }
-                    _ => false,
-                }
-            } else {
-                // Fallback: use exec with bash /dev/tcp (works without curl)
-                let health_cmd = format!(
-                    r#"exec 3<>/dev/tcp/127.0.0.1/{} && echo -e "GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n" >&3 && cat <&3 | tail -1"#,
-                    AGENT_PORT
-                );
-                match task_container.exec(&["bash", "-c", &health_cmd]).await {
-                    Ok(result) => result.success() && result.stdout.contains("ok"),
-                    Err(_) => false,
-                }
-            };
-
-            if health_ok {
-                agent_ready = true;
-                info!(
-                    "Agent HTTP server ready after {}ms ({} attempts)",
-                    startup_start.elapsed().as_millis(),
-                    attempt
-                );
-                break;
-            }
-
-            // Log progress every 2 seconds
-            if attempt % 20 == 0 {
-                debug!(
-                    "Still waiting for agent... attempt {}/{} ({}ms elapsed)",
-                    attempt,
-                    max_attempts,
-                    startup_start.elapsed().as_millis()
-                );
-
-                // Check if process is still running
-                let ps_result = task_container
-                    .exec(&[
-                        "sh",
-                        "-c",
-                        "ps aux | grep agent | grep -v grep || echo 'No agent process'",
-                    ])
-                    .await;
-                if let Ok(ps) = ps_result {
-                    debug!("Process status: {}", ps.stdout.trim());
-                }
-            }
-        }
-
-        if !agent_ready {
-            // Read logs for diagnosis
-            let stderr = self
-                .read_container_file(task_container, "/agent/stderr.log")
-                .await;
-            let stdout = self
-                .read_container_file(task_container, "/agent/stdout.log")
-                .await;
-
-            error!(
-                "Agent HTTP server failed to start within {}ms",
-                AGENT_STARTUP_TIMEOUT_MS
-            );
-            error!(
-                "=== Agent stderr.log ===\n{}",
-                &stderr[..stderr.len().min(3000)]
-            );
-            error!(
-                "=== Agent stdout.log ===\n{}",
-                &stdout[..stdout.len().min(1000)]
-            );
-
-            return Err(anyhow::anyhow!(
-                "Agent HTTP server failed to start within {}ms.\n\n\
-                 === STDERR ===\n{}\n\n\
-                 === STDOUT ===\n{}",
-                AGENT_STARTUP_TIMEOUT_MS,
-                stderr,
-                stdout
-            ));
-        }
-
-        // Step 4: SDK 2.0 - Send /start request then poll /status
+        // Step 4: Poll until agent process completes or timeout
         let loop_start = std::time::Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
-
-        // Build the /start request body
-        let start_body = serde_json::json!({
-            "instruction": instruction,
-            "max_steps": MAX_STEPS,
-            "timeout_secs": timeout_secs,
-        });
-
-        info!(
-            "Sending POST /start to agent (instruction: {} chars)",
-            instruction.len()
-        );
-
-        // Send /start request
-        let start_success = if let Some(ref base_url) = agent_base_url {
-            // Direct HTTP request
-            let start_result = tokio::time::timeout(
-                Duration::from_secs(10),
-                self.http_client
-                    .post(format!("{}/start", base_url))
-                    .json(&start_body)
-                    .send(),
-            )
-            .await;
-
-            match start_result {
-                Ok(Ok(resp)) if resp.status().is_success() => {
-                    info!("Agent acknowledged /start request");
-                    true
-                }
-                Ok(Ok(resp)) => {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    error!("Agent /start failed: {} - {}", status, body);
-                    false
-                }
-                Ok(Err(e)) => {
-                    error!("Agent /start request error: {}", e);
-                    false
-                }
-                Err(_) => {
-                    error!("Agent /start timeout");
-                    false
-                }
-            }
-        } else {
-            // Fallback: exec with bash /dev/tcp
-            let request_json = start_body.to_string();
-            let escaped_json = request_json.replace('\\', "\\\\").replace('"', "\\\"");
-            let http_cmd = format!(
-                r#"exec 3<>/dev/tcp/127.0.0.1/{port} && echo -e "POST /start HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n{body}" >&3 && cat <&3 | tail -1"#,
-                port = AGENT_PORT,
-                len = request_json.len(),
-                body = escaped_json
-            );
-
-            match task_container.exec(&["bash", "-c", &http_cmd]).await {
-                Ok(result) if result.success() && result.stdout.contains("started") => {
-                    info!("Agent acknowledged /start request (exec mode)");
-                    true
-                }
-                Ok(result) => {
-                    error!(
-                        "Agent /start failed (exec): exit={}, out={}",
-                        result.exit_code,
-                        result.stdout.trim()
-                    );
-                    false
-                }
-                Err(e) => {
-                    error!("Agent /start exec error: {}", e);
-                    false
-                }
-            }
-        };
-
-        if !start_success {
-            let logs = self.read_agent_logs(task_container).await;
-            return Err(anyhow::anyhow!(
-                "Agent failed to acknowledge /start request.\n\nAgent logs:\n{}",
-                logs
-            ));
-        }
-
-        // Step 5: Poll /status until completion or timeout
-        let mut last_step = 0i32;
-        let mut consecutive_errors = 0usize;
-        const MAX_CONSECUTIVE_ERRORS: usize = 5;
+        let mut last_log_lines = 0usize;
 
         // Stream progress tracking
-        const STREAM_INTERVAL_MS: u64 = 60000; // Stream logs every 60 seconds (1 minute) as requested
+        const STREAM_INTERVAL_MS: u64 = 60000;
         let mut last_stream_time = std::time::Instant::now();
         let mut last_stdout_len = 0usize;
         let mut last_stderr_len = 0usize;
@@ -1964,33 +1792,36 @@ impl ValidatorWorker {
         // Send initial "running" status
         self.stream_task_progress(agent_hash, task_id, task_id, "", "", 0, "running");
 
+        info!("Waiting for agent to complete (CLI mode)...");
+
         loop {
-            // Check global timeout
+            // Check timeout
             if loop_start.elapsed() > timeout {
-                warn!(
-                    "Task timeout after {}s (last step: {})",
-                    loop_start.elapsed().as_secs(),
-                    last_step
-                );
-                // Stream final status before returning
-                self.stream_task_progress(
-                    agent_hash, task_id, task_id, "", "", last_step, "timeout",
-                );
+                warn!("Task timeout after {}s", loop_start.elapsed().as_secs());
+                self.stream_task_progress(agent_hash, task_id, task_id, "", "", 0, "timeout");
                 let logs = self.read_agent_logs(task_container).await;
                 return Ok(AgentLoopResult {
                     completed: false,
                     logs,
-                    steps: last_step,
+                    steps: 0,
                     timed_out: true,
                 });
             }
 
-            // Wait before polling
-            tokio::time::sleep(Duration::from_millis(STATUS_POLL_INTERVAL_MS)).await;
+            tokio::time::sleep(Duration::from_millis(1000)).await;
 
-            // Stream logs periodically (every STREAM_INTERVAL_MS)
+            // Check if agent process is still running
+            let ps = task_container
+                .exec(&["sh", "-c", "ps aux | grep '/agent/agent' | grep -v grep"])
+                .await;
+
+            let agent_running = match &ps {
+                Ok(result) => !result.stdout.trim().is_empty(),
+                Err(_) => false,
+            };
+
+            // Stream logs periodically
             if last_stream_time.elapsed().as_millis() >= STREAM_INTERVAL_MS as u128 {
-                // Read current log files
                 let current_stderr = self
                     .read_container_file(task_container, "/agent/stderr.log")
                     .await;
@@ -1998,7 +1829,6 @@ impl ValidatorWorker {
                     .read_container_file(task_container, "/agent/stdout.log")
                     .await;
 
-                // Extract only new content since last read
                 let stderr_chunk = if current_stderr.len() > last_stderr_len {
                     &current_stderr[last_stderr_len..]
                 } else {
@@ -2010,7 +1840,6 @@ impl ValidatorWorker {
                     ""
                 };
 
-                // Stream incremental update if there's new content (redact API keys)
                 if !stderr_chunk.is_empty() || !stdout_chunk.is_empty() {
                     self.stream_task_progress(
                         agent_hash,
@@ -2018,190 +1847,69 @@ impl ValidatorWorker {
                         task_id,
                         &redact_api_keys(stdout_chunk),
                         &redact_api_keys(stderr_chunk),
-                        last_step,
+                        0,
                         "",
                     );
                 }
 
-                // Update tracking
                 last_stdout_len = current_stdout.len();
                 last_stderr_len = current_stderr.len();
                 last_stream_time = std::time::Instant::now();
             }
 
-            // Poll /status
-            let status_response = if let Some(ref base_url) = agent_base_url {
-                // Direct HTTP request
-                let status_result = tokio::time::timeout(
-                    Duration::from_secs(5),
-                    self.http_client.get(format!("{}/status", base_url)).send(),
-                )
+            // Log progress periodically
+            let stdout = self
+                .read_container_file(task_container, "/agent/stdout.log")
                 .await;
-
-                match status_result {
-                    Ok(Ok(resp)) if resp.status().is_success() => match resp.text().await {
-                        Ok(text) => Some(text),
-                        Err(e) => {
-                            warn!("Failed to read /status response: {}", e);
-                            None
-                        }
-                    },
-                    Ok(Ok(resp)) => {
-                        warn!("Agent /status returned: {}", resp.status());
-                        None
-                    }
-                    Ok(Err(e)) => {
-                        warn!("Agent /status request error: {}", e);
-                        None
-                    }
-                    Err(_) => {
-                        warn!("Agent /status timeout");
-                        None
+            let log_lines = stdout.lines().count();
+            if log_lines > last_log_lines {
+                let new_lines: Vec<&str> = stdout.lines().skip(last_log_lines).take(5).collect();
+                for line in &new_lines {
+                    if !line.trim().is_empty() {
+                        debug!("Agent: {}", line.chars().take(100).collect::<String>());
                     }
                 }
-            } else {
-                // Fallback: exec with bash /dev/tcp
-                let http_cmd = format!(
-                    r#"exec 3<>/dev/tcp/127.0.0.1/{} && echo -e "GET /status HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n" >&3 && cat <&3 | sed '1,/^\r$/d'"#,
-                    AGENT_PORT
-                );
-
-                match task_container.exec(&["bash", "-c", &http_cmd]).await {
-                    Ok(result) if result.success() => Some(result.stdout),
-                    Ok(result) => {
-                        warn!("Agent /status exec failed: {}", result.stderr.trim());
-                        None
-                    }
-                    Err(e) => {
-                        warn!("Agent /status exec error: {}", e);
-                        None
-                    }
-                }
-            };
-
-            // Parse status response
-            let status: serde_json::Value = match status_response {
-                Some(text) => match serde_json::from_str(&text) {
-                    Ok(v) => {
-                        consecutive_errors = 0;
-                        v
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Invalid /status JSON: {} - raw: {}",
-                            e,
-                            &text[..text.len().min(200)]
-                        );
-                        consecutive_errors += 1;
-                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                            error!("Too many /status errors, aborting");
-                            let logs = self.read_agent_logs(task_container).await;
-                            return Ok(AgentLoopResult {
-                                completed: false,
-                                logs,
-                                steps: last_step,
-                                timed_out: false,
-                            });
-                        }
-                        continue;
-                    }
-                },
-                None => {
-                    consecutive_errors += 1;
-                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                        error!("Too many /status errors, aborting");
-                        let logs = self.read_agent_logs(task_container).await;
-                        return Ok(AgentLoopResult {
-                            completed: false,
-                            logs,
-                            steps: last_step,
-                            timed_out: false,
-                        });
-                    }
-                    continue;
-                }
-            };
-
-            // Extract status fields
-            let agent_status = status["status"].as_str().unwrap_or("unknown");
-            let steps = status["steps"].as_i64().unwrap_or(0) as i32;
-            let elapsed = status["elapsed_secs"].as_i64().unwrap_or(0);
-            let error_msg = status["error"].as_str();
-            let is_done = status["done"].as_bool().unwrap_or(false);
-
-            // Update step count
-            if steps > last_step {
-                last_step = steps;
-                debug!(
-                    "Agent at step {}, elapsed {}s, status: {}",
-                    steps, elapsed, agent_status
-                );
+                last_log_lines = log_lines;
             }
 
-            // Check completion
-            match agent_status {
-                "completed" => {
-                    info!(
-                        "Agent completed successfully at step {} ({}s)",
-                        steps, elapsed
-                    );
-                    // Stream final status
-                    self.stream_task_progress(
-                        agent_hash,
-                        task_id,
-                        task_id,
-                        "",
-                        "",
-                        steps,
-                        "completed",
-                    );
-                    let logs = self.read_agent_logs(task_container).await;
-                    return Ok(AgentLoopResult {
-                        completed: true,
-                        logs,
-                        steps,
-                        timed_out: false,
-                    });
-                }
-                "failed" => {
-                    let err = error_msg.unwrap_or("unknown error");
-                    warn!("Agent failed at step {}: {}", steps, err);
-                    // Stream final status
-                    self.stream_task_progress(
-                        agent_hash, task_id, task_id, "", "", steps, "failed",
-                    );
-                    let logs = self.read_agent_logs(task_container).await;
-                    return Ok(AgentLoopResult {
-                        completed: false,
-                        logs,
-                        steps,
-                        timed_out: false,
-                    });
-                }
-                "running" | "idle" => {
-                    // Still running, continue polling
-                    // Log progress every 10 seconds
-                    if elapsed % 10 == 0 && elapsed > 0 {
-                        info!("Agent running: step {}, elapsed {}s", steps, elapsed);
-                    }
-                }
-                _ => {
-                    debug!("Unknown agent status: {}", agent_status);
-                }
-            }
+            // Agent completed (process exited)
+            if !agent_running {
+                let elapsed = loop_start.elapsed().as_secs();
+                info!("Agent process exited after {}s", elapsed);
 
-            // Also check done flag (backwards compatibility)
-            if is_done {
-                info!("Agent marked done at step {} ({}s)", steps, elapsed);
-                // Stream final status
-                self.stream_task_progress(agent_hash, task_id, task_id, "", "", steps, "completed");
+                // Check if agent completed successfully by looking for [DONE] marker
+                let stdout = self
+                    .read_container_file(task_container, "/agent/stdout.log")
+                    .await;
+                let stderr = self
+                    .read_container_file(task_container, "/agent/stderr.log")
+                    .await;
+
+                let completed = stdout.contains("[DONE]")
+                    || stdout.to_lowercase().contains("task completed")
+                    || stdout.to_lowercase().contains("completed successfully");
+
+                if completed {
+                    info!("Agent completed successfully");
+                    self.stream_task_progress(agent_hash, task_id, task_id, "", "", 0, "completed");
+                } else {
+                    info!("Agent exited without completion marker");
+                    self.stream_task_progress(agent_hash, task_id, task_id, "", "", 0, "failed");
+                }
+
                 let logs = self.read_agent_logs(task_container).await;
                 return Ok(AgentLoopResult {
-                    completed: true,
+                    completed,
                     logs,
-                    steps,
+                    steps: 0,
                     timed_out: false,
                 });
+            }
+
+            // Log progress every 30 seconds
+            let elapsed = loop_start.elapsed().as_secs();
+            if elapsed > 0 && elapsed % 30 == 0 {
+                info!("Agent still running: {}s elapsed", elapsed);
             }
         }
     }

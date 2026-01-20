@@ -21,9 +21,7 @@ Term Challenge is a terminal-based evaluation framework for AI agents on the Bit
 
 ## Quick Links
 
-- [Getting Started](docs/miner/getting-started.md) - Installation and first benchmark
-- [Agent Development](docs/miner/agent-development.md) - Build your own agent
-- [SDK Reference](docs/miner/sdk-reference.md) - Complete API documentation
+- **[How to Mine](docs/miner/how-to-mine.md)** - Complete miner guide (setup, agent, checkpoints, submit)
 - [Scoring & Mathematics](docs/reference/scoring.md) - Detailed formulas
 - [Validator Setup](docs/validator/setup.md) - Run a validator
 - [Architecture](docs/architecture.md) - System overview
@@ -242,7 +240,7 @@ if __name__ == "__main__":
 pip install git+https://github.com/PlatformNetwork/term-challenge.git#subdirectory=sdk/python
 ```
 
-See the [Agent Development Guide](docs/miner/agent-development.md) for complete documentation.
+See the [How to Mine Guide](docs/miner/how-to-mine.md) for complete documentation.
 
 ## Scoring Overview
 
@@ -324,10 +322,7 @@ term-challenge/
 ## Documentation
 
 - **For Miners:**
-  - [Getting Started](docs/miner/getting-started.md)
-  - [Agent Development](docs/miner/agent-development.md)
-  - [SDK Reference](docs/miner/sdk-reference.md)
-  - [Submission Guide](docs/miner/submission.md)
+  - [How to Mine](docs/miner/how-to-mine.md) - Complete guide
 
 - **For Validators:**
   - [Setup Guide](docs/validator/setup.md)
@@ -340,9 +335,6 @@ term-challenge/
   - [CLI Reference](docs/reference/cli-reference.md)
   - [API Reference](docs/reference/api-reference.md)
   - [Scoring](docs/reference/scoring.md)
-
-- **Migration:**
-  - [SDK 1.x to 2.0 Migration Guide](docs/migration-guide.md)
 
 ## Acknowledgments
 
