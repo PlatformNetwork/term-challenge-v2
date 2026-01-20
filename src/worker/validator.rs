@@ -7,6 +7,7 @@
 //! 4. Download binaries, run evaluation in Docker, submit results
 //! 5. Load tasks from terminal-bench@2.0 registry (first 30 tasks)
 
+use crate::bench::binary_agent::redact_api_keys;
 use crate::bench::registry::RegistryClient;
 use crate::client::websocket::validator::ValidatorEvent;
 use crate::container::backend::{ContainerBackend, ContainerHandle, SandboxConfig};
@@ -2009,14 +2010,14 @@ impl ValidatorWorker {
                     ""
                 };
 
-                // Stream incremental update if there's new content
+                // Stream incremental update if there's new content (redact API keys)
                 if !stderr_chunk.is_empty() || !stdout_chunk.is_empty() {
                     self.stream_task_progress(
                         agent_hash,
                         task_id,
                         task_id,
-                        stdout_chunk,
-                        stderr_chunk,
+                        &redact_api_keys(stdout_chunk),
+                        &redact_api_keys(stderr_chunk),
                         last_step,
                         "",
                     );
@@ -2214,6 +2215,7 @@ impl ValidatorWorker {
     }
 
     /// Read agent logs from container (both stdout and stderr)
+    /// API keys are automatically redacted from logs for security
     async fn read_agent_logs(&self, container: &dyn ContainerHandle) -> String {
         let stderr = self
             .read_container_file(container, "/agent/stderr.log")
@@ -2225,12 +2227,12 @@ impl ValidatorWorker {
         let mut logs = String::new();
         if !stderr.is_empty() {
             logs.push_str("=== Agent stderr ===\n");
-            logs.push_str(&stderr);
+            logs.push_str(&redact_api_keys(&stderr));
             logs.push('\n');
         }
         if !stdout.is_empty() {
             logs.push_str("=== Agent stdout ===\n");
-            logs.push_str(&stdout);
+            logs.push_str(&redact_api_keys(&stdout));
         }
         logs
     }

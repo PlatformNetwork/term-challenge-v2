@@ -12,8 +12,10 @@
 //! 7. Run verification tests
 
 use anyhow::{Context, Result};
+use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
@@ -21,6 +23,38 @@ use super::environment::DockerEnvironment;
 use super::task::Task;
 use super::verifier::{VerificationResult, Verifier};
 use crate::container::compiler;
+
+// =============================================================================
+// API KEY REDACTION (security)
+// =============================================================================
+
+/// Patterns for detecting API keys in logs
+static API_KEY_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    vec![
+        // OpenRouter: sk-or-v1-xxx
+        Regex::new(r"sk-or-v1-[a-zA-Z0-9]{32,}").unwrap(),
+        // OpenAI: sk-xxx or sk-proj-xxx
+        Regex::new(r"sk-(?:proj-)?[a-zA-Z0-9]{20,}").unwrap(),
+        // Anthropic: sk-ant-xxx
+        Regex::new(r"sk-ant-[a-zA-Z0-9\-]{20,}").unwrap(),
+        // Generic API key patterns
+        Regex::new(r"(?i)api[_\-]?key\s*[:=]\s*[a-zA-Z0-9_\-]{20,}").unwrap(),
+        Regex::new(r"(?i)bearer\s+[a-zA-Z0-9_\-]{20,}").unwrap(),
+        // Environment variable leaks
+        Regex::new(r"OPENROUTER_API_KEY=[^\s]+").unwrap(),
+        Regex::new(r"OPENAI_API_KEY=[^\s]+").unwrap(),
+        Regex::new(r"ANTHROPIC_API_KEY=[^\s]+").unwrap(),
+    ]
+});
+
+/// Redact API keys from text to prevent leaks in logs
+pub fn redact_api_keys(text: &str) -> String {
+    let mut result = text.to_string();
+    for pattern in API_KEY_PATTERNS.iter() {
+        result = pattern.replace_all(&result, "[REDACTED]").to_string();
+    }
+    result
+}
 
 // =============================================================================
 // AGENT BINARY CACHE (local testing only, not used by validators)
@@ -624,24 +658,26 @@ async fn run_agent_in_container(
 
 /// Collect agent logs from container
 async fn collect_agent_logs(env: &DockerEnvironment, logs_dir: &Path) {
-    // Collect stdout
+    // Collect stdout (redact API keys)
     if let Ok(result) = env
         .exec_shell("cat /agent/stdout.log 2>/dev/null || true")
         .await
     {
         let stdout_path = logs_dir.join("agent_stdout.log");
-        if let Err(e) = std::fs::write(&stdout_path, &result.stdout) {
+        let redacted = redact_api_keys(&result.stdout);
+        if let Err(e) = std::fs::write(&stdout_path, &redacted) {
             warn!("Failed to write agent stdout: {}", e);
         }
     }
 
-    // Collect stderr
+    // Collect stderr (redact API keys)
     if let Ok(result) = env
         .exec_shell("cat /agent/stderr.log 2>/dev/null || true")
         .await
     {
         let stderr_path = logs_dir.join("agent_stderr.log");
-        if let Err(e) = std::fs::write(&stderr_path, &result.stdout) {
+        let redacted = redact_api_keys(&result.stdout);
+        if let Err(e) = std::fs::write(&stderr_path, &redacted) {
             warn!("Failed to write agent stderr: {}", e);
         }
     }
