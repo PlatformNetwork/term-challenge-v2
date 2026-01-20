@@ -11,11 +11,11 @@
 //! 6. Poll /status until completion
 //! 7. Run verification tests
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use super::environment::DockerEnvironment;
 use super::task::Task;
@@ -249,19 +249,8 @@ fn store_package_in_cache(agent_hash: &str, binary: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// HTTP client for communicating with agent
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .expect("Failed to create HTTP client")
-}
-
-/// Port for agent HTTP server
+/// Port for agent HTTP server (used for env var, not actual HTTP)
 const AGENT_PORT: u16 = 8765;
-
-/// Timeout for agent startup (ms)
-const AGENT_STARTUP_TIMEOUT_MS: u64 = 30_000;
 
 /// Result of running a binary agent
 #[derive(Debug)]
@@ -614,7 +603,7 @@ async fn run_agent_in_container(
 
         // Print progress every 10 seconds
         let elapsed_secs = poll_start.elapsed().as_secs();
-        if elapsed_secs > 0 && elapsed_secs % 10 == 0 {
+        if elapsed_secs > 0 && elapsed_secs.is_multiple_of(10) {
             eprintln!(
                 "  \x1b[90m⏳ Agent running... ({}s, {} steps)\x1b[0m",
                 elapsed_secs, steps
