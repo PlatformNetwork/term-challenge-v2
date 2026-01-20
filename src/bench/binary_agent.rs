@@ -640,6 +640,36 @@ async fn run_agent_in_container(
                 "Agent process completed after {}s",
                 poll_start.elapsed().as_secs()
             );
+
+            // Print any remaining logs that weren't printed yet
+            let final_stderr = env
+                .exec_shell("cat /agent/stderr.log 2>/dev/null || true")
+                .await
+                .map(|r| r.stdout)
+                .unwrap_or_default();
+            let final_lines: Vec<&str> = final_stderr.lines().collect();
+            if final_lines.len() > last_log_lines {
+                for line in &final_lines[last_log_lines..] {
+                    eprintln!("\x1b[90m[agent]\x1b[0m {}", line);
+                }
+            }
+
+            // Also show stdout if any
+            let final_stdout = env
+                .exec_shell("cat /agent/stdout.log 2>/dev/null || true")
+                .await
+                .map(|r| r.stdout)
+                .unwrap_or_default();
+            if !final_stdout.trim().is_empty() {
+                eprintln!("\x1b[36m[agent stdout]\x1b[0m");
+                for line in final_stdout.lines().take(50) {
+                    eprintln!("  {}", line);
+                }
+                if final_stdout.lines().count() > 50 {
+                    eprintln!("  ... ({} more lines)", final_stdout.lines().count() - 50);
+                }
+            }
+
             break;
         }
 
