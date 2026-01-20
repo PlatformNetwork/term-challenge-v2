@@ -174,6 +174,81 @@ fn cleanup_cache(cache_base: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Try to get cached binary for package by hash
+fn get_cached_package_binary(agent_hash: &str) -> Option<Vec<u8>> {
+    let cache_path = cache_dir().join(format!("pkg-{}", agent_hash));
+    let binary_path = cache_path.join("agent");
+    let meta_path = cache_path.join("meta.json");
+
+    if !binary_path.exists() || !meta_path.exists() {
+        return None;
+    }
+
+    // Read binary
+    let binary = std::fs::read(&binary_path).ok()?;
+
+    // Update last_used time
+    if let Ok(meta_str) = std::fs::read_to_string(&meta_path) {
+        if let Ok(mut meta) = serde_json::from_str::<CacheEntry>(&meta_str) {
+            meta.last_used = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if let Ok(meta_json) = serde_json::to_string_pretty(&meta) {
+                let _ = std::fs::write(&meta_path, meta_json);
+            }
+        }
+    }
+
+    info!(
+        "Using cached package binary: {} ({} bytes)",
+        agent_hash,
+        binary.len()
+    );
+    Some(binary)
+}
+
+/// Store compiled package binary in cache
+fn store_package_in_cache(agent_hash: &str, binary: &[u8]) -> Result<()> {
+    let cache_base = cache_dir();
+    let cache_path = cache_base.join(format!("pkg-{}", agent_hash));
+
+    // Create cache directory
+    std::fs::create_dir_all(&cache_path)?;
+
+    // Write binary
+    let binary_path = cache_path.join("agent");
+    std::fs::write(&binary_path, binary)?;
+
+    // Write metadata
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let meta = CacheEntry {
+        source_hash: agent_hash.to_string(),
+        binary_size: binary.len(),
+        created_at: now,
+        last_used: now,
+    };
+
+    let meta_path = cache_path.join("meta.json");
+    let meta_json = serde_json::to_string_pretty(&meta)?;
+    std::fs::write(&meta_path, meta_json)?;
+
+    info!(
+        "Cached package binary: {} ({} bytes)",
+        agent_hash,
+        binary.len()
+    );
+
+    // Cleanup old entries if over limit
+    cleanup_cache(&cache_base)?;
+
+    Ok(())
+}
+
 /// HTTP client for communicating with agent
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -325,24 +400,36 @@ pub async fn run_binary_agent_from_package(
 ) -> Result<BinaryAgentResult> {
     let start = Instant::now();
 
-    // For packages, we don't use the simple source cache - compile each time
-    // (could add package caching later based on hash)
-    eprintln!(
-        "  \x1b[36m⏳\x1b[0m Compiling package to binary (this usually takes 30-60 seconds)..."
-    );
+    // Try to get cached binary for this package hash
+    let binary = if let Some(cached) = get_cached_package_binary(agent_hash) {
+        eprintln!(
+            "  \x1b[32m✓\x1b[0m Using cached agent binary ({:.1} MB)",
+            cached.len() as f64 / 1_000_000.0
+        );
+        cached
+    } else {
+        eprintln!(
+            "  \x1b[36m⏳\x1b[0m Compiling package to binary (this usually takes 30-60 seconds)..."
+        );
 
-    let compile_result =
-        compiler::compile_package(package_data, package_format, entry_point, agent_hash)
-            .await
-            .context("Failed to compile package")?;
+        let compile_result =
+            compiler::compile_package(package_data, package_format, entry_point, agent_hash)
+                .await
+                .context("Failed to compile package")?;
 
-    eprintln!(
-        "  \x1b[32m✓\x1b[0m Compilation complete: {:.1} MB in {:.1}s",
-        compile_result.size as f64 / 1_000_000.0,
-        compile_result.compile_time_ms as f64 / 1000.0
-    );
+        eprintln!(
+            "  \x1b[32m✓\x1b[0m Compilation complete: {:.1} MB in {:.1}s",
+            compile_result.size as f64 / 1_000_000.0,
+            compile_result.compile_time_ms as f64 / 1000.0
+        );
 
-    let binary = compile_result.binary;
+        // Store in cache
+        if let Err(e) = store_package_in_cache(agent_hash, &compile_result.binary) {
+            warn!("Failed to cache binary: {}", e);
+        }
+
+        compile_result.binary
+    };
 
     // 2. Create and start task container
     info!("Creating task container...");
@@ -358,6 +445,9 @@ pub async fn run_binary_agent_from_package(
 
     // 3. Run agent in container
     let result = run_agent_in_container(&env, &binary, task, &config, agent_hash).await;
+
+    // 3.5 Collect agent logs from container
+    collect_agent_logs(&env, logs_dir).await;
 
     // 4. Run verification regardless of agent result
     let verification = run_verification(&env, task, logs_dir).await;
@@ -431,167 +521,66 @@ async fn run_agent_in_container(
 
     let env_str = env_vars.join(" ");
 
-    // Get container IP for HTTP communication
-    let container_ip = env
-        .container_ip()
-        .await
-        .context("Failed to get container IP")?;
-    let base_url = format!("http://{}:{}", container_ip, AGENT_PORT);
-    info!("Agent endpoint: {}", base_url);
+    // Get instruction and write to file (avoids shell escaping issues)
+    let instruction = task.instruction()?;
 
-    // Start agent as HTTP server in background
-    // Use setsid to create a new session so process survives exec exit
-    info!("Starting agent HTTP server...");
+    // Write instruction to file using base64 to avoid any escaping issues
+    let instruction_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        instruction.as_bytes(),
+    );
+    env.exec_shell(&format!(
+        "echo '{}' | base64 -d > /agent/instruction.txt",
+        instruction_b64
+    ))
+    .await?;
+
+    // Verify instruction file was written
+    let verify = env
+        .exec_shell("cat /agent/instruction.txt | head -c 100")
+        .await?;
+    info!(
+        "Instruction file written: {}...",
+        verify.stdout.chars().take(50).collect::<String>()
+    );
+
+    // Start agent with --instruction from file
+    info!("Starting agent with --instruction...");
     let start_cmd = format!(
-        "setsid sh -c '{} /agent/agent > /agent/stdout.log 2> /agent/stderr.log' &",
-        env_str
+        r#"nohup sh -c 'cd /app && {env} /agent/agent --instruction "$(cat /agent/instruction.txt)"' > /agent/stdout.log 2> /agent/stderr.log &"#,
+        env = env_str
+    );
+    info!(
+        "Start command: {}",
+        start_cmd.chars().take(200).collect::<String>()
     );
     env.exec_shell(&start_cmd).await?;
 
-    // Wait for HTTP server to be ready
-    let client = http_client();
-    let health_url = format!("{}/health", base_url);
-    let health_start = Instant::now();
-    let mut ready = false;
+    // Give the process time to start
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    while health_start.elapsed().as_millis() < AGENT_STARTUP_TIMEOUT_MS as u128 {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        match client.get(&health_url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                ready = true;
-                eprintln!(
-                    "  \x1b[32m✓\x1b[0m Agent HTTP server ready after {}ms",
-                    health_start.elapsed().as_millis()
-                );
-                break;
-            }
-            Ok(resp) => {
-                debug!("Health check returned status: {}", resp.status());
-            }
-            Err(e) => {
-                debug!("Health check error: {}", e);
-            }
-        }
-
-        // Print progress every 5 seconds
-        let elapsed_secs = health_start.elapsed().as_secs();
-        if elapsed_secs > 0 && elapsed_secs.is_multiple_of(5) {
-            eprintln!(
-                "  \x1b[90m⏳ Waiting for agent... ({}s)\x1b[0m",
-                elapsed_secs
-            );
-
-            // Check logs
-            let logs = env
-                .exec(&["cat", "/agent/stdout.log", "/agent/stderr.log"])
-                .await
-                .map(|r| r.stdout)
-                .unwrap_or_default();
-            if !logs.is_empty() {
-                for line in logs.lines().rev().take(5).collect::<Vec<_>>().iter().rev() {
-                    eprintln!("    \x1b[90m{}\x1b[0m", line);
-                }
-            }
-
-            // Check if process is running
-            let ps = env
-                .exec(&["sh", "-c", "ps aux | grep agent | grep -v grep"])
-                .await
-                .map(|r| r.stdout)
-                .unwrap_or_default();
-            if ps.is_empty() {
-                eprintln!("  \x1b[31m⚠ Agent process not running!\x1b[0m");
-            }
-        }
-    }
-
-    if !ready {
-        let stderr = env
-            .exec(&["cat", "/agent/stderr.log"])
-            .await
-            .map(|r| r.stdout)
-            .unwrap_or_default();
-        let stdout = env
-            .exec(&["cat", "/agent/stdout.log"])
-            .await
-            .map(|r| r.stdout)
-            .unwrap_or_default();
-        bail!(
-            "Agent HTTP server failed to start within {}ms.\nStderr: {}\nStdout: {}",
-            AGENT_STARTUP_TIMEOUT_MS,
-            stderr,
-            stdout
-        );
-    }
-
-    // Send POST /start with instruction
-    let instruction = task.instruction()?;
-    let start_request = serde_json::json!({
-        "instruction": instruction,
-    });
-
-    info!("Sending /start request...");
-    let start_url = format!("{}/start", base_url);
-    let response = client
-        .post(&start_url)
-        .json(&start_request)
-        .send()
-        .await
-        .context("Failed to send /start request")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        bail!("Agent /start failed ({}): {}", status, body);
-    }
-    debug!("Start response: OK");
-
-    // Poll /status until completion
-    let status_url = format!("{}/status", base_url);
+    // Wait for agent process to complete (CLI mode)
     let poll_start = Instant::now();
     let max_poll = Duration::from_secs(config.timeout_secs + 60);
     let mut agent_completed = false;
     let mut steps = 0u32;
     let mut last_log_lines = 0usize;
 
-    info!("Polling /status...");
+    info!("Waiting for agent to complete...");
     loop {
         if poll_start.elapsed() > max_poll {
-            warn!("Agent polling timeout");
+            warn!("Agent timeout after {}s", poll_start.elapsed().as_secs());
             break;
         }
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
 
-        match client.get(&status_url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(status) = resp.json::<serde_json::Value>().await {
-                    let state = status["status"].as_str().unwrap_or("unknown");
-                    steps = status["steps"].as_u64().unwrap_or(0) as u32;
-
-                    match state {
-                        "completed" => {
-                            agent_completed = true;
-                            info!("Agent completed in {} steps", steps);
-                            break;
-                        }
-                        "failed" => {
-                            let error = status["error"].as_str().unwrap_or("Unknown error");
-                            warn!("Agent failed: {}", error);
-                            break;
-                        }
-                        "running" => {
-                            // Still running, continue polling
-                        }
-                        _ => {
-                            debug!("Unknown status: {}", state);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+        // Check if agent process is still running
+        let ps = env
+            .exec(&["sh", "-c", "ps aux | grep '/agent/agent' | grep -v grep"])
+            .await
+            .map(|r| r.stdout)
+            .unwrap_or_default();
 
         // Print new agent logs
         let stderr = env
@@ -606,9 +595,59 @@ async fn run_agent_in_container(
             }
             last_log_lines = lines.len();
         }
+
+        // Count steps from logs (look for step markers)
+        steps = stderr.matches("[step").count() as u32;
+        if steps == 0 {
+            steps = stderr.matches("Step ").count() as u32;
+        }
+
+        // If process is no longer running, agent has finished
+        if ps.trim().is_empty() {
+            agent_completed = true;
+            info!(
+                "Agent process completed after {}s",
+                poll_start.elapsed().as_secs()
+            );
+            break;
+        }
+
+        // Print progress every 10 seconds
+        let elapsed_secs = poll_start.elapsed().as_secs();
+        if elapsed_secs > 0 && elapsed_secs % 10 == 0 {
+            eprintln!(
+                "  \x1b[90m⏳ Agent running... ({}s, {} steps)\x1b[0m",
+                elapsed_secs, steps
+            );
+        }
     }
 
     Ok((agent_completed, steps))
+}
+
+/// Collect agent logs from container
+async fn collect_agent_logs(env: &DockerEnvironment, logs_dir: &Path) {
+    // Collect stdout
+    if let Ok(result) = env
+        .exec_shell("cat /agent/stdout.log 2>/dev/null || true")
+        .await
+    {
+        let stdout_path = logs_dir.join("agent_stdout.log");
+        if let Err(e) = std::fs::write(&stdout_path, &result.stdout) {
+            warn!("Failed to write agent stdout: {}", e);
+        }
+    }
+
+    // Collect stderr
+    if let Ok(result) = env
+        .exec_shell("cat /agent/stderr.log 2>/dev/null || true")
+        .await
+    {
+        let stderr_path = logs_dir.join("agent_stderr.log");
+        if let Err(e) = std::fs::write(&stderr_path, &result.stdout) {
+            warn!("Failed to write agent stderr: {}", e);
+        }
+    }
 }
 
 /// Run verification tests

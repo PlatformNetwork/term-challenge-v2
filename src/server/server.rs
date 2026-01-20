@@ -231,7 +231,15 @@ pub async fn get_weights(
     State(state): State<Arc<ChallengeServerState>>,
     Query(query): Query<GetWeightsQuery>,
 ) -> Result<Json<GetWeightsResponse>, (StatusCode, String)> {
-    let epoch = query.epoch.unwrap_or(0);
+    // Get current epoch (use provided or estimate from time)
+    let epoch = query.epoch.unwrap_or_else(|| {
+        // Estimate epoch from current time (12 second blocks on Bittensor)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        now / 12
+    });
 
     // Get PostgreSQL storage (required for server mode)
     let pg = state.pg_storage.as_ref().ok_or_else(|| {

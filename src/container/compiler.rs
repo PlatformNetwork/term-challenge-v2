@@ -999,6 +999,13 @@ async fn run_package_compilation_steps(
         "--hidden-import=re".to_string(),
         "--hidden-import=time".to_string(),
         "--hidden-import=traceback".to_string(),
+        // tiktoken needs its data files and encoding registration
+        "--hidden-import=tiktoken".to_string(),
+        "--hidden-import=tiktoken.core".to_string(),
+        "--hidden-import=tiktoken_ext".to_string(),
+        "--hidden-import=tiktoken_ext.openai_public".to_string(),
+        "--copy-metadata=tiktoken".to_string(),
+        "--copy-metadata=regex".to_string(),
     ];
 
     // Add --collect-all for each user package from requirements.txt
