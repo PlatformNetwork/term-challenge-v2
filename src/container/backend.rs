@@ -41,6 +41,9 @@ pub struct SandboxConfig {
     pub network_mode: String,
     pub mounts: Vec<MountConfig>,
     pub cmd: Option<Vec<String>>,
+    /// Entrypoint override. If Some(vec![]), disables image entrypoint.
+    /// This is important for images that have an ENTRYPOINT that exits.
+    pub entrypoint: Option<Vec<String>>,
     /// Challenge ID for tracking
     pub challenge_id: String,
     /// Owner ID for tracking
@@ -65,6 +68,7 @@ impl Default for SandboxConfig {
             network_mode: "none".to_string(),
             mounts: Vec::new(),
             cmd: None,
+            entrypoint: None,
             challenge_id: "term-challenge".to_string(),
             owner_id: "unknown".to_string(),
             auto_remove: false,
@@ -1208,6 +1212,7 @@ impl ContainerBackend for DirectDockerBackend {
             image: Some(config.image.clone()),
             hostname: Some(container_name.clone()),
             cmd: config.cmd.clone(),
+            entrypoint: config.entrypoint.clone(),
             working_dir: Some(config.working_dir.clone()),
             env: if env.is_empty() { None } else { Some(env) },
             tty: Some(false),

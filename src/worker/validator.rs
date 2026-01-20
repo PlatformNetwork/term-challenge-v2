@@ -1369,6 +1369,8 @@ impl ValidatorWorker {
         };
 
         // Create sandbox config
+        // IMPORTANT: Use empty entrypoint to override any image ENTRYPOINT that might exit
+        // This prevents containers from stopping after 1 second when the image has an ENTRYPOINT
         let config = SandboxConfig {
             image: task.config.docker_image.clone(),
             memory_bytes,
@@ -1377,11 +1379,8 @@ impl ValidatorWorker {
             working_dir: "/app".to_string(),
             network_mode: "isolated".to_string(), // Use platform-network for LLM proxy access
             mounts,
-            cmd: Some(vec![
-                "tail".to_string(),
-                "-f".to_string(),
-                "/dev/null".to_string(),
-            ]),
+            cmd: Some(vec!["sleep".to_string(), "infinity".to_string()]),
+            entrypoint: Some(vec![]), // Empty entrypoint disables image ENTRYPOINT
             challenge_id: self.challenge_id.clone(),
             owner_id: self.validator_hotkey.clone(),
             name: None,
