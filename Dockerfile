@@ -91,15 +91,10 @@ COPY --from=builder /build/target/release/term-server /usr/local/bin/
 # ARG for flexible path configuration
 ARG TERM_REPO_PATH=.
 
-# Copy Python SDK only (Python is the only supported agent language)
-COPY ${TERM_REPO_PATH}/sdk/python /opt/term-sdk/python
-
-# Install Python SDK globally (term_sdk module)
-RUN cd /opt/term-sdk/python && \
-    pip3 install --break-system-packages -e . && \
-    python3 -c "from term_sdk import Agent, Request, Response, run; print('Python SDK installed')" && \
-    rm -rf /opt/term-sdk/python/term_sdk/__pycache__ && \
-    echo "SDK installed with HTTP server fix"
+# SDK 3.0: No term_sdk - agents use litellm directly
+# Install litellm globally for agent use
+RUN pip3 install --break-system-packages litellm httpx pydantic && \
+    python3 -c "import litellm; print('litellm installed')"
 
 # Copy default data and tasks
 COPY ${TERM_REPO_PATH}/data /app/data

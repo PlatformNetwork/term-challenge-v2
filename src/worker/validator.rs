@@ -1482,7 +1482,10 @@ impl ValidatorWorker {
                 .await;
             match kill_result {
                 Ok(_) => debug!("Agent process stopped"),
-                Err(e) => debug!("Failed to stop agent process (may already be stopped): {}", e),
+                Err(e) => debug!(
+                    "Failed to stop agent process (may already be stopped): {}",
+                    e
+                ),
             }
             // Give the process a moment to fully terminate
             tokio::time::sleep(Duration::from_millis(500)).await;
