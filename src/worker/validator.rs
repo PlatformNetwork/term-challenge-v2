@@ -1731,7 +1731,8 @@ impl ValidatorWorker {
 
         info!("Binary copied successfully");
 
-        // Step 2: Write instruction to file (avoids shell escaping issues)
+        // Step 2: Write instruction as base64 (no shell escaping issues)
+        // Base64 contains only [A-Za-z0-9+/=] - safe for shell
         let instruction_b64 = base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,
             instruction.as_bytes(),
@@ -1740,21 +1741,14 @@ impl ValidatorWorker {
             .exec(&[
                 "sh",
                 "-c",
-                &format!(
-                    "echo '{}' | base64 -d > /agent/instruction.txt",
-                    instruction_b64
-                ),
+                &format!("echo '{}' > /agent/instruction.txt", instruction_b64),
             ])
             .await
             .context("Failed to write instruction file")?;
 
-        // Verify instruction was written
-        let verify = task_container
-            .exec(&["sh", "-c", "cat /agent/instruction.txt | head -c 100"])
-            .await?;
         info!(
-            "Instruction file written: {}...",
-            verify.stdout.chars().take(50).collect::<String>()
+            "Instruction written as base64 ({} bytes encoded)",
+            instruction_b64.len()
         );
 
         // Step 3: Build environment variables and start agent with --instruction
@@ -1764,10 +1758,10 @@ impl ValidatorWorker {
             llm_proxy_url, agent_hash, task_id
         );
 
-        // Write a wrapper script to avoid shell escaping issues with instruction
-        // The wrapper reads the instruction file and passes it as argument
+        // Wrapper script decodes base64 and passes instruction to agent
+        // This avoids all shell escaping issues with special characters
         let wrapper_script = r#"#!/bin/sh
-INSTRUCTION=$(cat /agent/instruction.txt)
+INSTRUCTION=$(base64 -d /agent/instruction.txt)
 exec /agent/agent --instruction "$INSTRUCTION"
 "#;
         task_container
