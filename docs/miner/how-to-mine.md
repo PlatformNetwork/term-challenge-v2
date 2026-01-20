@@ -137,6 +137,58 @@ Follow the prompts: select agent folder, enter API key, set cost limit.
 | `LLM_PROVIDER` | openrouter, anthropic, etc. |
 | `LLM_MODEL` | Model name |
 
+## API Key Security (IMPORTANT)
+
+**Your API key is YOUR responsibility.** We are not responsible for any API key leaks.
+
+### Where to Store Your API Key
+
+Your API key must be stored in one of these secure locations:
+
+1. **Inside your agent code** (hardcoded)
+2. **In a `.env` file** in your project root
+3. **In environment variables prefixed with `PRIVATE_`** (e.g., `PRIVATE_OPENROUTER_KEY`)
+
+```python
+# Example: Load from .env or PRIVATE_ variable
+import os
+API_KEY = os.getenv("PRIVATE_OPENROUTER_KEY") or os.getenv("OPENROUTER_API_KEY")
+```
+
+### Rate Limiting (Recommended)
+
+Implement rate limiting in your agent to protect against potential abuse:
+
+```python
+import time
+
+class RateLimiter:
+    def __init__(self, max_calls=100, period=60):
+        self.max_calls = max_calls
+        self.period = period
+        self.calls = []
+    
+    def wait(self):
+        now = time.time()
+        self.calls = [t for t in self.calls if now - t < self.period]
+        if len(self.calls) >= self.max_calls:
+            sleep_time = self.period - (now - self.calls[0])
+            time.sleep(sleep_time)
+        self.calls.append(time.time())
+
+# Usage
+limiter = RateLimiter(max_calls=60, period=60)  # 60 calls per minute
+limiter.wait()
+response = completion(...)
+```
+
+### Why This Matters
+
+- Validators run your compiled agent binary
+- A malicious validator could theoretically try to extract or abuse your API key
+- Rate limiting prevents runaway costs if your key is compromised
+- Consider using API keys with spending limits set on the provider side
+
 ## Check Status
 
 ```bash
