@@ -1,7 +1,7 @@
 [
     {
         "name": "checkpoint3",
-        "version": "3.0",
+        "version": "1.0",
         "description": "Checkpoint 3: 10 hardest tasks (0% success) + 5 fragile tasks (60% success)",
         "tasks": [
             {"name": "install-windows-3.11", "git_url": "https://github.com/laude-institute/terminal-bench", "git_commit_id": "head", "path": "tasks/install-windows-3.11", "domain": "emulation", "success_rate": 0.0, "difficulty": "Legacy OS environment management"},
