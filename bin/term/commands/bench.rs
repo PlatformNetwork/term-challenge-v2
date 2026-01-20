@@ -396,6 +396,9 @@ pub async fn run_benchmark(
     let (name, version) = RegistryClient::parse_dataset_spec(dataset_spec);
 
     // Determine if agent is a file or folder
+    if !agent_path.exists() {
+        bail!("Agent path does not exist: {}", agent_path.display());
+    }
     let is_folder = agent_path.is_dir();
     let (agent_display, is_package) = if is_folder {
         let entry = detect_entry_point(&agent_path, entry_point)?;
@@ -690,6 +693,9 @@ pub async fn run_external_agent(
     let task = Task::from_path(&task_path)?;
 
     // Determine if agent is a file or folder
+    if !agent_path.exists() {
+        bail!("Agent path does not exist: {}", agent_path.display());
+    }
     let is_folder = agent_path.is_dir();
     let (agent_display, _agent_hash, is_package) = if is_folder {
         let entry = detect_entry_point(&agent_path, entry_point)?;
