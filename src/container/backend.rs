@@ -121,6 +121,12 @@ pub trait ContainerHandle: Send + Sync {
     /// Execute a command in the container (default 60s timeout)
     async fn exec(&self, cmd: &[&str]) -> Result<ExecOutput>;
 
+    /// Execute a shell command in the container (wraps in bash -c)
+    /// Use this for commands with pipes, redirects, etc.
+    async fn exec_shell(&self, cmd: &str) -> Result<ExecOutput> {
+        self.exec(&["bash", "-c", cmd]).await
+    }
+
     /// Execute a command in the container with custom timeout
     async fn exec_with_timeout(&self, cmd: &[&str], timeout_secs: u64) -> Result<ExecOutput>;
 

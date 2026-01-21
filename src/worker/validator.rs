@@ -1754,7 +1754,14 @@ impl ValidatorWorker {
         // 1. write_file() doesn't use shell (no injection when writing)
         // 2. $(cat ...) output goes into a variable assignment (safe)
         // 3. "$INSTRUCTION" with quotes prevents word splitting and globbing
+        // Also loads .env file if present in agent package
         let wrapper_script = r#"#!/bin/sh
+# Load .env file if present (miners can include their API keys)
+if [ -f /agent/.env ]; then
+    set -a
+    . /agent/.env
+    set +a
+fi
 INSTRUCTION=$(cat /agent/instruction.txt)
 exec /agent/agent --instruction "$INSTRUCTION"
 "#;
@@ -1814,8 +1821,9 @@ exec /agent/agent --instruction "$INSTRUCTION"
             tokio::time::sleep(Duration::from_millis(1000)).await;
 
             // Check if agent process is still running
+            // Use exec_shell() for commands with pipes
             let ps = task_container
-                .exec(&["sh", "-c", "ps aux | grep '/agent/agent' | grep -v grep"])
+                .exec_shell("ps aux | grep '/agent/agent' | grep -v grep")
                 .await;
 
             let agent_running = match &ps {
