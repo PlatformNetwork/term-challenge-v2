@@ -362,7 +362,7 @@ impl ValidatorDistributor {
         let code_hash = hex::encode(Sha256::digest(source_code.as_bytes()));
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         SourcePackage {
@@ -412,7 +412,7 @@ impl ValidatorDistributor {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         Ok(ObfuscatedPackage {

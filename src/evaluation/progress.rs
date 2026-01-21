@@ -148,7 +148,7 @@ impl EvaluationProgress {
     ) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let mut task_states = HashMap::new();
@@ -207,7 +207,7 @@ impl EvaluationProgress {
     ) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         Self {
@@ -265,7 +265,7 @@ impl EvaluationProgress {
         if self.completed_tasks > 0 {
             let elapsed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs()
                 - self.started_at;
             let avg_time_per_task = elapsed as f64 / self.completed_tasks as f64;
@@ -274,7 +274,7 @@ impl EvaluationProgress {
             self.estimated_completion = Some(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs()
                     + estimated_remaining,
             );
@@ -483,7 +483,7 @@ impl TaskExecutor {
                 state.started_at = Some(
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_default()
                         .as_secs(),
                 );
             }
@@ -497,7 +497,7 @@ impl TaskExecutor {
             // Update progress
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs();
 
             let task_state = TaskExecutionState {
@@ -563,7 +563,7 @@ impl TaskExecutor {
             started_at: progress.started_at,
             completed_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
         }
     }

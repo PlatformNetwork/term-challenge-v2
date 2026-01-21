@@ -611,7 +611,13 @@ term bench agent -a ./my_agent.py \
     -d terminal-bench@2.0 \
     --concurrent 4
 
+# For folder-based agents, specify the entry point
+term bench agent -a ./my_agent_folder \
+    --entry-point src/main.py \
+    -d terminal-bench@2.0
+
 # Note: API key must be in your agent code (hardcoded, .env, or PRIVATE_* env vars)
+# Note: The --max-steps flag is deprecated in SDK 2.0+. Agents manage their own limits.
 ```
 
 ### SDK Installation

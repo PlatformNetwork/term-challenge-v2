@@ -401,7 +401,7 @@ impl ValidatorWorker {
     async fn send_heartbeat(&self, broker_connected: bool) {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         let message = format!("heartbeat:{}:{}", timestamp, broker_connected);
@@ -620,7 +620,7 @@ impl ValidatorWorker {
     async fn fetch_agents_to_cleanup(&self) -> Result<Vec<String>> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         let message = format!("agents_to_cleanup:{}", timestamp);
@@ -760,7 +760,7 @@ impl ValidatorWorker {
     async fn notify_cleanup_complete(&self, agent_hash: &str) -> Result<()> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         let message = format!("cleanup_complete:{}:{}", agent_hash, timestamp);
@@ -1730,24 +1730,16 @@ impl ValidatorWorker {
 
         info!("Binary copied successfully");
 
-        // Step 2: Write instruction as base64 (no shell escaping issues)
-        // Base64 contains only [A-Za-z0-9+/=] - safe for shell
-        let instruction_b64 = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            instruction.as_bytes(),
-        );
+        // Step 2: Write instruction directly as plain text using Docker API
+        // This is secure because write_file() uses Docker's upload API, not shell commands
         task_container
-            .exec(&[
-                "sh",
-                "-c",
-                &format!("echo '{}' > /agent/instruction.txt", instruction_b64),
-            ])
+            .write_file("/agent/instruction.txt", instruction.as_bytes())
             .await
             .context("Failed to write instruction file")?;
 
         info!(
-            "Instruction written as base64 ({} bytes encoded)",
-            instruction_b64.len()
+            "Instruction written as plain text ({} bytes)",
+            instruction.len()
         );
 
         // Step 3: Build environment variables and start agent with --instruction
@@ -1757,10 +1749,13 @@ impl ValidatorWorker {
             llm_proxy_url, agent_hash, task_id
         );
 
-        // Wrapper script decodes base64 and passes instruction to agent
-        // This avoids all shell escaping issues with special characters
+        // Wrapper script reads file into variable, then passes it quoted
+        // This is safe because:
+        // 1. write_file() doesn't use shell (no injection when writing)
+        // 2. $(cat ...) output goes into a variable assignment (safe)
+        // 3. "$INSTRUCTION" with quotes prevents word splitting and globbing
         let wrapper_script = r#"#!/bin/sh
-INSTRUCTION=$(base64 -d /agent/instruction.txt)
+INSTRUCTION=$(cat /agent/instruction.txt)
 exec /agent/agent --instruction "$INSTRUCTION"
 "#;
         task_container
@@ -1965,7 +1960,7 @@ exec /agent/agent --instruction "$INSTRUCTION"
 
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         let message = format!("task_stream:{}:{}:{}", agent_hash, task_id, timestamp);

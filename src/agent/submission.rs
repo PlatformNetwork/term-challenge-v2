@@ -256,7 +256,7 @@ impl AgentSubmissionHandler {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         // Step 5: Create source package for ALL validators
@@ -360,7 +360,7 @@ impl AgentSubmissionHandler {
         // Add signature
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         consensus.signatures.push(ConsensusSignature {
@@ -504,7 +504,7 @@ impl AgentSubmissionHandler {
             submission.status = status;
             submission.updated_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs();
         }
     }
@@ -538,7 +538,7 @@ impl AgentSubmissionHandler {
             status.status = AgentStatus::Active;
             status.updated_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs();
         }
 
@@ -555,7 +555,7 @@ impl AgentSubmissionHandler {
             status.error = Some(reason.to_string());
             status.updated_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs();
         }
 

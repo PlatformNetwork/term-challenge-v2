@@ -3,10 +3,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Returns the current Unix timestamp in seconds.
+///
+/// If the system clock is misconfigured (before Unix epoch), returns 0.
 pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("System time before Unix epoch")
+        .unwrap_or_default()
         .as_secs()
 }
 
@@ -16,10 +18,12 @@ pub fn now_secs_i64() -> i64 {
 }
 
 /// Returns the current Unix timestamp in milliseconds.
+///
+/// If the system clock is misconfigured (before Unix epoch), returns 0.
 pub fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("System time before Unix epoch")
+        .unwrap_or_default()
         .as_millis() as u64
 }
 

@@ -132,8 +132,11 @@ impl Verifier {
         if reward_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&reward_path) {
                 if let Ok(reward) = content.trim().parse::<f64>() {
-                    verification.reward = reward.clamp(0.0, 1.0);
-                    verification.success = reward > 0.0;
+                    // Only accept finite values (reject NaN and Infinity)
+                    if reward.is_finite() {
+                        verification.reward = reward.clamp(0.0, 1.0);
+                        verification.success = reward > 0.0;
+                    }
                 }
             }
         }

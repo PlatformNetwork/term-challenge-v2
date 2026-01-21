@@ -117,7 +117,7 @@ impl AgentEntry {
     ) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         Self {
@@ -350,7 +350,7 @@ impl AgentRegistry {
         let current_epoch = *self.current_epoch.read();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         // Check agent name ownership and get version
@@ -490,7 +490,7 @@ impl AgentRegistry {
             entry.status = status;
             entry.updated_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs();
 
             if status == AgentStatus::Verified {

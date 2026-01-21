@@ -283,8 +283,8 @@ fn store_package_in_cache(agent_hash: &str, binary: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Port for agent HTTP server (used for env var, not actual HTTP)
-const AGENT_PORT: u16 = 8765;
+// Note: AGENT_PORT constant removed - SDK 3.0 agents use CLI mode (--instruction flag),
+// not HTTP server mode. The binary is executed directly with the instruction as argument.
 
 /// Result of running a binary agent
 #[derive(Debug)]
@@ -523,11 +523,10 @@ async fn run_agent_in_container(
     info!("Binary installed: {}", check.stdout.trim());
 
     // Build environment variables
+    // Note: AGENT_PORT and FORCE_HTTP_SERVER removed - SDK 3.0 uses CLI mode, not HTTP server
     let mut env_vars = vec![
-        format!("AGENT_PORT={}", AGENT_PORT),
         format!("TERM_AGENT_HASH={}", agent_hash),
         format!("TERM_TASK_ID={}", task.name),
-        "FORCE_HTTP_SERVER=1".to_string(),
         "PYTHONUNBUFFERED=1".to_string(),
     ];
 
@@ -555,18 +554,13 @@ async fn run_agent_in_container(
     // Get instruction and write to file (avoids shell escaping issues)
     let instruction = task.instruction()?;
 
-    // Write instruction to file using base64 to avoid any escaping issues
-    let instruction_b64 = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        instruction.as_bytes(),
-    );
-    env.exec_shell(&format!(
-        "echo '{}' | base64 -d > /agent/instruction.txt",
-        instruction_b64
-    ))
-    .await?;
+    // Write instruction directly as plain text using Docker API (no shell involved)
+    // This is secure because write_file() uses Docker's upload API, not shell commands
+    env.write_file("/agent/instruction.txt", instruction.as_bytes())
+        .await
+        .context("Failed to write instruction file")?;
 
-    // Verify instruction file was written
+    // Verify instruction file was written (now readable in plain text!)
     let verify = env
         .exec_shell("cat /agent/instruction.txt | head -c 100")
         .await?;
@@ -576,9 +570,25 @@ async fn run_agent_in_container(
     );
 
     // Start agent with --instruction from file
+    // SECURITY: Wrapper script reads file into variable, then passes it quoted.
+    // This is safe because:
+    // 1. write_file() doesn't use shell (no injection when writing)
+    // 2. $(cat ...) output goes into a variable assignment (safe)
+    // 3. "$INSTRUCTION" with quotes prevents word splitting and globbing
     info!("Starting agent with --instruction...");
+    let wrapper_script = r#"#!/bin/sh
+INSTRUCTION=$(cat /agent/instruction.txt)
+exec /agent/agent --instruction "$INSTRUCTION"
+"#;
+    env.write_file("/agent/run.sh", wrapper_script.as_bytes())
+        .await
+        .context("Failed to write wrapper script")?;
+    env.exec(&["chmod", "+x", "/agent/run.sh"])
+        .await
+        .context("Failed to make wrapper executable")?;
+
     let start_cmd = format!(
-        r#"nohup sh -c 'cd /app && {env} /agent/agent --instruction "$(cat /agent/instruction.txt)"' > /agent/stdout.log 2> /agent/stderr.log &"#,
+        r#"nohup sh -c 'cd /app && {env} /agent/run.sh' > /agent/stdout.log 2> /agent/stderr.log &"#,
         env = env_str
     );
     info!(

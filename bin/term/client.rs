@@ -19,25 +19,33 @@ pub struct TermClient {
 
 impl TermClient {
     /// Create a new client pointing to platform server
-    pub fn new(platform_url: &str) -> Self {
-        Self {
-            client: Client::builder()
-                .timeout(DEFAULT_TIMEOUT)
-                .build()
-                .expect("Failed to create HTTP client"),
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP client fails to initialize
+    pub fn new(platform_url: &str) -> Result<Self> {
+        let client = Client::builder()
+            .timeout(DEFAULT_TIMEOUT)
+            .build()
+            .map_err(|e| anyhow!("Failed to initialize HTTP client: {}", e))?;
+        Ok(Self {
+            client,
             base_url: platform_url.trim_end_matches('/').to_string(),
-        }
+        })
     }
 
     /// Create client with custom timeout
-    pub fn with_timeout(platform_url: &str, timeout: Duration) -> Self {
-        Self {
-            client: Client::builder()
-                .timeout(timeout)
-                .build()
-                .expect("Failed to create HTTP client"),
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP client fails to initialize
+    pub fn with_timeout(platform_url: &str, timeout: Duration) -> Result<Self> {
+        let client = Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|e| anyhow!("Failed to initialize HTTP client: {}", e))?;
+        Ok(Self {
+            client,
             base_url: platform_url.trim_end_matches('/').to_string(),
-        }
+        })
     }
 
     /// Get the bridge URL for term-challenge endpoints
@@ -193,32 +201,32 @@ mod tests {
 
     #[test]
     fn test_term_client_new() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         assert_eq!(client.base_url, "https://api.example.com");
     }
 
     #[test]
     fn test_term_client_new_strips_trailing_slash() {
-        let client = TermClient::new("https://api.example.com/");
+        let client = TermClient::new("https://api.example.com/").unwrap();
         assert_eq!(client.base_url, "https://api.example.com");
     }
 
     #[test]
     fn test_term_client_new_multiple_trailing_slashes() {
-        let client = TermClient::new("https://api.example.com///");
+        let client = TermClient::new("https://api.example.com///").unwrap();
         assert_eq!(client.base_url, "https://api.example.com");
     }
 
     #[test]
     fn test_term_client_with_timeout() {
         let timeout = Duration::from_secs(60);
-        let client = TermClient::with_timeout("https://api.example.com", timeout);
+        let client = TermClient::with_timeout("https://api.example.com", timeout).unwrap();
         assert_eq!(client.base_url, "https://api.example.com");
     }
 
     #[test]
     fn test_bridge_url_construction() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         let url = client.bridge_url("submit");
         assert_eq!(
             url,
@@ -228,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_bridge_url_strips_leading_slash() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         let url = client.bridge_url("/submit");
         assert_eq!(
             url,
@@ -238,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_bridge_url_with_path_segments() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         let url = client.bridge_url("validator/claim_jobs");
         assert_eq!(
             url,
@@ -248,14 +256,14 @@ mod tests {
 
     #[test]
     fn test_network_url_construction() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         let url = client.network_url("network/state");
         assert_eq!(url, "https://api.example.com/api/v1/network/state");
     }
 
     #[test]
     fn test_network_url_strips_leading_slash() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         let url = client.network_url("/network/state");
         assert_eq!(url, "https://api.example.com/api/v1/network/state");
     }
@@ -272,7 +280,7 @@ mod tests {
 
     #[test]
     fn test_bridge_url_with_query_params() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         let url = client.bridge_url("leaderboard?limit=10");
         assert!(url.contains("leaderboard?limit=10"));
         assert!(url.starts_with("https://api.example.com/api/v1/bridge/term-challenge/"));
@@ -280,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_network_url_preserves_path() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         let url = client.network_url("some/deep/path");
         assert_eq!(url, "https://api.example.com/api/v1/some/deep/path");
     }
@@ -288,13 +296,13 @@ mod tests {
     #[test]
     fn test_client_base_url_no_modification() {
         let original = "https://api.example.com:8080/base";
-        let client = TermClient::new(original);
+        let client = TermClient::new(original).unwrap();
         assert_eq!(client.base_url, original);
     }
 
     #[test]
     fn test_bridge_url_with_agent_hash() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         let agent_hash = "abc123def456";
         let url = client.bridge_url(&format!("leaderboard/{}", agent_hash));
         assert!(url.contains(agent_hash));
@@ -302,23 +310,23 @@ mod tests {
 
     #[test]
     fn test_client_creation_with_different_protocols() {
-        let https_client = TermClient::new("https://secure.example.com");
+        let https_client = TermClient::new("https://secure.example.com").unwrap();
         assert_eq!(https_client.base_url, "https://secure.example.com");
 
-        let http_client = TermClient::new("http://local.example.com");
+        let http_client = TermClient::new("http://local.example.com").unwrap();
         assert_eq!(http_client.base_url, "http://local.example.com");
     }
 
     #[test]
     fn test_bridge_url_empty_path() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         let url = client.bridge_url("");
         assert_eq!(url, "https://api.example.com/api/v1/bridge/term-challenge/");
     }
 
     #[test]
     fn test_network_url_empty_path() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         let url = client.network_url("");
         assert_eq!(url, "https://api.example.com/api/v1/");
     }
@@ -326,20 +334,20 @@ mod tests {
     #[test]
     fn test_client_with_custom_timeout_zero() {
         let timeout = Duration::from_secs(0);
-        let client = TermClient::with_timeout("https://api.example.com", timeout);
+        let client = TermClient::with_timeout("https://api.example.com", timeout).unwrap();
         assert_eq!(client.base_url, "https://api.example.com");
     }
 
     #[test]
     fn test_client_with_large_timeout() {
         let timeout = Duration::from_secs(3600);
-        let client = TermClient::with_timeout("https://api.example.com", timeout);
+        let client = TermClient::with_timeout("https://api.example.com", timeout).unwrap();
         assert_eq!(client.base_url, "https://api.example.com");
     }
 
     #[test]
     fn test_bridge_url_with_special_characters() {
-        let client = TermClient::new("https://api.example.com");
+        let client = TermClient::new("https://api.example.com").unwrap();
         let url = client.bridge_url("path/with-dash_underscore");
         assert!(url.contains("path/with-dash_underscore"));
     }

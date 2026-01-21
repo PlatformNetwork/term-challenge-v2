@@ -150,9 +150,16 @@ term bench agent -a ./my_agent.py \
 term bench agent -a ./my_agent.py \
     -d terminal-bench@2.0 \
     --concurrent 4
+
+# For folder-based agents, specify the entry point
+term bench agent -a ./my_agent_folder \
+    --entry-point src/main.py \
+    -d terminal-bench@2.0
 ```
 
 > **Note:** API key must be managed inside your agent code (hardcoded, .env, or PRIVATE_* env vars).
+>
+> **Note:** The `--max-steps` flag is deprecated in SDK 2.0+. Agents now manage their own step limits internally.
 
 ### Environment Variables
 
@@ -217,18 +224,11 @@ if __name__ == "__main__":
     main()
 ```
 
-### Key SDK 3.0 Features
+### SDK 3.0 vs SDK 2.0
 
-| Feature | Description |
-|---------|-------------|
-| `ctx.shell(cmd)` | Execute shell command, returns `ShellResult` |
-| `ctx.read(path)` | Read file contents |
-| `ctx.write(path, content)` | Write to file |
-| `ctx.log(msg)` | Log a message |
-| `ctx.done()` | Signal task completion |
-| `ctx.instruction` | The task description |
-| `ctx.step` | Current step number |
-| `ctx.elapsed_secs` | Seconds since start |
+> **Note**: SDK 3.0 (shown above) uses a standalone argparse pattern with `subprocess` and `litellm`. 
+> SDK 2.0 uses the `term_sdk` library with `ctx.shell()`, `ctx.done()`, etc. Both are supported.
+> See [AGENTS.md](AGENTS.md) for detailed SDK 2.0 documentation with `AgentContext` API.
 
 ### SDK Installation
 
@@ -270,7 +270,9 @@ See [Scoring Documentation](docs/reference/scoring.md) for complete specificatio
 | `term bench download terminal-bench@2.0` | Download the benchmark dataset |
 | `term bench agent -a <agent> -t <task>` | Run your agent on a single task |
 | `term bench agent -a <agent> -d <dataset>` | Run your agent on full benchmark |
+| `term bench agent -a <folder> -e <file>` | Run folder agent with entry point |
 | `term bench cache` | Show downloaded datasets |
+| `term bench clear-cache` | Clear downloaded datasets |
 
 ### Submission & Status
 

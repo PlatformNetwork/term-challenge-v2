@@ -183,7 +183,7 @@ impl ValidationRules {
             rules_hash,
             updated_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
         }
     }
@@ -391,7 +391,7 @@ impl LlmReviewManager {
             reason: reason.to_string(),
             blocked_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
         };
         info!(
@@ -568,7 +568,7 @@ You MUST use the review_agent_code function to provide your assessment."#,
             reviewer_id: self.our_hotkey.clone(),
             reviewed_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
             rules_version,
         })
@@ -814,7 +814,7 @@ You MUST use the review_agent_code function to provide your assessment."#,
             reviews: validator_reviews.clone(),
             aggregated_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
         })
     }
@@ -835,7 +835,7 @@ You MUST use the review_agent_code function to provide your assessment."#,
             status: ManualReviewStatus::Pending,
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
             reviewed_at: None,
             reviewer: None,
@@ -884,7 +884,7 @@ You MUST use the review_agent_code function to provide your assessment."#,
             review.reviewed_at = Some(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs(),
             );
             review.reviewer = Some(reviewer.to_string());

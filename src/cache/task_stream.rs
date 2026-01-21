@@ -107,7 +107,7 @@ impl TaskStreamEntry {
     ) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         Self {
@@ -180,14 +180,14 @@ impl TaskStreamEntry {
     fn update_timestamp(&mut self) {
         self.updated_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
     }
 
     pub fn is_expired(&self, ttl_secs: u64) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
         (now - self.updated_at) > ttl_secs as i64
     }
@@ -195,7 +195,7 @@ impl TaskStreamEntry {
     pub fn duration_secs(&self) -> i64 {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
         now - self.started_at
     }

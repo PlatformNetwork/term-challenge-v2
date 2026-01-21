@@ -236,7 +236,7 @@ pub async fn get_weights(
         // Estimate epoch from current time (12 second blocks on Bittensor)
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
         now / 12
     });
@@ -1040,7 +1040,7 @@ pub async fn llm_local_proxy(
 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs() as i64;
 
     // Sign with validator's sr25519 keypair
@@ -1225,7 +1225,7 @@ pub async fn llm_local_proxy_stream(
 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs() as i64;
 
     // Sign with validator's sr25519 keypair

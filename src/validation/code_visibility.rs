@@ -106,7 +106,7 @@ impl AgentVisibility {
     ) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         Self {
@@ -352,7 +352,7 @@ impl CodeVisibilityManager {
         let current_epoch = *self.current_epoch.read();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let mut agents = self.agents.write();
@@ -446,7 +446,7 @@ impl CodeVisibilityManager {
         let current_epoch = *self.current_epoch.read();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let mut agents = self.agents.write();
@@ -574,7 +574,7 @@ impl CodeVisibilityManager {
         let current_epoch = *self.current_epoch.read();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let mut agents = self.agents.write();
