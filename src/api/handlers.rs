@@ -719,21 +719,24 @@ pub async fn get_agent_code(
         ));
     }
 
-    // 3. Check visibility - time-based (24h)
+    // 3. Check visibility - time-based (immediate, no delay)
     // Note: manually_validated does NOT bypass this - it only affects leaderboard eligibility
-    let now = chrono::Utc::now().timestamp();
-    let hours_since = (now - submission.created_at) as f64 / 3600.0;
-    const VISIBILITY_HOURS: f64 = 24.0;
+    // VISIBILITY_HOURS = 0 means code is visible immediately when status is completed
+    const VISIBILITY_HOURS: f64 = 0.0;
 
-    if hours_since < VISIBILITY_HOURS {
-        let hours_remaining = VISIBILITY_HOURS - hours_since;
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(CodeVisibilityError {
-                error: "Code not yet public".to_string(),
-                hours_remaining: Some(hours_remaining),
-            }),
-        ));
+    if VISIBILITY_HOURS > 0.0 {
+        let now = chrono::Utc::now().timestamp();
+        let hours_since = (now - submission.created_at) as f64 / 3600.0;
+        if hours_since < VISIBILITY_HOURS {
+            let hours_remaining = VISIBILITY_HOURS - hours_since;
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(CodeVisibilityError {
+                    error: "Code not yet public".to_string(),
+                    hours_remaining: Some(hours_remaining),
+                }),
+            ));
+        }
     }
 
     // 4. Build response
