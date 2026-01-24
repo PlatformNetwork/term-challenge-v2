@@ -1552,7 +1552,7 @@ impl ValidatorWorker {
         let execution_result =
             tokio::time::timeout(Duration::from_secs(global_timeout_secs), execution_future).await;
 
-        let (agent_completed, agent_stderr, steps_executed, timed_out, test_passed, test_output) =
+        let (_agent_completed, agent_stderr, steps_executed, timed_out, test_passed, test_output) =
             match execution_result {
                 Ok(Ok(result)) => result,
                 Ok(Err(e)) => {
@@ -1891,7 +1891,7 @@ exec /agent/agent --instruction "$INSTRUCTION"
 
             // Log progress every 30 seconds
             let elapsed = loop_start.elapsed().as_secs();
-            if elapsed > 0 && elapsed % 30 == 0 {
+            if elapsed > 0 && elapsed.is_multiple_of(30) {
                 info!("Agent still running: {}s elapsed", elapsed);
             }
         }

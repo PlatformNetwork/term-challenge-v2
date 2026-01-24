@@ -15,7 +15,7 @@
 //! - Validator retries locally once on timeout
 //! - If still fails, server reassigns to a different validator
 
-use crate::storage::pg::{PgStorage, TimeoutTask};
+use crate::storage::pg::PgStorage;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;

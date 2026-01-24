@@ -17,7 +17,6 @@ use crate::client::websocket::platform::PlatformWsClient;
 use crate::container::backend::create_backend;
 use crate::container::compiler;
 use crate::storage::pg::{PendingCompilation, PgStorage, TaskAssignment};
-use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;

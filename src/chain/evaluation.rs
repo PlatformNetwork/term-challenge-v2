@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 /// Minimum validators required for consensus
 pub const MINIMUM_VALIDATORS: usize = 3;
@@ -372,7 +372,7 @@ impl EvaluationContract {
             .sum();
 
         // Alternative: simple average
-        let simple_average: f64 =
+        let _simple_average: f64 =
             submissions.iter().map(|s| s.success_rate).sum::<f64>() / submissions.len() as f64;
 
         // Calculate confidence based on agreement (variance)

@@ -10,7 +10,7 @@ use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 /// Platform LLM client configuration
 #[derive(Debug, Clone)]

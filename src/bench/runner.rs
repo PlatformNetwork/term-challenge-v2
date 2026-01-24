@@ -3,14 +3,13 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use super::environment::DockerEnvironment;
-use super::results::TaskResult;
-use super::session::{keys, AgentResponse, TmuxSession};
+use super::session::{AgentResponse, TmuxSession};
 use super::task::Task;
 use super::verifier::{VerificationResult, Verifier};
 
@@ -95,7 +94,7 @@ pub trait Agent: Send + Sync {
     fn name(&self) -> &str;
 
     /// Setup agent in the environment
-    async fn setup(&self, session: &TmuxSession) -> Result<()> {
+    async fn setup(&self, _session: &TmuxSession) -> Result<()> {
         Ok(())
     }
 

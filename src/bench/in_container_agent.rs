@@ -628,7 +628,7 @@ impl InContainerRunner {
         env.exec_shell(&format!("cd /agent && {} nohup python3 run.py &", env_str))
             .await?;
 
-        for i in 0..30 {
+        for _i in 0..30 {
             tokio::time::sleep(Duration::from_millis(200)).await;
             if env
                 .exec(&["curl", "-s", "http://localhost:8765/health"])

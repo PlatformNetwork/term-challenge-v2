@@ -29,8 +29,6 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tracing::{debug, error, info, warn};
 
 // ============================================================================
 // TYPES FOR CHALLENGE CONTAINER <-> PLATFORM COMMUNICATION

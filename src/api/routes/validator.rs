@@ -11,7 +11,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::api::ApiState;
 use crate::auth::{is_timestamp_valid, is_valid_ss58_hotkey, verify_signature};

@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Minimum validators required for code visibility
 /// Code visible when 3 validators have completed evaluation

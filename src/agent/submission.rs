@@ -37,7 +37,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 #[derive(Debug, Error)]
 pub enum SubmissionError {

@@ -18,7 +18,7 @@
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Block number where epoch 0 starts for term-challenge
 pub const EPOCH_ZERO_START_BLOCK: u64 = 7_276_080;

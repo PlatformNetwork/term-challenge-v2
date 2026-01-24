@@ -275,7 +275,7 @@ impl Challenge for TerminalBenchChallenge {
 
     async fn evaluate(
         &self,
-        ctx: &ChallengeContext,
+        _ctx: &ChallengeContext,
         agent: &SdkAgentInfo,
         payload: serde_json::Value,
     ) -> Result<ChallengeEvaluationResult> {
@@ -507,7 +507,7 @@ impl Challenge for TerminalBenchChallenge {
 
             // Can submit check
             ("GET", "/can_submit") => {
-                let hotkey = req.query_param("miner_hotkey").unwrap_or_default();
+                let _hotkey = req.query_param("miner_hotkey").unwrap_or_default();
                 let stake: u64 = req
                     .query_param("stake")
                     .and_then(|s| s.parse().ok())

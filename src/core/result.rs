@@ -229,8 +229,10 @@ impl EvaluationResultBuilder {
 /// Status of an evaluation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum EvaluationStatus {
     /// Waiting to be processed.
+    #[default]
     Pending,
     /// Currently being evaluated.
     Running,
@@ -244,12 +246,6 @@ pub enum EvaluationStatus {
     CostLimitReached,
     /// Timed out.
     TimedOut,
-}
-
-impl Default for EvaluationStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 impl std::fmt::Display for EvaluationStatus {

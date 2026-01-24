@@ -124,7 +124,7 @@ pub async fn run(agent: PathBuf) -> Result<()> {
 
     // Check encoding
     print_step(5, 5, "Checking encoding...");
-    if source.chars().any(|c| !c.is_ascii()) {
+    if !source.is_ascii() {
         warnings.push("File contains non-ASCII characters".to_string());
     }
 

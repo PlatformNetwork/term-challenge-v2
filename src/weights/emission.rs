@@ -382,7 +382,7 @@ impl WeightCalculator {
                 .sum();
 
             if uncapped_total > 0.0 {
-                for (uid, weight) in capped.iter_mut() {
+                for (_uid, weight) in capped.iter_mut() {
                     if *weight < max_allowed {
                         let proportion = *weight / uncapped_total;
                         *weight += excess * proportion;

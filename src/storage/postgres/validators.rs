@@ -2,10 +2,7 @@
 //!
 //! Handles validator assignment, heartbeats, and job management.
 
-use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio_postgres::Row;
 
 /// Pending evaluation - one per agent, ALL validators must evaluate
 #[derive(Debug, Clone, Serialize, Deserialize)]

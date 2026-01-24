@@ -8,7 +8,6 @@
 //! API keys are encrypted at rest using ChaCha20-Poly1305.
 
 use crate::chain::epoch::EpochCalculator;
-use crate::crypto::api_key::{self, ApiKeyError};
 use crate::storage::migrations;
 use anyhow::Result;
 use deadpool_postgres::{Config, Pool, Runtime};
@@ -3305,7 +3304,7 @@ impl PgStorage {
 
         for assignment in &assignments {
             let val_hotkey: String = assignment.get(0);
-            let assigned_at: i64 = assignment.get(1);
+            let _assigned_at: i64 = assignment.get(1);
 
             // Find evaluation if completed
             let eval = evaluations.iter().find(|e| {
@@ -3412,7 +3411,7 @@ impl PgStorage {
         };
 
         // Validators currently evaluating (assigned but not completed)
-        let validators_evaluating = validator_details
+        let _validators_evaluating = validator_details
             .iter()
             .filter(|v| v.status == "started")
             .count() as i32;

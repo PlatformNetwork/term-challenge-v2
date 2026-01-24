@@ -33,7 +33,7 @@ use sp_core::{crypto::Ss58Codec, sr25519::Pair as Keypair, Pair};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Events received from platform-server
 #[derive(Debug, Clone)]
@@ -264,7 +264,7 @@ async fn connection_loop(
 /// Connect to WebSocket and handle messages until disconnection
 async fn connect_and_handle(
     ws_url: &str,
-    keypair: &Keypair,
+    _keypair: &Keypair,
     event_tx: &mpsc::Sender<ValidatorEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (ws_stream, _response) = connect_async(ws_url).await?;

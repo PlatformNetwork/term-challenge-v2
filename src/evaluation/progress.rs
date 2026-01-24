@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 /// Execution status for a single task
@@ -289,7 +289,7 @@ impl EvaluationProgress {
     }
 
     /// Mark evaluation as failed
-    pub fn fail(&mut self, reason: &str) {
+    pub fn fail(&mut self, _reason: &str) {
         self.status = EvaluationStatus::Failed;
     }
 }
@@ -573,7 +573,7 @@ impl TaskExecutor {
         &self,
         agent: &AgentInfo,
         task: &Task,
-        progress: &mut EvaluationProgress,
+        _progress: &mut EvaluationProgress,
     ) -> TaskExecutionResult {
         let mut retry_count = 0;
         let max_retries = if self.config.execution.retry_on_failure {
@@ -601,7 +601,7 @@ impl TaskExecutor {
     }
 
     /// Run a single task (no retries)
-    async fn run_task(&self, agent: &AgentInfo, task: &Task) -> TaskExecutionResult {
+    async fn run_task(&self, _agent: &AgentInfo, task: &Task) -> TaskExecutionResult {
         let start = Instant::now();
 
         // Docker execution handled by DockerManager

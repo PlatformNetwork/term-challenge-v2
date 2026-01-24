@@ -10,7 +10,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::str::FromStr;
 use thiserror::Error;
 
 // ============================================================================
@@ -387,7 +386,7 @@ pub trait Challenge: Send + Sync {
     }
 
     /// Handle a route request
-    async fn handle_route(&self, ctx: &ChallengeContext, request: RouteRequest) -> RouteResponse {
+    async fn handle_route(&self, _ctx: &ChallengeContext, request: RouteRequest) -> RouteResponse {
         RouteResponse::error(404, &format!("Route not found: {}", request.path))
     }
 
@@ -400,12 +399,12 @@ pub trait Challenge: Send + Sync {
     ) -> Result<ChallengeEvaluationResult>;
 
     /// Validate an agent before evaluation
-    async fn validate_agent(&self, ctx: &ChallengeContext, agent: &AgentInfo) -> Result<bool> {
+    async fn validate_agent(&self, _ctx: &ChallengeContext, _agent: &AgentInfo) -> Result<bool> {
         Ok(true)
     }
 
     /// Calculate weights from evaluations
-    async fn calculate_weights(&self, ctx: &ChallengeContext) -> Result<Vec<WeightAssignment>> {
+    async fn calculate_weights(&self, _ctx: &ChallengeContext) -> Result<Vec<WeightAssignment>> {
         Ok(vec![])
     }
 

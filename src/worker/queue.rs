@@ -8,7 +8,6 @@
 
 use crate::bench::{
     registry::RegistryClient,
-    results::TaskResult as BenchTaskResult,
     runner::{TrialConfig, TrialRunner},
     task::Task,
 };
@@ -22,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, Semaphore};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 /// Maximum concurrent tasks across all agents (Docker resource limit)
@@ -563,7 +562,7 @@ impl AgentQueue {
                 };
 
                 let task_name = task.name.clone();
-                let task_start = Instant::now();
+                let _task_start = Instant::now();
 
                 // Create unique container name
                 let request_id_short: String = request_id.chars().take(8).collect();

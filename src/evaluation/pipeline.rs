@@ -10,7 +10,7 @@
 use crate::{
     admin::config::ChallengeConfig,
     evaluation::evaluator::{AgentInfo, TaskEvaluator},
-    task::{Task, TaskRegistry, TaskResult},
+    task::{TaskRegistry, TaskResult},
     validation::whitelist::{PythonWhitelist, WhitelistConfig},
     weights::distribution::{DistributionConfig, ValidatorDistributor, ValidatorInfo},
 };
@@ -18,8 +18,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Agent submission for evaluation
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,7 +145,7 @@ impl EvaluationPipeline {
 
     /// Receive and validate an agent submission
     pub fn receive_agent(&self, submission: AgentSubmission) -> ReceiveResult {
-        let epoch = *self.current_epoch.read();
+        let _epoch = *self.current_epoch.read();
         info!(
             "Receiving agent from miner {} (UID {})",
             submission.miner_hotkey, submission.miner_uid
@@ -282,7 +281,7 @@ impl EvaluationPipeline {
                 }
             };
 
-            let task_time = task_start.elapsed().as_millis() as u64;
+            let _task_time = task_start.elapsed().as_millis() as u64;
             // Use actual execution time from result, estimate cost based on time
             // LLM cost estimation: ~$0.001 per second of execution (rough estimate)
             // Real cost tracking would come from LLM proxy with actual token counts

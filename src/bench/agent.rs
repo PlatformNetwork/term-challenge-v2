@@ -6,7 +6,7 @@ use tracing::{debug, info, warn};
 
 use super::llm::{CostTracker, LlmClient, Message, Provider};
 use super::runner::Agent;
-use super::session::{AgentResponse, CommandSpec, TmuxSession};
+use super::session::{AgentResponse, TmuxSession};
 
 /// System prompt for terminal agent
 const SYSTEM_PROMPT: &str = r#"You are an expert terminal agent. Your task is to complete programming and system administration tasks using only terminal commands.

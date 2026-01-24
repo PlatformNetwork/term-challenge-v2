@@ -14,7 +14,6 @@ use crate::storage::pg::{
     Submission, DEFAULT_COST_LIMIT_USD, MAX_COST_LIMIT_USD, SUBMISSION_COOLDOWN_SECS,
 };
 use crate::validation::package::PackageValidator;
-use crate::validation::whitelist::{PythonWhitelist, WhitelistConfig};
 
 // ============================================================================
 // REQUEST/RESPONSE STRUCTS
@@ -191,7 +190,6 @@ pub async fn submit_agent(
             // Package submission (REQUIRED)
             (None, Some(pkg_base64)) | (Some(_), Some(pkg_base64)) => {
                 // If both provided, use package (ignore deprecated source_code)
-                let pkg_base64 = pkg_base64;
                 // Decode base64
                 let pkg_data = match base64::Engine::decode(
                     &base64::engine::general_purpose::STANDARD,

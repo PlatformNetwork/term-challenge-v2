@@ -10,7 +10,6 @@ use bollard::image::BuildImageOptions;
 use bollard::models::{HostConfig, Mount, MountTypeEnum};
 use bollard::Docker;
 use futures::StreamExt;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::time::timeout;
@@ -265,7 +264,7 @@ impl DockerEnvironment {
 
     /// Install tmux in the container
     async fn install_tmux(&self) -> Result<()> {
-        let container_id = self
+        let _container_id = self
             .container_id
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Container not started"))?;

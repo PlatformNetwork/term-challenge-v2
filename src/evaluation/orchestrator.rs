@@ -12,21 +12,18 @@
 
 use crate::admin::config::ChallengeConfig;
 use crate::admin::subnet::{
-    key_evaluation_queue, key_subnet_control, ControlError, EvaluatingAgent, EvaluationQueueState,
-    PendingAgent, SubnetControlState, SubnetController, MAX_CONCURRENT_AGENTS,
-    MAX_CONCURRENT_TASKS, MAX_TASKS_PER_AGENT,
+    key_evaluation_queue, key_subnet_control, ControlError, EvaluationQueueState, PendingAgent,
+    SubnetControlState, SubnetController, MAX_CONCURRENT_AGENTS, MAX_TASKS_PER_AGENT,
 };
 use crate::evaluation::evaluator::{AgentInfo, TaskEvaluator};
 use crate::storage::chain::ChainStorage;
-use crate::task::{Task, TaskRegistry, TaskResult};
+use crate::task::{Task, TaskRegistry};
 use chrono::Utc;
 use parking_lot::RwLock;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
 /// Stale evaluation timeout (5 minutes)

@@ -1,3 +1,7 @@
+// Allow unused code during development - these are future features
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 //! Terminal Benchmark Challenge for Platform Network
 //!
 //! This challenge evaluates AI agents on terminal-based tasks.

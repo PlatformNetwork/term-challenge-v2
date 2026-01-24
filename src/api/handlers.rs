@@ -11,9 +11,8 @@ use crate::auth::{
     is_timestamp_valid, is_valid_ss58_hotkey, verify_signature, AuthManager,
 };
 use crate::storage::pg::{
-    AgentLeaderboardEntry, LlmUsageRecord, PgStorage, Submission, SubmissionInfo, TaskAssignment,
-    TaskLog, ValidatorJobInfo, ValidatorReadiness, DEFAULT_COST_LIMIT_USD, MAX_COST_LIMIT_USD,
-    SUBMISSION_COOLDOWN_SECS,
+    LlmUsageRecord, PgStorage, Submission, SubmissionInfo, TaskAssignment, TaskLog,
+    ValidatorReadiness, DEFAULT_COST_LIMIT_USD, MAX_COST_LIMIT_USD, SUBMISSION_COOLDOWN_SECS,
 };
 use crate::validation::package::PackageValidator;
 use crate::validation::whitelist::{PythonWhitelist, WhitelistConfig};
@@ -21,7 +20,7 @@ use axum::{
     body::Body,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::Response,
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -3671,7 +3670,7 @@ fn transform_to_responses_api(
 }
 
 /// Parse OpenAI Responses API response into LlmCallResponse
-fn parse_responses_api_response(json: &serde_json::Value, model: &str) -> LlmCallResponse {
+fn parse_responses_api_response(json: &serde_json::Value, _model: &str) -> LlmCallResponse {
     let mut content = String::new();
     let mut tool_calls: Vec<LlmToolCall> = Vec::new();
 

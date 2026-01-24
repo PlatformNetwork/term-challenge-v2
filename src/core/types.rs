@@ -61,7 +61,7 @@ impl AsRef<str> for Hotkey {
 /// A unique identifier for a challenge.
 ///
 /// This is a 16-byte identifier typically derived from the challenge name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct ChallengeId(pub [u8; 16]);
 
 impl ChallengeId {
@@ -101,12 +101,6 @@ impl ChallengeId {
 impl fmt::Display for ChallengeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.to_hex())
-    }
-}
-
-impl Default for ChallengeId {
-    fn default() -> Self {
-        Self([0u8; 16])
     }
 }
 

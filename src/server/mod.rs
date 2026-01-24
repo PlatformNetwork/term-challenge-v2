@@ -1,5 +1,6 @@
 //! Challenge server.
 
+#[allow(clippy::module_inception)]
 pub mod server;
 
 // Re-export commonly used items

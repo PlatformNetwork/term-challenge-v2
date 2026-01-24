@@ -24,9 +24,9 @@ use tracing::{debug, error, info, warn};
 
 // Import protocol types from platform's secure-container-runtime
 use secure_container_runtime::{
-    ContainerConfig, ContainerError, ContainerInfo, ExecResult as BrokerExecResult,
-    MountConfig as BrokerMountConfig, NetworkConfig, NetworkMode as BrokerNetworkMode,
-    Request as BrokerRequest, ResourceLimits, Response as BrokerResponse,
+    ContainerConfig, MountConfig as BrokerMountConfig, NetworkConfig,
+    NetworkMode as BrokerNetworkMode, Request as BrokerRequest, ResourceLimits,
+    Response as BrokerResponse,
 };
 
 /// Container configuration for sandbox/agent containers

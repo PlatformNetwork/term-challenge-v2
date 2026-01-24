@@ -8,7 +8,7 @@ use bollard::container::{
 };
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
-use bollard::models::{HostConfig, Mount, MountTypeEnum};
+use bollard::models::{HostConfig, Mount};
 use bollard::Docker;
 use futures::StreamExt;
 use std::path::Path;

@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 /// LLM Provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

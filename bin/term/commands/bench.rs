@@ -387,9 +387,7 @@ pub async fn run_benchmark(
     concurrent: usize,
     _max_steps: u32, // Ignored - agents manage their own limits (SDK 2.0)
 ) -> Result<()> {
-    use term_challenge::bench::{
-        run_binary_agent, run_binary_agent_from_package, BinaryAgentConfig,
-    };
+    use term_challenge::bench::BinaryAgentConfig;
 
     let (name, version) = RegistryClient::parse_dataset_spec(dataset_spec);
 

@@ -755,7 +755,7 @@ impl TaskEvaluator {
 
 /// Detect programming language from code content
 fn detect_language(code: &str) -> String {
-    let code_lower = code.to_lowercase();
+    let _code_lower = code.to_lowercase();
 
     // Check for shebang
     if code.starts_with("#!") {

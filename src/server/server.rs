@@ -8,7 +8,7 @@ use crate::agent::review::{LlmConfig, LlmProvider, LlmReviewManager};
 use crate::api::{self, ApiState};
 use crate::auth::AuthManager;
 use crate::bench::external_agent::ExternalAgent;
-use crate::bench::registry::{Dataset, RegistryClient, TaskSource};
+use crate::bench::registry::RegistryClient;
 use crate::bench::runner::{TrialConfig, TrialRunner};
 use crate::bench::task::Task;
 use crate::chain::block_sync::{BlockSync, BlockSyncConfig};
@@ -17,7 +17,7 @@ use crate::client::http::PlatformClient;
 use crate::storage::pg::PgStorage;
 use crate::validation::whitelist::{PythonWhitelist, WhitelistConfig};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -1011,7 +1011,7 @@ pub async fn llm_local_proxy(
     State(state): State<Arc<ChallengeServerState>>,
     Json(req): Json<LocalLlmProxyRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    use sp_core::{sr25519, Pair};
+    use sp_core::Pair;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Get validator hotkey from environment
@@ -1196,7 +1196,7 @@ pub async fn llm_local_proxy_stream(
     Json(req): Json<LocalLlmProxyRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<serde_json::Value>)> {
     use axum::body::Body;
-    use sp_core::{sr25519, Pair};
+    use sp_core::Pair;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Get validator hotkey from environment

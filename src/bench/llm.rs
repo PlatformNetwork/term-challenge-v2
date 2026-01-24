@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// LLM Provider
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

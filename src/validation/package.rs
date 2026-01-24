@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{Cursor, Read};
 use tar::Archive;
-use tracing::{debug, info, warn};
 
 /// Maximum package size (10MB)
 pub const MAX_PACKAGE_SIZE: usize = 10 * 1024 * 1024;

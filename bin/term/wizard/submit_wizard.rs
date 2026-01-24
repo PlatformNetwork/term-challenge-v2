@@ -9,8 +9,7 @@ use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 use sp_core::{sr25519, Pair};
-use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 use term_challenge::encode_ss58;
@@ -446,7 +445,7 @@ fn add_directory_to_zip<W: Write + std::io::Seek>(
 }
 
 /// Create a ZIP package from a single file
-fn create_single_file_zip(path: &PathBuf, source: &str) -> Result<Vec<u8>> {
+fn create_single_file_zip(path: &std::path::Path, source: &str) -> Result<Vec<u8>> {
     let mut buffer = std::io::Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut buffer);
@@ -517,6 +516,7 @@ fn print_review_simple(agent_name: &str, miner_hotkey: &str, cost_limit: f64, pa
 }
 
 /// Submit agent via Bridge API (new format with ZIP packages)
+#[allow(clippy::too_many_arguments)]
 async fn submit_agent_bridge(
     platform_url: &str,
     package_data: &[u8],

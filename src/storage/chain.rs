@@ -11,12 +11,12 @@
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::debug;
 
-use crate::evaluation::progress::{EvaluationResult, TaskExecutionResult};
+use crate::evaluation::progress::EvaluationResult;
 
 // ==================== On-Chain Data Keys ====================
 
@@ -359,7 +359,7 @@ impl ChainStorage {
     }
 
     /// Get a JSON value by key (generic getter)
-    pub fn get_json<T: serde::de::DeserializeOwned + Default>(&self, key: &str) -> T {
+    pub fn get_json<T: serde::de::DeserializeOwned + Default>(&self, _key: &str) -> T {
         // In the new central API model, this would be an async HTTP call
         // For now, return default to maintain compatibility
         // The actual implementation should use async and call platform-server
@@ -369,7 +369,7 @@ impl ChainStorage {
     /// Set a JSON value by key (generic setter)
     /// Note: In the central API model, this would typically go through
     /// the platform-server which handles signing and consensus
-    pub fn set_json<T: serde::Serialize>(&self, key: &str, value: &T) -> anyhow::Result<()> {
+    pub fn set_json<T: serde::Serialize>(&self, key: &str, _value: &T) -> anyhow::Result<()> {
         // In the new central API model, this would be an async HTTP call
         // For now, just return Ok to maintain compatibility
         // The actual implementation should use async and call platform-server

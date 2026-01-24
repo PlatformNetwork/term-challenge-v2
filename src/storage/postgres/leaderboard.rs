@@ -2,10 +2,8 @@
 //!
 //! Handles leaderboard queries and weight calculations.
 
-use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio_postgres::Row;
 
 /// Winner entry for weight calculation
 /// Calculated from submissions + validator_evaluations

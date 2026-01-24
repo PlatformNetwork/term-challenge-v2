@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 // =============================================================================
 // Provider Enum and Configuration
@@ -38,7 +38,7 @@ impl Provider {
     }
 
     /// Parse provider from string (case-insensitive)
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "openrouter" => Self::OpenRouter,
             "openai" => Self::OpenAI,
@@ -92,10 +92,7 @@ impl Provider {
 
     /// Check if provider uses OpenAI-compatible API format
     pub fn is_openai_compatible(&self) -> bool {
-        match self {
-            Self::Anthropic => false,
-            _ => true,
-        }
+        !matches!(self, Self::Anthropic)
     }
 
     /// Check if provider supports streaming
@@ -461,7 +458,7 @@ pub struct LlmFunctionCall {
 }
 
 /// Parse OpenAI Responses API response
-pub fn parse_responses_api_response(json: &Value, model: &str) -> LlmResponse {
+pub fn parse_responses_api_response(json: &Value, _model: &str) -> LlmResponse {
     let mut content = String::new();
     let mut tool_calls: Vec<LlmToolCall> = Vec::new();
 
@@ -776,15 +773,15 @@ mod tests {
 
     #[test]
     fn test_provider_from_str() {
-        assert_eq!(Provider::from_str("openrouter"), Provider::OpenRouter);
-        assert_eq!(Provider::from_str("OPENAI"), Provider::OpenAI);
-        assert_eq!(Provider::from_str("Anthropic"), Provider::Anthropic);
-        assert_eq!(Provider::from_str("claude"), Provider::Anthropic);
-        assert_eq!(Provider::from_str("chutes"), Provider::Chutes);
-        assert_eq!(Provider::from_str("deepseek"), Provider::Chutes);
-        assert_eq!(Provider::from_str("grok"), Provider::Grok);
-        assert_eq!(Provider::from_str("xai"), Provider::Grok);
-        assert_eq!(Provider::from_str("unknown"), Provider::OpenRouter);
+        assert_eq!(Provider::parse("openrouter"), Provider::OpenRouter);
+        assert_eq!(Provider::parse("OPENAI"), Provider::OpenAI);
+        assert_eq!(Provider::parse("Anthropic"), Provider::Anthropic);
+        assert_eq!(Provider::parse("claude"), Provider::Anthropic);
+        assert_eq!(Provider::parse("chutes"), Provider::Chutes);
+        assert_eq!(Provider::parse("deepseek"), Provider::Chutes);
+        assert_eq!(Provider::parse("grok"), Provider::Grok);
+        assert_eq!(Provider::parse("xai"), Provider::Grok);
+        assert_eq!(Provider::parse("unknown"), Provider::OpenRouter);
     }
 
     #[test]

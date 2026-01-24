@@ -8,12 +8,12 @@
 //! - Updates the epoch calculator on each new block
 //! - Notifies listeners of epoch transitions
 
-use crate::chain::epoch::{EpochCalculator, EpochTransition, SharedEpochCalculator};
+use crate::chain::epoch::{EpochTransition, SharedEpochCalculator};
 use crate::storage::pg::PgStorage;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, info, warn};
 
 /// Block event from platform server

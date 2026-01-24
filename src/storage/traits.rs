@@ -55,8 +55,10 @@ pub trait EvaluationStore: Send + Sync {
 /// Submission status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SubmissionStatus {
     /// Waiting to be processed.
+    #[default]
     Pending,
     /// Being compiled.
     Compiling,
@@ -70,12 +72,6 @@ pub enum SubmissionStatus {
     Failed,
     /// Rejected.
     Rejected,
-}
-
-impl Default for SubmissionStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 impl std::fmt::Display for SubmissionStatus {
