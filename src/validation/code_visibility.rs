@@ -20,10 +20,12 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 
 /// Minimum validators required for code visibility
+/// Code visible when 3 validators have completed evaluation
 pub const MIN_VALIDATORS_FOR_VISIBILITY: usize = 3;
 
 /// Minimum epochs after validation for code visibility
-pub const MIN_EPOCHS_FOR_VISIBILITY: u64 = 3;
+/// Set to 0 to show code immediately when validators complete (no delay)
+pub const MIN_EPOCHS_FOR_VISIBILITY: u64 = 0;
 
 #[derive(Debug, Error)]
 pub enum VisibilityError {
@@ -159,8 +161,13 @@ impl AgentVisibility {
         };
 
         // Check epochs passed since eligibility
-        let epochs_since_eligible = current_epoch.saturating_sub(eligible_epoch);
-        if epochs_since_eligible >= MIN_EPOCHS_FOR_VISIBILITY {
+        // When MIN_EPOCHS_FOR_VISIBILITY is 0, code is visible immediately
+        #[allow(clippy::absurd_extreme_comparisons)]
+        let epochs_met = {
+            let epochs_since_eligible = current_epoch.saturating_sub(eligible_epoch);
+            epochs_since_eligible >= MIN_EPOCHS_FOR_VISIBILITY
+        };
+        if epochs_met {
             VisibilityStatus::Public
         } else {
             VisibilityStatus::PendingEpochs
