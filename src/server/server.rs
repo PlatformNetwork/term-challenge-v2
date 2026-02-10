@@ -523,8 +523,14 @@ pub async fn evaluate_agent(
             }
         }
 
-        // TODO: Store flagged status in DB for subnet owner review
+        // Flag agent in database for subnet owner review
+        // This marks the agent for manual approval post-evaluation
         if flagged {
+            if let Some(storage) = &state.pg_storage {
+                if let Err(e) = storage.set_agent_flagged(&req.agent_hash, true, flag_reason.as_deref()).await {
+                    warn!("Failed to store flagged status in DB: {}", e);
+                }
+            }
             info!(
                 "Agent {} will be evaluated but flagged for manual approval. Reason: {:?}",
                 agent_hash_short, flag_reason

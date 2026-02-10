@@ -5419,11 +5419,12 @@ pub async fn get_subnet_status(State(state): State<Arc<ApiState>>) -> Json<Subne
             paused: settings.paused,
         }),
         Err(_) => {
-            // Fallback to defaults if database unavailable
+            // Fail-closed: disable operations when database is unavailable
+            // This prevents unintended uploads/validation during database outages
             Json(SubnetStatusResponse {
-                uploads_enabled: true,
-                validation_enabled: true,
-                paused: false,
+                uploads_enabled: false,
+                validation_enabled: false,
+                paused: true,
             })
         }
     }

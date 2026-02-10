@@ -94,26 +94,149 @@ def apply_caching(messages: List[dict], enabled: bool = True) -> List[dict]:
 
 
 # =============================================================================
-# Tool Functions
+# Tool Functions with Security Hardening
 # =============================================================================
+
+# Global workspace boundary for path validation
+_WORKSPACE_ROOT: Optional[Path] = None
+
+
+def set_workspace_root(workspace: str) -> None:
+    """Set the workspace root for path validation."""
+    global _WORKSPACE_ROOT
+    _WORKSPACE_ROOT = Path(workspace).resolve()
+
+
+def _validate_path(path: str, allow_create: bool = False) -> Optional[Path]:
+    """
+    Validate that a path is within the workspace boundary.
+    
+    Prevents path traversal attacks by resolving the path and checking
+    it's under the workspace root.
+    
+    Args:
+        path: Path to validate
+        allow_create: If True, allows paths that don't exist yet (for write ops)
+    
+    Returns:
+        Resolved Path if valid, None if invalid
+    """
+    if _WORKSPACE_ROOT is None:
+        # No workspace set, reject all paths for safety
+        return None
+    
+    try:
+        # Resolve the path to eliminate .. and symlinks
+        target = Path(path)
+        if target.is_absolute():
+            resolved = target.resolve()
+        else:
+            resolved = (_WORKSPACE_ROOT / target).resolve()
+        
+        # For existing paths, check they're under workspace
+        if resolved.exists():
+            if not str(resolved).startswith(str(_WORKSPACE_ROOT)):
+                return None
+            return resolved
+        
+        # For non-existing paths (creation), verify parent is in workspace
+        if allow_create:
+            parent = resolved.parent
+            while not parent.exists():
+                parent = parent.parent
+            if not str(parent.resolve()).startswith(str(_WORKSPACE_ROOT)):
+                return None
+            return resolved
+        
+        return None
+    except (ValueError, OSError):
+        return None
+
+
+def _sanitize_command(cmd: str) -> bool:
+    """
+    Check if a command is safe to execute.
+    
+    Blocks dangerous commands that could escape the container or
+    cause system damage.
+    
+    Args:
+        cmd: Command to check
+    
+    Returns:
+        True if command appears safe, False otherwise
+    """
+    # Block obviously dangerous patterns
+    dangerous_patterns = [
+        "rm -rf /",
+        "rm -rf /*",
+        "dd if=",
+        ":(){:|:&};:",  # Fork bomb
+        "mkfs.",
+        "chmod -R 777 /",
+        "> /dev/sda",
+        "curl | sh",
+        "curl | bash",
+        "wget | sh",
+        "wget | bash",
+    ]
+    
+    cmd_lower = cmd.lower()
+    for pattern in dangerous_patterns:
+        if pattern.lower() in cmd_lower:
+            return False
+    
+    return True
+
 
 def shell(cmd: str, cwd: Optional[str] = None, timeout: int = 60) -> dict:
     """
     Execute shell command and return result.
+    
+    Security notes:
+    - Commands are validated against a blocklist of dangerous patterns
+    - Working directory is constrained to workspace when set
+    - Command output is captured to prevent terminal escape sequences
 
     Args:
         cmd: Command to execute
-        cwd: Working directory (optional)
+        cwd: Working directory (optional, must be within workspace)
         timeout: Command timeout in seconds
 
     Returns:
         dict with stdout, stderr, exit_code, timed_out
     """
+    # Validate command safety
+    if not _sanitize_command(cmd):
+        return {
+            "stdout": "",
+            "stderr": "[BLOCKED] Command contains dangerous patterns",
+            "exit_code": -1,
+            "timed_out": False,
+            "ok": False
+        }
+    
+    # Validate working directory if specified
+    actual_cwd = cwd
+    if cwd is not None and _WORKSPACE_ROOT is not None:
+        validated_cwd = _validate_path(cwd)
+        if validated_cwd is None:
+            return {
+                "stdout": "",
+                "stderr": f"[ERROR] Working directory outside workspace: {cwd}",
+                "exit_code": -1,
+                "timed_out": False,
+                "ok": False
+            }
+        actual_cwd = str(validated_cwd)
+    elif _WORKSPACE_ROOT is not None:
+        actual_cwd = str(_WORKSPACE_ROOT)
+    
     try:
         proc = subprocess.run(
             cmd,
             shell=True,
-            cwd=cwd,
+            cwd=actual_cwd,
             capture_output=True,
             text=True,
             timeout=timeout
@@ -145,42 +268,74 @@ def shell(cmd: str, cwd: Optional[str] = None, timeout: int = 60) -> dict:
 
 def read_file(path: str) -> str:
     """
-    Read file contents.
+    Read file contents with path validation.
+    
+    Security notes:
+    - Path is validated to be within workspace boundary
+    - Symlinks are resolved to prevent escape
+    - File size is limited to prevent memory exhaustion
 
     Args:
-        path: Path to file
+        path: Path to file (relative to workspace or absolute within workspace)
 
     Returns:
-        File contents as string, or error message
+        File contents as string, or error message starting with [ERROR]
     """
+    validated_path = _validate_path(path)
+    if validated_path is None:
+        return f"[ERROR] Path outside workspace or invalid: {path}"
+    
     try:
-        file_path = Path(path)
-        if not file_path.exists():
+        if not validated_path.exists():
             return f"[ERROR] File not found: {path}"
-        if file_path.stat().st_size > MAX_FILE_SIZE:
+        if not validated_path.is_file():
+            return f"[ERROR] Not a file: {path}"
+        if validated_path.stat().st_size > MAX_FILE_SIZE:
             return f"[ERROR] File too large (>{MAX_FILE_SIZE} bytes): {path}"
-        return file_path.read_text(encoding="utf-8", errors="replace")
+        return validated_path.read_text(encoding="utf-8", errors="replace")
+    except PermissionError:
+        return f"[ERROR] Permission denied: {path}"
     except Exception as exc:
         return f"[ERROR] Failed to read file: {exc}"
 
 
 def edit_file(path: str, content: str) -> bool:
     """
-    Write content to file.
+    Write content to file with path validation.
+    
+    Security notes:
+    - Path is validated to be within workspace boundary
+    - Parent directories must exist within workspace
+    - Logs errors for debugging instead of silent failure
 
     Args:
-        path: Path to file
+        path: Path to file (relative to workspace or absolute within workspace)
         content: Content to write
 
     Returns:
         True if successful, False otherwise
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    validated_path = _validate_path(path, allow_create=True)
+    if validated_path is None:
+        logger.error("edit_file: Path outside workspace or invalid: %s", path)
+        return False
+    
     try:
-        file_path = Path(path)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content, encoding="utf-8")
+        # Only create directories within workspace
+        validated_path.parent.mkdir(parents=True, exist_ok=True)
+        validated_path.write_text(content, encoding="utf-8")
         return True
-    except Exception:
+    except PermissionError as exc:
+        logger.error("edit_file: Permission denied for %s: %s", path, exc)
+        return False
+    except OSError as exc:
+        logger.error("edit_file: OS error for %s: %s", path, exc)
+        return False
+    except Exception as exc:
+        logger.error("edit_file: Unexpected error for %s: %s", path, exc)
         return False
 
 
@@ -388,6 +543,9 @@ def validate_code(
         Validation result dict with pass/fail status and details
     """
     workspace_path = Path(workspace).resolve()
+    
+    # Set workspace root for security validation in tool functions
+    set_workspace_root(str(workspace_path))
 
     # Check workspace exists
     if not workspace_path.exists():

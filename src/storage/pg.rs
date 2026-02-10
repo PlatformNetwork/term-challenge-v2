@@ -685,7 +685,7 @@ impl Default for SubnetSettings {
     fn default() -> Self {
         Self {
             uploads_enabled: true,
-            validation_enabled: true,
+            validation_enabled: false, // Disabled by default - owner must enable via sudo
             paused: false,
             owner_hotkey: None,
             updated_at: chrono::Utc::now().timestamp(),
@@ -6434,6 +6434,41 @@ impl PgStorage {
             .await?;
 
         info!("Set paused={} by {}", paused, updated_by);
+        Ok(())
+    }
+
+    /// Set agent flagged status for manual review by subnet owner
+    /// 
+    /// Marks an agent as requiring manual approval before being eligible
+    /// for leaderboard placement. The flag reason explains why.
+    pub async fn set_agent_flagged(
+        &self,
+        agent_hash: &str,
+        flagged: bool,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        let client = self.pool.get().await?;
+
+        client
+            .execute(
+                "UPDATE submissions SET 
+                    flagged = $1,
+                    flag_reason = $2,
+                    flagged_at = CASE WHEN $1 THEN NOW() ELSE NULL END
+                 WHERE agent_hash = $3",
+                &[&flagged, &reason, &agent_hash],
+            )
+            .await?;
+
+        if flagged {
+            info!(
+                "Agent {} flagged for manual review. Reason: {}",
+                agent_hash,
+                reason.unwrap_or("Not specified")
+            );
+        } else {
+            info!("Agent {} unflagged (cleared for leaderboard)", agent_hash);
+        }
         Ok(())
     }
 }
