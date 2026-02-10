@@ -432,14 +432,12 @@ pub async fn submit_agent(
         }
     }
 
-    // Queue submission for evaluation (requires 2 validators)
-    if let Err(e) = state
-        .storage
-        .queue_submission_for_evaluation(&submission_id, &agent_hash, &req.miner_hotkey, 2)
-        .await
-    {
-        warn!("Failed to queue submission for evaluation: {:?}", e);
-    }
+    // NOTE: We no longer queue for evaluation here. The flow is now:
+    // 1. Submission created with llm_review_status='pending'
+    // 2. LLM review worker reviews code and sets llm_review_status='approved' or 'rejected'
+    // 3. Compile worker picks up approved submissions (WHERE llm_review_status='approved')
+    // 4. After successful compilation, compile worker queues for evaluation
+    // This ensures LLM review MUST pass before compilation/evaluation can begin.
 
     let submission_type = if is_package { "package" } else { "single-file" };
     info!(

@@ -18,8 +18,9 @@ pub use public::{
 };
 pub use submission::submit_agent;
 pub use transparency::{
-    get_agent_journey, get_compilation_log, get_rejected_agents, get_task_logs,
-    AgentJourneyResponse, CompilationLogResponse, RejectedAgentsResponse, TaskLogsResponse,
+    get_agent_journey, get_compilation_log, get_llm_review, get_rejected_agents, get_task_logs,
+    AgentJourneyResponse, CompilationLogResponse, LlmReviewResponse, RejectedAgentsResponse,
+    TaskLogsResponse,
 };
 pub use validator::{
     claim_jobs,

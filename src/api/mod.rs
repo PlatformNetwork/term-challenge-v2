@@ -37,6 +37,7 @@ pub use handlers::{
     get_leaderboard,
     get_live_task_detail,
     get_live_tasks,
+    get_llm_review,
     get_llm_rules,
     get_my_agent_source,
     get_my_jobs,

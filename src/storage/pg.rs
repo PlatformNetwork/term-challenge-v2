@@ -580,6 +580,19 @@ pub struct ValidatorJourneyResult {
     pub completed_at: Option<i64>,
 }
 
+/// LLM review information for transparency
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmReviewInfo {
+    /// Review status: pending, reviewing, approved, rejected
+    pub status: String,
+    /// LLM model used for review (e.g., moonshotai/Kimi-K2.5-TEE)
+    pub model: Option<String>,
+    /// Full review result JSON from the LLM
+    pub result: Option<serde_json::Value>,
+    /// Timestamp when review completed
+    pub reviewed_at: Option<i64>,
+}
+
 /// Public agent journey/transparency view
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentJourney {
@@ -592,6 +605,8 @@ pub struct AgentJourney {
     pub manual_approval_status: Option<String>,
     pub manual_approval_by: Option<String>,
     pub manual_approval_at: Option<i64>,
+    // LLM review info (must pass before compilation)
+    pub llm_review: Option<LlmReviewInfo>,
     // Compilation info
     pub compilation: Option<CompilationLog>,
     // Validators info
@@ -4963,6 +4978,36 @@ impl PgStorage {
         Ok(())
     }
 
+    /// Get LLM review info for transparency API
+    pub async fn get_llm_review(&self, agent_hash: &str) -> Result<Option<LlmReviewInfo>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT llm_review_status, llm_review_model, llm_review_result,
+                        EXTRACT(EPOCH FROM llm_reviewed_at)::BIGINT as reviewed_at
+                 FROM submissions
+                 WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        match row {
+            Some(r) => {
+                let status: Option<String> = r.get(0);
+                match status {
+                    Some(status) => Ok(Some(LlmReviewInfo {
+                        status,
+                        model: r.get(1),
+                        result: r.get(2),
+                        reviewed_at: r.get(3),
+                    })),
+                    None => Ok(None),
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
     // ========================================================================
     // PUBLIC API METHODS (No sensitive data exposed)
     // ========================================================================
@@ -6286,13 +6331,15 @@ impl PgStorage {
     pub async fn get_agent_journey(&self, agent_hash: &str) -> Result<Option<AgentJourney>> {
         let client = self.pool.get().await?;
 
-        // Get submission info
+        // Get submission info including LLM review fields
         let sub_row = client
             .query_opt(
                 "SELECT agent_hash, miner_hotkey, name, status,
                         EXTRACT(EPOCH FROM created_at)::BIGINT as submitted_at,
                         rejection_reason, manual_approval_status, manual_approval_by,
-                        EXTRACT(EPOCH FROM manual_approval_at)::BIGINT as manual_approval_at
+                        EXTRACT(EPOCH FROM manual_approval_at)::BIGINT as manual_approval_at,
+                        llm_review_status, llm_review_model, llm_review_result,
+                        EXTRACT(EPOCH FROM llm_reviewed_at)::BIGINT as llm_reviewed_at
                  FROM submissions
                  WHERE agent_hash = $1",
                 &[&agent_hash],
@@ -6312,6 +6359,19 @@ impl PgStorage {
         let manual_approval_status: Option<String> = sub.get(6);
         let manual_approval_by: Option<String> = sub.get(7);
         let manual_approval_at: Option<i64> = sub.get(8);
+
+        // LLM review info
+        let llm_review_status: Option<String> = sub.get(9);
+        let llm_review_model: Option<String> = sub.get(10);
+        let llm_review_result: Option<serde_json::Value> = sub.get(11);
+        let llm_reviewed_at: Option<i64> = sub.get(12);
+
+        let llm_review = llm_review_status.map(|status| LlmReviewInfo {
+            status,
+            model: llm_review_model,
+            result: llm_review_result,
+            reviewed_at: llm_reviewed_at,
+        });
 
         // Get compilation log
         let compilation = self.get_compilation_log(agent_hash).await.ok().flatten();
@@ -6398,6 +6458,7 @@ impl PgStorage {
             manual_approval_status,
             manual_approval_by,
             manual_approval_at,
+            llm_review,
             compilation,
             validators_assigned,
             validators_completed: eval_count as i32,

@@ -1750,6 +1750,10 @@ pub async fn run_server_with_mode(
                 get(api::get_compilation_log),
             )
             .route(
+                "/transparency/agent/:agent_hash/llm_review",
+                get(api::get_llm_review),
+            )
+            .route(
                 "/transparency/agent/:agent_hash/tasks",
                 get(api::get_task_logs),
             )
@@ -1894,6 +1898,7 @@ pub async fn run_server_with_mode(
         info!("║  Transparency API (public, no auth):                         ║");
         info!("║    GET  /api/v1/transparency/agent/:hash/journey             ║");
         info!("║    GET  /api/v1/transparency/agent/:hash/compilation         ║");
+        info!("║    GET  /api/v1/transparency/agent/:hash/llm_review          ║");
         info!("║    GET  /api/v1/transparency/agent/:hash/tasks               ║");
         info!("║    GET  /api/v1/transparency/rejected                        ║");
         info!("║  Access via Bridge: /api/v1/bridge/term-challenge/api/v1/... ║");

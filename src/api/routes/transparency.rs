@@ -1,6 +1,6 @@
 //! Agent transparency endpoints.
 //!
-//! Public endpoints for viewing agent lifecycle, compilation logs, and evaluation details.
+//! Public endpoints for viewing agent lifecycle, compilation logs, LLM review, and evaluation details.
 //! These endpoints do NOT require authentication - transparency is for everyone.
 
 use axum::{
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::api::ApiState;
-use crate::storage::pg::{AgentJourney, CompilationLog};
+use crate::storage::pg::{AgentJourney, CompilationLog, LlmReviewInfo};
 
 // ============================================================================
 // AGENT JOURNEY ENDPOINT
@@ -103,6 +103,58 @@ pub async fn get_compilation_log(
             Json(CompilationLogResponse {
                 success: false,
                 compilation: None,
+                error: Some(format!("Database error: {}", e)),
+            }),
+        )),
+    }
+}
+
+// ============================================================================
+// LLM REVIEW ENDPOINT
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct LlmReviewResponse {
+    pub success: bool,
+    pub llm_review: Option<LlmReviewInfo>,
+    pub error: Option<String>,
+}
+
+/// GET /api/v1/transparency/agent/{hash}/llm_review
+///
+/// Returns LLM code review details for an agent, including:
+/// - Review status (pending, reviewing, approved, rejected)
+/// - LLM model used for review
+/// - Full review result (approved/rejected, reason, violations)
+/// - Timestamp when review completed
+///
+/// This endpoint provides transparency into the mandatory LLM review
+/// that must pass before an agent can be compiled and evaluated.
+///
+/// No authentication required.
+pub async fn get_llm_review(
+    State(state): State<Arc<ApiState>>,
+    Path(agent_hash): Path<String>,
+) -> Result<Json<LlmReviewResponse>, (StatusCode, Json<LlmReviewResponse>)> {
+    match state.storage.get_llm_review(&agent_hash).await {
+        Ok(Some(review)) => Ok(Json(LlmReviewResponse {
+            success: true,
+            llm_review: Some(review),
+            error: None,
+        })),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(LlmReviewResponse {
+                success: false,
+                llm_review: None,
+                error: Some("Agent not found or LLM review not yet started".to_string()),
+            }),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(LlmReviewResponse {
+                success: false,
+                llm_review: None,
                 error: Some(format!("Database error: {}", e)),
             }),
         )),
