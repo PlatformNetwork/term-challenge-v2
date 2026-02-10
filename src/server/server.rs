@@ -4,7 +4,7 @@
 //! Provides weight calculation, agent evaluation, and source validation.
 
 use crate::admin::config::ChallengeConfig;
-use crate::agent::review::{LlmConfig, LlmProvider, LlmReviewManager};
+
 use crate::api::{self, ApiState};
 use crate::auth::AuthManager;
 use crate::bench::external_agent::ExternalAgent;
@@ -64,7 +64,6 @@ pub struct ChallengeServerState {
     pub platform_client: PlatformClient,
     pub challenge_id: String,
     pub whitelist: PythonWhitelist,
-    pub llm_manager: RwLock<Option<LlmReviewManager>>,
     pub registry_client: RwLock<RegistryClient>,
     pub cached_tasks: RwLock<HashMap<String, Vec<PathBuf>>>,
     pub test_mode: bool,
@@ -111,7 +110,6 @@ impl ChallengeServerState {
             platform_client: PlatformClient::new(platform_url),
             challenge_id: challenge_id.to_string(),
             whitelist,
-            llm_manager: RwLock::new(None),
             registry_client: RwLock::new(RegistryClient::with_url(REGISTRY_URL)),
             cached_tasks: RwLock::new(HashMap::new()),
             test_mode,
@@ -134,13 +132,6 @@ impl ChallengeServerState {
     /// Check if running in server mode (with PostgreSQL storage)
     pub fn is_server_mode(&self) -> bool {
         self.pg_storage.is_some()
-    }
-
-    /// Create LLM review manager with miner's API key
-    pub fn create_llm_manager(&self, api_key: &str, provider: &str) -> LlmReviewManager {
-        let llm_provider = LlmProvider::parse(provider);
-        let llm_config = LlmConfig::for_provider(llm_provider, api_key.to_string());
-        LlmReviewManager::new(llm_config, self.challenge_id.clone())
     }
 
     /// Get dataset name based on mode
@@ -1790,10 +1781,6 @@ pub async fn run_server_with_mode(
             match crate::worker::llm_review::LlmReviewWorker::from_env(Arc::new(pg.clone())) {
                 Some(llm_worker) => {
                     info!("Starting LLM review worker (Kimi-K2.5-TEE via Chutes)...");
-                    // Try to build the reviewer image at startup
-                    if let Err(e) = crate::worker::llm_review::build_reviewer_image().await {
-                        warn!("Could not build LLM reviewer image: {} (ensure term-llm-reviewer:latest is available)", e);
-                    }
                     tokio::spawn(async move {
                         llm_worker.run().await;
                     });

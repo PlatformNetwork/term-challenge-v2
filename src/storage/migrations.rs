@@ -230,12 +230,16 @@ pub const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../migrations/022_agent_transparency.sql"),
     ),
     (
-        "023_llm_rules",
-        include_str!("../../migrations/023_llm_rules.sql"),
+        "023_validation_rules",
+        include_str!("../../migrations/023_validation_rules.sql"),
     ),
     (
         "024_subnet_settings",
         include_str!("../../migrations/024_subnet_settings.sql"),
+    ),
+    (
+        "025_auto_validate_agents",
+        include_str!("../../migrations/025_auto_validate_agents.sql"),
     ),
 ];
 

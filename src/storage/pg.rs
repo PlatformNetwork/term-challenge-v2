@@ -737,6 +737,7 @@ pub struct ValidatorProgress {
 }
 
 /// LLM rule for system prompts and behavior configuration
+/// Backed by the `validation_rules` table (single source of truth).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmRule {
     pub id: i32,
@@ -6930,18 +6931,18 @@ impl PgStorage {
 // =============================================================================
 
 impl PgStorage {
-    /// Get all enabled LLM rules ordered by priority descending
+    /// Get all active validation rules as LlmRule structs, ordered by priority descending
     pub async fn get_enabled_llm_rules(&self) -> Result<Vec<LlmRule>> {
         let client = self.pool.get().await?;
 
         let rows = client
             .query(
-                "SELECT id, rule_text, rule_category, version, enabled, priority,
+                "SELECT id, rule_text, category, 1 as version, active, priority,
                         EXTRACT(EPOCH FROM created_at)::BIGINT as created_at,
                         EXTRACT(EPOCH FROM updated_at)::BIGINT as updated_at,
                         created_by
-                 FROM llm_rules
-                 WHERE enabled = true
+                 FROM validation_rules
+                 WHERE active = true
                  ORDER BY priority DESC",
                 &[],
             )
@@ -6966,17 +6967,17 @@ impl PgStorage {
         Ok(rules)
     }
 
-    /// Get all LLM rules (enabled and disabled) for admin
+    /// Get all validation rules (active and inactive) for admin
     pub async fn get_all_llm_rules(&self) -> Result<Vec<LlmRule>> {
         let client = self.pool.get().await?;
 
         let rows = client
             .query(
-                "SELECT id, rule_text, rule_category, version, enabled, priority,
+                "SELECT id, rule_text, category, 1 as version, active, priority,
                         EXTRACT(EPOCH FROM created_at)::BIGINT as created_at,
                         EXTRACT(EPOCH FROM updated_at)::BIGINT as updated_at,
                         created_by
-                 FROM llm_rules
+                 FROM validation_rules
                  ORDER BY priority DESC, id ASC",
                 &[],
             )
@@ -7046,12 +7047,22 @@ impl PgStorage {
 
         let client = self.pool.get().await?;
 
+        let next_order: i32 = {
+            let row = client
+                .query_one(
+                    "SELECT COALESCE(MAX(rule_order), 0) + 1 FROM validation_rules",
+                    &[],
+                )
+                .await?;
+            row.get(0)
+        };
+
         let row = client
             .query_one(
-                "INSERT INTO llm_rules (rule_text, rule_category, priority, created_by, enabled, version)
-                 VALUES ($1, $2, $3, $4, true, 1)
+                "INSERT INTO validation_rules (rule_text, category, priority, created_by, active, rule_order)
+                 VALUES ($1, $2, $3, $4, true, $5)
                  RETURNING id",
-                &[&rule_text, &category, &priority, &created_by],
+                &[&rule_text, &category, &priority, &created_by, &next_order],
             )
             .await?;
 
@@ -7097,9 +7108,9 @@ impl PgStorage {
 
         let result = client
             .execute(
-                "UPDATE llm_rules
-                 SET rule_text = $2, rule_category = $3, priority = $4, enabled = $5,
-                     version = version + 1, updated_at = NOW()
+                "UPDATE validation_rules
+                 SET rule_text = $2, category = $3, priority = $4, active = $5,
+                     updated_at = NOW()
                  WHERE id = $1",
                 &[&id, &rule_text, &category, &priority, &enabled],
             )
@@ -7121,7 +7132,7 @@ impl PgStorage {
         let client = self.pool.get().await?;
 
         let result = client
-            .execute("DELETE FROM llm_rules WHERE id = $1", &[&id])
+            .execute("DELETE FROM validation_rules WHERE id = $1", &[&id])
             .await?;
 
         if result == 0 {
@@ -7138,7 +7149,7 @@ impl PgStorage {
 
         let result = client
             .execute(
-                "UPDATE llm_rules SET enabled = $2, updated_at = NOW() WHERE id = $1",
+                "UPDATE validation_rules SET active = $2, updated_at = NOW() WHERE id = $1",
                 &[&id, &enabled],
             )
             .await?;

@@ -1,14 +1,16 @@
 //! LLM Review Worker
 //!
 //! Background service that reviews pending agent submissions using an LLM
-//! (Kimi-K2.5-TEE via Chutes API) inside an isolated Docker container.
+//! agent (docker/llm-reviewer/) inside an isolated Docker container.
 //!
 //! Flow:
 //! 1. Polls DB for agents with llm_review_status='pending'
 //! 2. Loads validation rules from the validation_rules table
-//! 3. Launches a Docker container (term-llm-reviewer:latest) with the agent code + rules
-//! 4. Container calls Chutes API and returns JSON verdict
-//! 5. Updates DB: approved -> llm_review_status='approved', rejected -> flagged=true
+//! 3. Writes agent source code to a temp directory
+//! 4. Launches a Docker container with the agent code mounted read-only
+//! 5. Container runs the reviewer agent which calls Chutes API (Kimi-K2.5-TEE)
+//! 6. Container outputs JSON verdict on stdout
+//! 7. Updates DB: approved -> llm_review_status='approved', rejected -> flagged=true
 
 use crate::storage::pg::PgStorage;
 use anyhow::{Context, Result};
@@ -209,7 +211,8 @@ impl LlmReviewWorker {
         Ok(())
     }
 
-    /// Launch a Docker container to review the code and return the JSON result
+    /// Write agent source code to a temp directory and launch a Docker container to review it.
+    /// The container mounts the agent directory read-only at /review/agent.
     async fn review_in_container(
         &self,
         source_code: &str,
@@ -218,28 +221,34 @@ impl LlmReviewWorker {
         let docker =
             Docker::connect_with_local_defaults().context("Failed to connect to Docker daemon")?;
 
-        // Write source code to a temp file that will be mounted
+        // Write source code to a temp directory (simulating an agent workspace)
         let tmp_dir = tempfile::tempdir().context("Failed to create temp dir")?;
-        let code_path = tmp_dir.path().join("code.py");
-        std::fs::write(&code_path, source_code).context("Failed to write temp code file")?;
+        let agent_dir = tmp_dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).context("Failed to create agent dir")?;
+        let code_path = agent_dir.join("agent.py");
+        std::fs::write(&code_path, source_code).context("Failed to write agent code")?;
 
         let container_name = format!("llm-review-{}", uuid::Uuid::new_v4());
 
-        let host_path = code_path.to_str().context("Invalid temp path")?.to_string();
+        let host_agent_dir = agent_dir
+            .to_str()
+            .context("Invalid temp path")?
+            .to_string();
 
         let env_vars = vec![
             format!("CHUTES_API_TOKEN={}", self.config.chutes_api_token),
             format!("RULES={}", rules),
+            "AGENT_CODE_DIR=/review/agent".to_string(),
         ];
 
         let container_config = Config {
             image: Some(LLM_REVIEWER_IMAGE.to_string()),
-            env: Some(env_vars.clone()),
+            env: Some(env_vars),
             host_config: Some(bollard::models::HostConfig {
-                binds: Some(vec![format!("{}:/review/code.py:ro", host_path)]),
+                binds: Some(vec![format!("{}:/review/agent:ro", host_agent_dir)]),
                 memory: Some(256 * 1024 * 1024),          // 256MB
-                nano_cpus: Some(1_000_000_000),           // 1 CPU
-                network_mode: Some("bridge".to_string()), // Needs network for API call
+                nano_cpus: Some(1_000_000_000),            // 1 CPU
+                network_mode: Some("bridge".to_string()),  // Needs network for API call
                 ..Default::default()
             }),
             ..Default::default()
@@ -361,98 +370,4 @@ impl LlmReviewWorker {
 
         output
     }
-}
-
-/// Build the LLM reviewer Docker image from docker/Dockerfile.llm-reviewer
-pub async fn build_reviewer_image() -> Result<()> {
-    let docker =
-        Docker::connect_with_local_defaults().context("Failed to connect to Docker daemon")?;
-
-    // Check if image already exists
-    if docker.inspect_image(LLM_REVIEWER_IMAGE).await.is_ok() {
-        info!("LLM reviewer image {} already exists", LLM_REVIEWER_IMAGE);
-        return Ok(());
-    }
-
-    info!("Building LLM reviewer image {}...", LLM_REVIEWER_IMAGE);
-
-    // Build image from project root context
-    use bollard::image::BuildImageOptions;
-    use std::io::Read;
-
-    let project_root = std::env::current_dir().context("Failed to get current dir")?;
-
-    // Create a tar archive with the Dockerfile and script
-    let mut tar_builder = tar::Builder::new(Vec::new());
-
-    // Add Dockerfile
-    let dockerfile_path = project_root.join("docker/Dockerfile.llm-reviewer");
-    if dockerfile_path.exists() {
-        let mut file = std::fs::File::open(&dockerfile_path)?;
-        let mut content = Vec::new();
-        file.read_to_end(&mut content)?;
-
-        let mut header = tar::Header::new_gnu();
-        header.set_size(content.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        tar_builder.append_data(&mut header, "Dockerfile", &content[..])?;
-    } else {
-        return Err(anyhow::anyhow!(
-            "Dockerfile.llm-reviewer not found at {:?}",
-            dockerfile_path
-        ));
-    }
-
-    // Add the review script
-    let script_path = project_root.join("scripts/llm_review.sh");
-    if script_path.exists() {
-        let mut file = std::fs::File::open(&script_path)?;
-        let mut content = Vec::new();
-        file.read_to_end(&mut content)?;
-
-        let mut header = tar::Header::new_gnu();
-        header.set_size(content.len() as u64);
-        header.set_mode(0o755);
-        header.set_cksum();
-        tar_builder.append_data(&mut header, "scripts/llm_review.sh", &content[..])?;
-    } else {
-        return Err(anyhow::anyhow!(
-            "llm_review.sh not found at {:?}",
-            script_path
-        ));
-    }
-
-    let tar_data = tar_builder.into_inner()?;
-
-    let build_options = BuildImageOptions {
-        dockerfile: "Dockerfile",
-        t: LLM_REVIEWER_IMAGE,
-        rm: true,
-        ..Default::default()
-    };
-
-    let mut stream = docker.build_image(build_options, None, Some(tar_data.into()));
-
-    while let Some(result) = stream.next().await {
-        match result {
-            Ok(output) => {
-                if let Some(stream_str) = output.stream {
-                    debug!("{}", stream_str.trim());
-                }
-                if let Some(err) = output.error {
-                    return Err(anyhow::anyhow!("Docker build error: {}", err));
-                }
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!("Docker build stream error: {}", e));
-            }
-        }
-    }
-
-    info!(
-        "LLM reviewer image {} built successfully",
-        LLM_REVIEWER_IMAGE
-    );
-    Ok(())
 }
