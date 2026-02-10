@@ -1,49 +1,18 @@
 """Security Auditor Agent - Checks for malicious/obfuscated code."""
 
-import base64
 import re
-from typing import List, Tuple
+from typing import List
 
 from .base import CodeAnalysis, ReviewAgent, ReviewMessage, ReviewVerdict
 
 
 class SecurityAuditor(ReviewAgent):
-    """Agent specialized in detecting security issues and obfuscated code."""
-
-    # Patterns for obfuscated/encoded code
-    OBFUSCATION_PATTERNS: List[Tuple[str, str]] = [
-        (r'exec\s*\(\s*["\']', "Direct exec() with string"),
-        (r'eval\s*\(\s*["\']', "Direct eval() with string"),
-        (r'compile\s*\(', "compile() usage - potential code injection"),
-        (r'__import__\s*\(', "Dynamic import - potential obfuscation"),
-        (r'getattr\s*\(\s*__builtins__', "Accessing builtins via getattr"),
-        (r'base64\.(b64decode|decode)', "Base64 decoding - check for hidden code"),
-        (r'codecs\.(decode|encode)', "Codecs usage - potential obfuscation"),
-        (r'\\x[0-9a-fA-F]{2}', "Hex-encoded strings"),
-        (r'chr\s*\(\s*\d+\s*\)', "chr() calls - potential string obfuscation"),
-        (r'ord\s*\([^)]+\)\s*\^', "XOR obfuscation pattern"),
-        (r'lambda\s*:\s*None', "Suspicious lambda"),
-        (r'type\s*\(\s*["\']', "Dynamic type creation"),
-        (r'["\'][A-Za-z0-9+/]{50,}={0,2}["\']', "Potential base64 encoded string"),
-        (r'\\u[0-9a-fA-F]{4}', "Unicode escape sequences"),
-        (r'zlib\.(decompress|compress)', "Compression - potential code hiding"),
-        (r'marshal\.(loads|dumps)', "Marshal - bytecode serialization"),
-        (r'pickle\.(loads|load)', "Pickle - deserialization risk"),
-    ]
-
-    # Dangerous operations (warnings, not auto-reject)
-    DANGEROUS_PATTERNS: List[Tuple[str, str]] = [
-        (r'os\.system\s*\(', "os.system() - shell command execution"),
-        (r'subprocess\.Popen.*shell\s*=\s*True', "subprocess with shell=True"),
-        (r'socket\.(socket|connect|bind)', "Direct socket operations"),
-        (r'urllib\.request\.urlopen', "Direct URL access"),
-        (r'requests\.(get|post|put|delete)', "HTTP requests library"),
-        (r'ctypes\.', "ctypes - low-level memory access"),
-        (r'multiprocessing\.(Process|Pool)', "Multiprocessing usage"),
-        (r'threading\.(Thread|Lock)', "Threading operations"),
-        (r'open\s*\([^)]*["\']w["\']', "File write operations"),
-        (r'shutil\.(rmtree|remove)', "Destructive file operations"),
-    ]
+    """Agent specialized in detecting security issues and obfuscated code.
+    
+    This agent uses LLM-driven analysis rather than hardcoded pattern matching.
+    The LLM is responsible for identifying security issues, obfuscation attempts,
+    and dangerous operations based on its understanding of the code.
+    """
 
     def __init__(self, llm_client=None):
         """Initialize the Security Auditor agent."""
@@ -55,7 +24,12 @@ class SecurityAuditor(ReviewAgent):
 
     def analyze_code(self, code: str, filename: str = "agent.py") -> CodeAnalysis:
         """
-        Analyze code for security issues and obfuscation.
+        Analyze code for security issues using LLM reasoning.
+
+        Instead of hardcoded patterns, the LLM is responsible for identifying:
+        - Obfuscation attempts
+        - Security vulnerabilities
+        - Dangerous operations
 
         Args:
             code: The source code to analyze.
@@ -64,53 +38,37 @@ class SecurityAuditor(ReviewAgent):
         Returns:
             CodeAnalysis with security findings.
         """
-        issues: List[str] = []
-        warnings: List[str] = []
+        # If LLM client available, use LLM-driven analysis
+        if self.llm_client:
+            return self._llm_analyze_code(code, filename)
+
+        # Fallback: return neutral analysis that defers to discussion
+        # Collect informational positive signals only (not decision-making)
+        positives = self._collect_positive_signals(code)
+
+        return CodeAnalysis(
+            issues=[],
+            warnings=[],
+            positives=positives,
+            verdict=ReviewVerdict.NEEDS_DISCUSSION,
+            confidence=0.5,
+        )
+
+    def _collect_positive_signals(self, code: str) -> List[str]:
+        """
+        Collect informational positive signals from code.
+        
+        These are informational only and do not drive decision-making.
+        The LLM makes all security decisions.
+
+        Args:
+            code: The source code to analyze.
+
+        Returns:
+            List of positive signal descriptions.
+        """
         positives: List[str] = []
 
-        lines = code.split("\n")
-
-        # Check for obfuscation patterns
-        for pattern, description in self.OBFUSCATION_PATTERNS:
-            for i, line in enumerate(lines, 1):
-                if re.search(pattern, line):
-                    issues.append(f"Line {i}: {description}")
-
-        # Check for dangerous patterns (warnings, not rejections)
-        for pattern, description in self.DANGEROUS_PATTERNS:
-            for i, line in enumerate(lines, 1):
-                if re.search(pattern, line):
-                    warnings.append(f"Line {i}: {description} - verify legitimate use")
-
-        # Check for base64 encoded content that might be code
-        base64_strings = re.findall(r'["\']([A-Za-z0-9+/]{40,}={0,2})["\']', code)
-        for b64_str in base64_strings:
-            try:
-                decoded = base64.b64decode(b64_str).decode("utf-8", errors="ignore")
-                code_keywords = ["import", "def ", "class ", "exec", "eval"]
-                if any(kw in decoded.lower() for kw in code_keywords):
-                    issues.append(
-                        f"Detected base64-encoded Python code: {b64_str[:30]}..."
-                    )
-            except Exception:
-                pass
-
-        # Check for very long single lines (potential obfuscation)
-        for i, line in enumerate(lines, 1):
-            if len(line) > 500 and not line.strip().startswith("#"):
-                warnings.append(
-                    f"Line {i}: Very long line ({len(line)} chars) - potential obfuscation"
-                )
-
-        # Check for excessive use of single-char variable names
-        single_char_vars = re.findall(r"\b([a-z])\s*=", code)
-        if len(single_char_vars) > 20:
-            warnings.append(
-                f"Excessive single-character variables ({len(single_char_vars)}) - "
-                "may indicate obfuscation"
-            )
-
-        # Positive signals
         if "term_sdk" in code or "from term_sdk import" in code:
             positives.append("Uses official term_sdk")
 
@@ -123,16 +81,106 @@ class SecurityAuditor(ReviewAgent):
         if re.search(r"#.*[A-Za-z]", code):
             positives.append("Has inline comments")
 
-        # Determine verdict
-        if issues:
-            verdict = ReviewVerdict.REJECT
-            confidence = min(0.9, 0.5 + len(issues) * 0.1)
-        elif warnings:
-            verdict = ReviewVerdict.NEEDS_DISCUSSION
-            confidence = 0.6
-        else:
-            verdict = ReviewVerdict.APPROVE
-            confidence = 0.8
+        return positives
+
+    def _llm_analyze_code(self, code: str, filename: str) -> CodeAnalysis:
+        """
+        Perform LLM-driven security analysis of code.
+
+        Args:
+            code: The source code to analyze.
+            filename: Name of the file being analyzed.
+
+        Returns:
+            CodeAnalysis with LLM-determined findings.
+        """
+        positives = self._collect_positive_signals(code)
+
+        prompt = f"""Analyze the following Python code for security issues.
+
+File: {filename}
+
+```python
+{code[:8000]}
+```
+
+You are a security auditor checking for:
+1. Obfuscated or encoded malicious code (exec/eval with strings, base64 encoded code, etc.)
+2. Dangerous operations (shell commands, network access, file system manipulation)
+3. Sandbox escape attempts
+4. Code injection vulnerabilities
+
+Respond in this exact format:
+ISSUES: [comma-separated list of critical security issues, or "none"]
+WARNINGS: [comma-separated list of concerning patterns that need review, or "none"]
+VERDICT: [APPROVE or REJECT or NEEDS_DISCUSSION]
+CONFIDENCE: [0.0 to 1.0]
+
+Be thorough but fair - flag real security issues, not coding style preferences."""
+
+        try:
+            response = self.llm_client.chat(
+                [
+                    {"role": "system", "content": self.get_system_prompt()},
+                    {"role": "user", "content": prompt},
+                ]
+            )
+
+            response_text = response if isinstance(response, str) else str(response)
+            return self._parse_llm_analysis(response_text, positives)
+        except Exception:
+            # On LLM failure, defer to discussion
+            return CodeAnalysis(
+                issues=[],
+                warnings=[],
+                positives=positives,
+                verdict=ReviewVerdict.NEEDS_DISCUSSION,
+                confidence=0.5,
+            )
+
+    def _parse_llm_analysis(
+        self, response: str, positives: List[str]
+    ) -> CodeAnalysis:
+        """
+        Parse LLM response into CodeAnalysis.
+
+        Args:
+            response: The LLM response text.
+            positives: Pre-collected positive signals.
+
+        Returns:
+            Parsed CodeAnalysis object.
+        """
+        issues: List[str] = []
+        warnings: List[str] = []
+        verdict = ReviewVerdict.NEEDS_DISCUSSION
+        confidence = 0.5
+
+        lines = response.strip().split("\n")
+        for line in lines:
+            line_upper = line.upper()
+            if line_upper.startswith("ISSUES:"):
+                content = line.split(":", 1)[1].strip()
+                if content.lower() != "none" and content:
+                    issues = [i.strip() for i in content.split(",") if i.strip()]
+            elif line_upper.startswith("WARNINGS:"):
+                content = line.split(":", 1)[1].strip()
+                if content.lower() != "none" and content:
+                    warnings = [w.strip() for w in content.split(",") if w.strip()]
+            elif line_upper.startswith("VERDICT:"):
+                content = line.split(":", 1)[1].strip().upper()
+                if "APPROVE" in content:
+                    verdict = ReviewVerdict.APPROVE
+                elif "REJECT" in content:
+                    verdict = ReviewVerdict.REJECT
+                else:
+                    verdict = ReviewVerdict.NEEDS_DISCUSSION
+            elif line_upper.startswith("CONFIDENCE:"):
+                try:
+                    confidence = float(line.split(":", 1)[1].strip())
+                    confidence = max(0.0, min(1.0, confidence))
+                except ValueError:
+                    confidence = 0.5
 
         return CodeAnalysis(
             issues=issues,

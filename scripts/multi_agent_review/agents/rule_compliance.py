@@ -1,11 +1,15 @@
 """Rule Compliance Verifier Agent - Checks against AGENTS.md rules."""
-import re
-from typing import List, Set
+from typing import List
 from .base import ReviewAgent, CodeAnalysis, ReviewVerdict, ReviewMessage
 
 
 class RuleComplianceVerifier(ReviewAgent):
-    """Agent specialized in verifying compliance with term-challenge rules."""
+    """Agent specialized in verifying compliance with term-challenge rules.
+    
+    This agent uses LLM-driven analysis rather than hardcoded pattern matching.
+    The LLM is responsible for understanding and applying term-challenge rules
+    based on its knowledge of the AGENTS.md specification.
+    """
     
     def __init__(self, llm_client=None):
         super().__init__(
@@ -13,152 +17,133 @@ class RuleComplianceVerifier(ReviewAgent):
             role="Term-Challenge Rules Compliance Specialist",
             llm_client=llm_client
         )
-        
-        # SDK patterns that should be present
-        self.valid_sdk_patterns = [
-            # term_sdk patterns (SDK 2.0)
-            (r'from\s+term_sdk\s+import', "term_sdk import"),
-            (r'class\s+\w+\s*\(\s*Agent\s*\)', "Agent class inheritance"),
-            (r'def\s+run\s*\(\s*self\s*,\s*ctx', "run(self, ctx) method"),
-            (r'ctx\.shell\s*\(', "ctx.shell() usage"),
-            (r'ctx\.done\s*\(', "ctx.done() call"),
-            # argparse patterns (SDK 3.0)
-            (r'import\s+argparse', "argparse import"),
-            (r'argparse\.ArgumentParser', "ArgumentParser usage"),
-            (r'--instruction', "instruction argument"),
-            (r'subprocess\.(run|Popen|call)', "subprocess usage"),
-        ]
-        
-        # Forbidden modules for direct network access
-        self.forbidden_network_modules = {
-            'socket': "Direct socket access not allowed",
-            'urllib': "urllib not allowed - use LLM proxy",
-            'urllib2': "urllib2 not allowed", 
-            'urllib3': "urllib3 not allowed",
-            'ftplib': "FTP not allowed",
-            'smtplib': "SMTP not allowed",
-            'telnetlib': "Telnet not allowed",
-        }
-        
-        # Forbidden patterns for sandbox escape
-        self.sandbox_escape_patterns = [
-            (r'/proc/', "Accessing /proc filesystem"),
-            (r'/sys/', "Accessing /sys filesystem"),
-            (r'/dev/', "Accessing /dev filesystem"),
-            (r'os\.chroot', "chroot attempt"),
-            (r'os\.setuid|os\.setgid', "Privilege manipulation"),
-            (r'sys\._', "Accessing private sys attributes"),
-            (r'__class__\.__bases__', "Class hierarchy manipulation"),
-            (r'__subclasses__', "Subclass enumeration"),
-            (r'__globals__', "Global namespace access"),
-            (r'__code__', "Code object manipulation"),
-            (r'os\.environ\[', "Direct environment manipulation"),
-        ]
+        # No hardcoded rules - LLM decides compliance
     
     def analyze_code(self, code: str, filename: str = "agent.py") -> CodeAnalysis:
-        """Verify code complies with term-challenge rules."""
-        issues = []
-        warnings = []
-        positives = []
-        
-        lines = code.split('\n')
-        
-        # === CHECK SDK PATTERNS ===
-        
-        sdk_signals = []
-        for pattern, description in self.valid_sdk_patterns:
-            if re.search(pattern, code):
-                sdk_signals.append(description)
-        
-        # Determine SDK version
-        has_term_sdk = any('term_sdk' in s for s in sdk_signals)
-        has_argparse = any('argparse' in s for s in sdk_signals)
-        
-        if has_term_sdk:
-            positives.append("Uses term_sdk (SDK 2.0 pattern)")
-            # Check for required methods
-            if 'run(self, ctx' not in code and 'solve(self, req' not in code:
-                warnings.append("Missing run() or solve() method - required for term_sdk agents")
-        elif has_argparse:
-            positives.append("Uses argparse (SDK 3.0 pattern)")
-            # Check for instruction handling
-            if '--instruction' not in code:
-                warnings.append("Missing --instruction argument - required for SDK 3.0")
-        else:
-            issues.append("No recognized SDK pattern found (need term_sdk or argparse+subprocess)")
-        
-        # === CHECK FORBIDDEN MODULES ===
-        
-        imported_modules = self._extract_imports(code)
-        
-        for module, reason in self.forbidden_network_modules.items():
-            if module in imported_modules:
-                issues.append(f"Forbidden module '{module}': {reason}")
-        
-        # === CHECK SANDBOX ESCAPE ATTEMPTS ===
-        
-        for pattern, description in self.sandbox_escape_patterns:
-            matches = list(re.finditer(pattern, code))
-            for match in matches:
-                line_num = code[:match.start()].count('\n') + 1
-                issues.append(f"Line {line_num}: Potential sandbox escape - {description}")
-        
-        # === CHECK AGENT STRUCTURE ===
-        
-        # Check for main guard
-        if "__name__" in code and "__main__" in code:
-            positives.append("Has __main__ guard")
-        else:
-            warnings.append("Missing if __name__ == '__main__' guard")
-        
-        # Check for proper class structure (if using OOP)
-        classes = re.findall(r'class\s+(\w+)', code)
-        if classes:
-            for cls in classes:
-                if 'Agent' in cls or 'agent' in cls.lower():
-                    positives.append(f"Has agent class: {cls}")
-        
-        # Check for proper imports at top
-        first_code_line = None
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped and not stripped.startswith('#') and not stripped.startswith('"""'):
-                first_code_line = i
-                break
-        
-        if first_code_line:
-            pre_code = '\n'.join(lines[:first_code_line + 10])
-            if 'import' not in pre_code:
-                warnings.append("No imports found near top of file")
-        
-        # === CHECK FOR COMMON ISSUES ===
-        
-        # Infinite loops without guards
-        while_loops = re.findall(r'while\s+(True|1)\s*:', code)
-        if while_loops:
-            # Check if there's a step/iteration guard
-            if 'ctx.step' not in code and 'step <' not in code and 'break' not in code:
-                warnings.append("Infinite loop detected without apparent step limit guard")
-        
-        # Missing done() call
-        if has_term_sdk and 'ctx.done()' not in code and '.done()' not in code:
-            warnings.append("No ctx.done() call found - agent may never complete")
-        
-        # === DETERMINE VERDICT ===
-        
-        if issues:
-            verdict = ReviewVerdict.REJECT
-            confidence = min(0.95, 0.7 + len(issues) * 0.05)
-        elif len(warnings) > 3:
-            verdict = ReviewVerdict.NEEDS_DISCUSSION
-            confidence = 0.65
-        elif sdk_signals:
-            verdict = ReviewVerdict.APPROVE
-            confidence = 0.85
-        else:
-            verdict = ReviewVerdict.NEEDS_DISCUSSION
-            confidence = 0.5
-        
+        """
+        Verify code compliance using LLM reasoning.
+
+        The LLM is responsible for understanding and applying rules,
+        not hardcoded pattern matching.
+
+        Args:
+            code: The source code to analyze.
+            filename: Name of the file being analyzed.
+
+        Returns:
+            CodeAnalysis with compliance findings.
+        """
+        if self.llm_client:
+            return self._llm_analyze_code(code, filename)
+
+        # Fallback: return neutral analysis that defers to discussion
+        return CodeAnalysis(
+            issues=[],
+            warnings=[],
+            positives=[],
+            verdict=ReviewVerdict.NEEDS_DISCUSSION,
+            confidence=0.5
+        )
+
+    def _llm_analyze_code(self, code: str, filename: str) -> CodeAnalysis:
+        """
+        Perform LLM-driven compliance analysis of code.
+
+        Args:
+            code: The source code to analyze.
+            filename: Name of the file being analyzed.
+
+        Returns:
+            CodeAnalysis with LLM-determined findings.
+        """
+        prompt = f"""Analyze the following Python code for term-challenge rules compliance.
+
+File: {filename}
+
+```python
+{code[:8000]}
+```
+
+You are a rules compliance verifier checking for:
+1. Proper SDK usage (term_sdk SDK 2.0 pattern OR argparse+subprocess SDK 3.0 pattern)
+2. Required methods and structure (run/solve methods, ctx.done() calls, main guard)
+3. Forbidden network modules (direct socket, urllib access instead of LLM proxy)
+4. Sandbox escape attempts (accessing /proc, /sys, /dev, privilege manipulation)
+5. Proper agent structure and completion logic
+
+Respond in this exact format:
+ISSUES: [comma-separated list of rule violations, or "none"]
+WARNINGS: [comma-separated list of compliance concerns, or "none"]  
+POSITIVES: [comma-separated list of compliant aspects, or "none"]
+VERDICT: [APPROVE or REJECT or NEEDS_DISCUSSION]
+CONFIDENCE: [0.0 to 1.0]
+
+Be strict but fair - rule violations are non-negotiable per AGENTS.md requirements."""
+
+        try:
+            response = self.llm_client.chat([
+                {"role": "system", "content": self.get_system_prompt()},
+                {"role": "user", "content": prompt}
+            ])
+
+            response_text = response if isinstance(response, str) else str(response)
+            return self._parse_llm_analysis(response_text)
+        except Exception:
+            # On LLM failure, defer to discussion
+            return CodeAnalysis(
+                issues=[],
+                warnings=[],
+                positives=[],
+                verdict=ReviewVerdict.NEEDS_DISCUSSION,
+                confidence=0.5
+            )
+
+    def _parse_llm_analysis(self, response: str) -> CodeAnalysis:
+        """
+        Parse LLM response into CodeAnalysis.
+
+        Args:
+            response: The LLM response text.
+
+        Returns:
+            Parsed CodeAnalysis object.
+        """
+        issues: List[str] = []
+        warnings: List[str] = []
+        positives: List[str] = []
+        verdict = ReviewVerdict.NEEDS_DISCUSSION
+        confidence = 0.5
+
+        lines = response.strip().split("\n")
+        for line in lines:
+            line_upper = line.upper()
+            if line_upper.startswith("ISSUES:"):
+                content = line.split(":", 1)[1].strip()
+                if content.lower() != "none" and content:
+                    issues = [i.strip() for i in content.split(",") if i.strip()]
+            elif line_upper.startswith("WARNINGS:"):
+                content = line.split(":", 1)[1].strip()
+                if content.lower() != "none" and content:
+                    warnings = [w.strip() for w in content.split(",") if w.strip()]
+            elif line_upper.startswith("POSITIVES:"):
+                content = line.split(":", 1)[1].strip()
+                if content.lower() != "none" and content:
+                    positives = [p.strip() for p in content.split(",") if p.strip()]
+            elif line_upper.startswith("VERDICT:"):
+                content = line.split(":", 1)[1].strip().upper()
+                if "APPROVE" in content:
+                    verdict = ReviewVerdict.APPROVE
+                elif "REJECT" in content:
+                    verdict = ReviewVerdict.REJECT
+                else:
+                    verdict = ReviewVerdict.NEEDS_DISCUSSION
+            elif line_upper.startswith("CONFIDENCE:"):
+                try:
+                    confidence = float(line.split(":", 1)[1].strip())
+                    confidence = max(0.0, min(1.0, confidence))
+                except ValueError:
+                    confidence = 0.5
+
         return CodeAnalysis(
             issues=issues,
             warnings=warnings,
@@ -166,22 +151,6 @@ class RuleComplianceVerifier(ReviewAgent):
             verdict=verdict,
             confidence=confidence
         )
-    
-    def _extract_imports(self, code: str) -> Set[str]:
-        """Extract all imported module names."""
-        modules = set()
-        
-        # import x, y, z
-        for match in re.finditer(r'^import\s+([\w\s,]+)', code, re.MULTILINE):
-            for mod in match.group(1).split(','):
-                mod = mod.strip().split()[0]  # Handle "import x as y"
-                modules.add(mod.split('.')[0])
-        
-        # from x import y
-        for match in re.finditer(r'^from\s+([\w\.]+)\s+import', code, re.MULTILINE):
-            modules.add(match.group(1).split('.')[0])
-        
-        return modules
     
     def respond_to_discussion(
         self,
