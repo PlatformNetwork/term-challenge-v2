@@ -229,6 +229,10 @@ pub const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         "022_llm_rules",
         include_str!("../../migrations/022_llm_rules.sql"),
     ),
+    (
+        "023_subnet_settings",
+        include_str!("../../migrations/023_subnet_settings.sql"),
+    ),
 ];
 
 /// Run embedded migrations (when migrations dir is not available)
