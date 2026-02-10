@@ -455,7 +455,7 @@ mod tests {
             "An example task",
             "medium",
             "general",
-            "checkpoint4",
+            "checkpoint5",
             "test-model",
         )];
 

@@ -38,7 +38,7 @@ impl Default for SchedulerConfig {
             // 3 days in seconds = 3 * 24 * 60 * 60 = 259200
             interval_secs: 259200,
             enabled: true,
-            base_checkpoint: "checkpoint4".to_string(),
+            base_checkpoint: "checkpoint5".to_string(),
         }
     }
 }
@@ -56,7 +56,7 @@ impl SchedulerConfig {
             .unwrap_or(true);
 
         let base_checkpoint = std::env::var("SYNTHETIC_BASE_CHECKPOINT")
-            .unwrap_or_else(|_| "checkpoint4".to_string());
+            .unwrap_or_else(|_| "checkpoint5".to_string());
 
         Self {
             interval_secs,
@@ -332,14 +332,14 @@ impl SyntheticScheduler {
             }
         }
 
-        // Fallback to hardcoded examples from checkpoint4
+        // Fallback to hardcoded examples from checkpoint5
         Ok(vec![
             TaskConverter::create_synthetic(
                 "db-wal-recovery",
                 "Recover data from a corrupted SQLite WAL file",
                 "hard",
                 "database",
-                "checkpoint4",
+                "checkpoint5",
                 "reference",
             ),
             TaskConverter::create_synthetic(
@@ -347,7 +347,7 @@ impl SyntheticScheduler {
                 "Implement a chess engine to find the best move",
                 "hard",
                 "game_ai",
-                "checkpoint4",
+                "checkpoint5",
                 "reference",
             ),
             TaskConverter::create_synthetic(
@@ -355,7 +355,7 @@ impl SyntheticScheduler {
                 "Parse G-code commands and convert to human-readable text",
                 "medium",
                 "parsing",
-                "checkpoint4",
+                "checkpoint5",
                 "reference",
             ),
             TaskConverter::create_synthetic(
@@ -363,7 +363,7 @@ impl SyntheticScheduler {
                 "Implement DNA sequence insertion algorithm",
                 "medium",
                 "bioinformatics",
-                "checkpoint4",
+                "checkpoint5",
                 "reference",
             ),
             TaskConverter::create_synthetic(
@@ -371,7 +371,7 @@ impl SyntheticScheduler {
                 "Implement async task cancellation in Python",
                 "medium",
                 "async_programming",
-                "checkpoint4",
+                "checkpoint5",
                 "reference",
             ),
         ])
