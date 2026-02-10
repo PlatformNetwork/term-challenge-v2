@@ -226,12 +226,16 @@ pub const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../migrations/021_synthetic_datasets.sql"),
     ),
     (
-        "022_llm_rules",
-        include_str!("../../migrations/022_llm_rules.sql"),
+        "022_agent_transparency",
+        include_str!("../../migrations/022_agent_transparency.sql"),
     ),
     (
-        "023_subnet_settings",
-        include_str!("../../migrations/023_subnet_settings.sql"),
+        "023_llm_rules",
+        include_str!("../../migrations/023_llm_rules.sql"),
+    ),
+    (
+        "024_subnet_settings",
+        include_str!("../../migrations/024_subnet_settings.sql"),
     ),
 ];
 
