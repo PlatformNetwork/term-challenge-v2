@@ -475,6 +475,51 @@ impl LlmReviewWorker {
             // Redact API keys before passing to LLM reviewer
             let redacted_code = redact_api_keys(&review_code);
 
+            // Check if this agent was flagged by plagiarism detection
+            let mut effective_system_prompt = system_prompt_template.clone();
+            if let Ok(Some(report)) = self.storage.get_plagiarism_report(agent_hash).await {
+                if report["status"].as_str() == Some("flagged") {
+                    if let Ok(config) = self.storage.get_plagiarism_config().await {
+                        if !config.prompt_template.is_empty() {
+                            let score = report["score"].as_f64().unwrap_or(0.0);
+                            let matches_summary = report["matches"]
+                                .as_array()
+                                .map(|arr| {
+                                    arr.iter()
+                                        .take(10)
+                                        .map(|m| {
+                                            format!(
+                                                "- {} in {}:{}-{} matches {}:{}-{} ({} nodes)",
+                                                m["node_type"].as_str().unwrap_or("?"),
+                                                m["pending_file"].as_str().unwrap_or("?"),
+                                                m["pending_lines"].as_array().and_then(|a| a.first()).and_then(|v| v.as_u64()).unwrap_or(0),
+                                                m["pending_lines"].as_array().and_then(|a| a.get(1)).and_then(|v| v.as_u64()).unwrap_or(0),
+                                                m["matched_file"].as_str().unwrap_or("?"),
+                                                m["matched_lines"].as_array().and_then(|a| a.first()).and_then(|v| v.as_u64()).unwrap_or(0),
+                                                m["matched_lines"].as_array().and_then(|a| a.get(1)).and_then(|v| v.as_u64()).unwrap_or(0),
+                                                m["subtree_size"].as_u64().unwrap_or(0),
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                })
+                                .unwrap_or_default();
+
+                            let plagiarism_context = config
+                                .prompt_template
+                                .replace("{match_percent}", &format!("{:.1}", score))
+                                .replace("{matches_summary}", &matches_summary);
+
+                            effective_system_prompt = format!(
+                                "{}\n\n⚠️ PLAGIARISM WARNING:\n{}",
+                                effective_system_prompt, plagiarism_context
+                            );
+                            info!("Agent {} flagged for plagiarism ({:.1}%), injecting context into LLM review", short_hash, score);
+                        }
+                    }
+                }
+            }
+
             info!(
                 "Reviewing agent {} with {} ({} bytes of code, redacted)",
                 short_hash,
@@ -483,7 +528,7 @@ impl LlmReviewWorker {
             );
 
             match self
-                .review_code(agent_hash, &redacted_code, submission.is_package, &formatted_rules, &system_prompt_template)
+                .review_code(agent_hash, &redacted_code, submission.is_package, &formatted_rules, &effective_system_prompt)
                 .await
             {
                 Ok(result) => {

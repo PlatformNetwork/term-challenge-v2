@@ -5018,6 +5018,7 @@ impl PgStorage {
                     FROM submissions
                     WHERE llm_review_called = FALSE
                       AND llm_review_status = 'pending'
+                      AND COALESCE(plagiarism_status, 'pending') IN ('cleared', 'flagged')
                       AND COALESCE(llm_review_retry_count, 0) < $2
                     ORDER BY created_at ASC
                     LIMIT $1
@@ -7655,5 +7656,253 @@ impl PgStorage {
             .await?;
 
         Ok(row.map(|r| r.get(0)))
+    }
+
+    // ========================================================================
+    // Plagiarism Detection
+    // ========================================================================
+
+    /// Get plagiarism detection config from llm_review_config table
+    pub async fn get_plagiarism_config(
+        &self,
+    ) -> Result<crate::worker::plagiarism::PlagiarismConfig> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                "SELECT key, value FROM llm_review_config WHERE key LIKE 'plagiarism_%'",
+                &[],
+            )
+            .await?;
+
+        let mut config = crate::worker::plagiarism::PlagiarismConfig::default();
+        for row in rows {
+            let key: String = row.get(0);
+            let value: String = row.get(1);
+            match key.as_str() {
+                "plagiarism_flag_threshold" => {
+                    config.flag_threshold = value.parse().unwrap_or(config.flag_threshold)
+                }
+                "plagiarism_reject_threshold" => {
+                    config.reject_threshold = value.parse().unwrap_or(config.reject_threshold)
+                }
+                "plagiarism_min_subtree_size" => {
+                    config.min_subtree_size = value.parse().unwrap_or(config.min_subtree_size)
+                }
+                "plagiarism_index_top_n" => {
+                    config.index_top_n = value.parse().unwrap_or(config.index_top_n)
+                }
+                "plagiarism_prompt" => config.prompt_template = value,
+                _ => {}
+            }
+        }
+        Ok(config)
+    }
+
+    /// Claim pending plagiarism checks (atomic claim with SKIP LOCKED)
+    pub async fn claim_pending_plagiarism_checks(
+        &self,
+        limit: i32,
+    ) -> Result<Vec<PendingLlmReview>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                "WITH to_claim AS (
+                    SELECT agent_hash
+                    FROM submissions
+                    WHERE plagiarism_called = FALSE
+                      AND plagiarism_status = 'pending'
+                    ORDER BY created_at ASC
+                    LIMIT $1
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE submissions s
+                SET plagiarism_called = TRUE
+                FROM to_claim t
+                WHERE s.agent_hash = t.agent_hash
+                RETURNING s.agent_hash, s.source_code,
+                          COALESCE(s.is_package, false), s.package_data,
+                          s.package_format, s.entry_point",
+                &[&(limit as i64)],
+            )
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to claim pending plagiarism checks: {}. Make sure migration 033 has been applied.",
+                    e
+                );
+                e
+            })?;
+        Ok(rows
+            .iter()
+            .map(|r| PendingLlmReview {
+                agent_hash: r.get(0),
+                source_code: r.get(1),
+                is_package: r.get::<_, Option<bool>>(2).unwrap_or(false),
+                package_data: r.get(3),
+                package_format: r.get(4),
+                entry_point: r.get(5),
+            })
+            .collect())
+    }
+
+    /// Reset plagiarism check for retry
+    pub async fn reset_plagiarism_for_retry(&self, agent_hash: &str) -> Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute(
+                "UPDATE submissions SET plagiarism_called = FALSE WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Update plagiarism check result
+    pub async fn update_plagiarism_result(
+        &self,
+        agent_hash: &str,
+        status: &str,
+        score: f32,
+        matches: &serde_json::Value,
+        rejection_reason: Option<&str>,
+    ) -> Result<()> {
+        let client = self.pool.get().await?;
+        if status == "rejected" {
+            client
+                .execute(
+                    "UPDATE submissions
+                     SET plagiarism_status = $1,
+                         plagiarism_score = $2,
+                         plagiarism_matches = $3,
+                         plagiarism_checked_at = NOW(),
+                         llm_review_status = 'rejected',
+                         rejection_reason = $5
+                     WHERE agent_hash = $4",
+                    &[&status, &score, &matches, &agent_hash, &rejection_reason],
+                )
+                .await?;
+        } else {
+            client
+                .execute(
+                    "UPDATE submissions
+                     SET plagiarism_status = $1,
+                         plagiarism_score = $2,
+                         plagiarism_matches = $3,
+                         plagiarism_checked_at = NOW()
+                     WHERE agent_hash = $4",
+                    &[&status, &score, &matches, &agent_hash],
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Save AST index for an agent (persistent across restarts)
+    pub async fn save_ast_index(
+        &self,
+        agent_hash: &str,
+        ast_hashes: &serde_json::Value,
+        total_nodes: i32,
+    ) -> Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute(
+                "INSERT INTO plagiarism_ast_index (agent_hash, ast_hashes, total_nodes)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (agent_hash) DO UPDATE
+                 SET ast_hashes = $2, total_nodes = $3, indexed_at = NOW()",
+                &[&agent_hash, &ast_hashes, &total_nodes],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Load all AST index entries from DB
+    pub async fn load_ast_index(&self) -> Result<Vec<(String, serde_json::Value, i32)>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                "SELECT agent_hash, ast_hashes, total_nodes FROM plagiarism_ast_index",
+                &[],
+            )
+            .await;
+
+        match rows {
+            Ok(rows) => Ok(rows
+                .iter()
+                .map(|r| (r.get(0), r.get(1), r.get(2)))
+                .collect()),
+            Err(_) => {
+                // Table might not exist yet (pre-migration)
+                Ok(vec![])
+            }
+        }
+    }
+
+    /// Get top agents by score for plagiarism index building
+    pub async fn get_top_agents_for_index(&self, limit: i64) -> Result<Vec<PendingLlmReview>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                "SELECT s.agent_hash, s.source_code,
+                        COALESCE(s.is_package, false), s.package_data,
+                        s.package_format, s.entry_point
+                 FROM submissions s
+                 LEFT JOIN (
+                     SELECT submission_id, AVG(score) as avg_score
+                     FROM evaluations
+                     GROUP BY submission_id
+                 ) e ON e.submission_id = s.agent_hash
+                 WHERE s.llm_review_status = 'approved'
+                   AND s.status = 'completed'
+                 ORDER BY COALESCE(e.avg_score, 0) DESC
+                 LIMIT $1",
+                &[&limit],
+            )
+            .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| PendingLlmReview {
+                agent_hash: r.get(0),
+                source_code: r.get(1),
+                is_package: r.get::<_, Option<bool>>(2).unwrap_or(false),
+                package_data: r.get(3),
+                package_format: r.get(4),
+                entry_point: r.get(5),
+            })
+            .collect())
+    }
+
+    /// Get plagiarism report for transparency endpoint
+    pub async fn get_plagiarism_report(
+        &self,
+        agent_hash: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT plagiarism_status, plagiarism_score, plagiarism_matches, plagiarism_checked_at
+                 FROM submissions WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        match row {
+            Some(r) => {
+                let status: Option<String> = r.get(0);
+                let score: Option<f32> = r.get(1);
+                let matches: Option<serde_json::Value> = r.get(2);
+                let checked_at: Option<chrono::NaiveDateTime> = r.get(3);
+
+                Ok(Some(serde_json::json!({
+                    "status": status,
+                    "score": score,
+                    "matches": matches,
+                    "checked_at": checked_at.map(|t| t.and_utc().to_rfc3339()),
+                })))
+            }
+            None => Ok(None),
+        }
     }
 }

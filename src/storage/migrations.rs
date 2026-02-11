@@ -261,6 +261,18 @@ pub const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         "030_llm_review_pooler_index_fix",
         include_str!("../../migrations/030_llm_review_pooler_index_fix.sql"),
     ),
+    (
+        "031_llm_review_logs",
+        include_str!("../../migrations/031_llm_review_logs.sql"),
+    ),
+    (
+        "032_llm_review_system_prompt",
+        include_str!("../../migrations/032_llm_review_system_prompt.sql"),
+    ),
+    (
+        "033_plagiarism_detection",
+        include_str!("../../migrations/033_plagiarism_detection.sql"),
+    ),
 ];
 
 /// Run embedded migrations (when migrations dir is not available)

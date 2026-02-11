@@ -431,3 +431,49 @@ pub async fn get_agent_llm_review_logs(
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
+
+// ============================================================================
+// PLAGIARISM REPORT ENDPOINT
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct PlagiarismReportResponse {
+    pub success: bool,
+    pub report: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+/// GET /api/v1/transparency/agent/{hash}/plagiarism
+///
+/// Returns the AST-based plagiarism detection report including:
+/// - Status (pending/cleared/flagged/rejected)
+/// - Similarity score (0-100%)
+/// - Matched subtrees with file/line info
+pub async fn get_plagiarism_report(
+    State(state): State<Arc<ApiState>>,
+    Path(agent_hash): Path<String>,
+) -> Result<Json<PlagiarismReportResponse>, (StatusCode, Json<PlagiarismReportResponse>)> {
+    match state.storage.get_plagiarism_report(&agent_hash).await {
+        Ok(Some(report)) => Ok(Json(PlagiarismReportResponse {
+            success: true,
+            report: Some(report),
+            error: None,
+        })),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(PlagiarismReportResponse {
+                success: false,
+                report: None,
+                error: Some("Agent not found".to_string()),
+            }),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(PlagiarismReportResponse {
+                success: false,
+                report: None,
+                error: Some(format!("Database error: {}", e)),
+            }),
+        )),
+    }
+}

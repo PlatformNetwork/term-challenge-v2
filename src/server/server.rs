@@ -1757,6 +1757,10 @@ pub async fn run_server_with_mode(
                 "/transparency/agent/:agent_hash/llm-review-logs",
                 get(api::get_agent_llm_review_logs),
             )
+            .route(
+                "/transparency/agent/:agent_hash/plagiarism",
+                get(api::get_plagiarism_report),
+            )
             .route("/transparency/rejected", get(api::get_rejected_agents))
             .route("/transparency/llm-review-logs", get(api::get_llm_review_logs))
             .layer(cors.clone()) // Use same CORS config as main routes
@@ -1786,6 +1790,17 @@ pub async fn run_server_with_mode(
                 crate::worker::compile::CompileWorkerConfig::default(),
                 compile_platform_url.clone(),
             );
+
+            // Start plagiarism detection worker (AST-based, runs before LLM review)
+            {
+                let plagiarism_worker = crate::worker::plagiarism::PlagiarismWorker::new(
+                    Arc::new(pg.clone()),
+                );
+                info!("Starting plagiarism detection worker...");
+                tokio::spawn(async move {
+                    plagiarism_worker.run().await;
+                });
+            }
 
             // Start LLM review worker (reviews agent code in Docker container via Chutes API)
             match crate::worker::llm_review::LlmReviewWorker::from_env(Arc::new(pg.clone())) {
@@ -1897,6 +1912,7 @@ pub async fn run_server_with_mode(
         info!("║    GET  /api/v1/transparency/agent/:hash/compilation         ║");
         info!("║    GET  /api/v1/transparency/agent/:hash/llm_review          ║");
         info!("║    GET  /api/v1/transparency/agent/:hash/tasks               ║");
+        info!("║    GET  /api/v1/transparency/agent/:hash/plagiarism          ║");
         info!("║    GET  /api/v1/transparency/rejected                        ║");
         info!("║  Access via Bridge: /api/v1/bridge/term-challenge/api/v1/... ║");
     }
