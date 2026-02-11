@@ -61,6 +61,37 @@ IMPORTANT:
 - Be thorough - check all Python files in the project
 - The violations array should list specific rule violations found"#;
 
+/// Redact API keys and secrets from code before LLM review
+/// This prevents the LLM from seeing actual API keys in agent code
+fn redact_api_keys(code: &str) -> String {
+    use regex::Regex;
+    
+    let patterns = [
+        // Generic API key patterns (32+ hex/alphanumeric chars)
+        (r#"(['"])([a-zA-Z0-9]{32,})(['"])"#, r#"$1[REDACTED_API_KEY]$3"#),
+        // sk- prefix (OpenAI, etc)
+        (r#"sk-[a-zA-Z0-9]{20,}"#, "[REDACTED_SK_KEY]"),
+        // Bearer tokens
+        (r#"Bearer\s+[a-zA-Z0-9\-_.]+"#, "Bearer [REDACTED_TOKEN]"),
+        // Common env var patterns with values
+        (r#"(OPENAI_API_KEY|ANTHROPIC_API_KEY|CHUTES_API_KEY|API_KEY|SECRET_KEY|ACCESS_TOKEN)\s*[=:]\s*['"]?[a-zA-Z0-9\-_]{16,}['"]?"#, "$1=[REDACTED]"),
+        // Chutes API tokens
+        (r#"cpk_[a-zA-Z0-9]{20,}"#, "[REDACTED_CHUTES_KEY]"),
+        // AWS keys
+        (r#"AKIA[0-9A-Z]{16}"#, "[REDACTED_AWS_KEY]"),
+        // Generic secret patterns in strings
+        (r#"['"]([a-f0-9]{64})['"]"#, "\"[REDACTED_HASH]\""),
+    ];
+    
+    let mut result = code.to_string();
+    for (pattern, replacement) in patterns {
+        if let Ok(re) = Regex::new(pattern) {
+            result = re.replace_all(&result, replacement).to_string();
+        }
+    }
+    result
+}
+
 /// Tool definitions for the LLM
 fn get_tools() -> serde_json::Value {
     json!([
@@ -421,15 +452,18 @@ impl LlmReviewWorker {
                 continue;
             }
 
+            // Redact API keys before passing to LLM reviewer
+            let redacted_code = redact_api_keys(&review_code);
+
             info!(
-                "Reviewing agent {} with {} ({} bytes of code)",
+                "Reviewing agent {} with {} ({} bytes of code, redacted)",
                 short_hash,
                 LLM_MODEL,
-                review_code.len()
+                redacted_code.len()
             );
 
             match self
-                .review_code(agent_hash, &review_code, submission.is_package, &formatted_rules, &system_prompt_template)
+                .review_code(agent_hash, &redacted_code, submission.is_package, &formatted_rules, &system_prompt_template)
                 .await
             {
                 Ok(result) => {
