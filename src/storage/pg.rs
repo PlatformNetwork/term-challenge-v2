@@ -7496,7 +7496,7 @@ impl PgStorage {
         started_at: chrono::DateTime<chrono::Utc>,
         duration_ms: Option<i32>,
         error: Option<&str>,
-    ) -> Result<i64> {
+    ) -> Result<i32> {
         let client = self.pool.get().await?;
         let row = client
             .query_one(
@@ -7592,7 +7592,7 @@ impl PgStorage {
 /// LLM review conversation log
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmReviewLog {
-    pub id: i64,
+    pub id: i32,
     pub agent_hash: String,
     pub submission_id: Option<String>,
     pub conversation: serde_json::Value,

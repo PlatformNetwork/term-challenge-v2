@@ -340,7 +340,7 @@ pub struct LlmReviewLogsResponse {
 /// Public view of an LLM review log
 #[derive(Debug, Serialize)]
 pub struct LlmReviewLogPublic {
-    pub id: i64,
+    pub id: i32,
     pub agent_hash: String,
     pub conversation: serde_json::Value,
     pub tool_calls_count: i32,
