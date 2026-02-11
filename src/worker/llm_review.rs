@@ -67,20 +67,40 @@ fn redact_api_keys(code: &str) -> String {
     use regex::Regex;
     
     let patterns = [
-        // Generic API key patterns (32+ hex/alphanumeric chars)
-        (r#"(['"])([a-zA-Z0-9]{32,})(['"])"#, r#"$1[REDACTED_API_KEY]$3"#),
-        // sk- prefix (OpenAI, etc)
-        (r#"sk-[a-zA-Z0-9]{20,}"#, "[REDACTED_SK_KEY]"),
+        // Any variable containing API_KEY, SECRET, TOKEN, PASSWORD with assignment
+        (r#"(?i)([A-Z_]*(?:API_KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH)[A-Z_]*)\s*[=:]\s*['"](.[^'"]{8,}?)['"]"#, "$1=\"[REDACTED]\""),
+        // Any variable containing api_key, secret, token (lowercase)
+        (r#"(?i)([a-z_]*(?:api_key|secret|token|password|credential|auth)[a-z_]*)\s*[=:]\s*['"](.[^'"]{8,}?)['"]"#, "$1=\"[REDACTED]\""),
+        // Chutes API tokens (cpk_ prefix with any chars)
+        (r#"cpk_[a-zA-Z0-9._\-]{10,}"#, "[REDACTED_CHUTES_KEY]"),
+        // sk- prefix (OpenAI, etc) - extended pattern
+        (r#"sk-[a-zA-Z0-9\-_]{20,}"#, "[REDACTED_SK_KEY]"),
+        // sk-proj- prefix (OpenAI project keys)
+        (r#"sk-proj-[a-zA-Z0-9\-_]{20,}"#, "[REDACTED_SK_PROJ_KEY]"),
         // Bearer tokens
-        (r#"Bearer\s+[a-zA-Z0-9\-_.]+"#, "Bearer [REDACTED_TOKEN]"),
-        // Common env var patterns with values
-        (r#"(OPENAI_API_KEY|ANTHROPIC_API_KEY|CHUTES_API_KEY|API_KEY|SECRET_KEY|ACCESS_TOKEN)\s*[=:]\s*['"]?[a-zA-Z0-9\-_]{16,}['"]?"#, "$1=[REDACTED]"),
-        // Chutes API tokens
-        (r#"cpk_[a-zA-Z0-9]{20,}"#, "[REDACTED_CHUTES_KEY]"),
+        (r#"Bearer\s+[a-zA-Z0-9\-_.]{20,}"#, "Bearer [REDACTED_TOKEN]"),
         // AWS keys
         (r#"AKIA[0-9A-Z]{16}"#, "[REDACTED_AWS_KEY]"),
-        // Generic secret patterns in strings
-        (r#"['"]([a-f0-9]{64})['"]"#, "\"[REDACTED_HASH]\""),
+        // AWS secret keys (40 char base64)
+        (r#"(?i)(aws_secret_access_key|aws_secret)\s*[=:]\s*['"](.[^'"]{30,}?)['"]"#, "$1=\"[REDACTED_AWS_SECRET]\""),
+        // Generic long hex strings (64 chars - likely hashes/keys)
+        (r#"['"]([a-fA-F0-9]{64})['"]"#, "\"[REDACTED_HASH]\""),
+        // Generic long alphanumeric in quotes (32+ chars, likely API keys)
+        (r#"['"]([a-zA-Z0-9\-_]{32,})['"]"#, "\"[REDACTED_KEY]\""),
+        // Anthropic keys
+        (r#"sk-ant-[a-zA-Z0-9\-_]{20,}"#, "[REDACTED_ANTHROPIC_KEY]"),
+        // Google API keys
+        (r#"AIza[a-zA-Z0-9\-_]{35}"#, "[REDACTED_GOOGLE_KEY]"),
+        // GitHub tokens
+        (r#"ghp_[a-zA-Z0-9]{36}"#, "[REDACTED_GITHUB_TOKEN]"),
+        (r#"gho_[a-zA-Z0-9]{36}"#, "[REDACTED_GITHUB_TOKEN]"),
+        (r#"ghu_[a-zA-Z0-9]{36}"#, "[REDACTED_GITHUB_TOKEN]"),
+        // Hugging Face tokens
+        (r#"hf_[a-zA-Z0-9]{34}"#, "[REDACTED_HF_TOKEN]"),
+        // OpenRouter keys
+        (r#"sk-or-[a-zA-Z0-9\-_]{20,}"#, "[REDACTED_OPENROUTER_KEY]"),
+        // Groq keys
+        (r#"gsk_[a-zA-Z0-9]{20,}"#, "[REDACTED_GROQ_KEY]"),
     ];
     
     let mut result = code.to_string();
