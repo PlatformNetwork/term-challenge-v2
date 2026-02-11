@@ -778,18 +778,26 @@ impl<'a> PlagiarismDetector<'a> {
         }
 
         // Node didn't match -> recurse into children
-        // total = sum of children's comparable nodes (not node.size)
         let mut matches = Vec::new();
-        let mut total: u32 = 0;
+        let mut children_total: u32 = 0;
         let mut matched: u32 = 0;
 
         for child in &node.children {
             let (child_matches, child_total, child_matched) =
                 self.check_subtrees(child, file_path, self_agent_hash, matched_hashes);
             matches.extend(child_matches);
-            total += child_total;
+            children_total += child_total;
             matched += child_matched;
         }
+
+        // If children covered some nodes, use their total.
+        // Otherwise this node is entirely new/unique code: count its full size as total
+        // so that new code properly dilutes the similarity percentage.
+        let total = if children_total > 0 {
+            children_total
+        } else {
+            node.size
+        };
 
         (matches, total, matched)
     }
@@ -1165,5 +1173,104 @@ class MyBot:
         let report = detector.check_agent("empty", &files, &config);
         assert_eq!(report.match_percent, 0.0);
         assert_eq!(report.verdict, "cleared");
+    }
+
+    fn load_python_files(dir: &str) -> HashMap<String, String> {
+        let mut files = HashMap::new();
+        let path = std::path::Path::new(dir);
+        if !path.exists() {
+            return files;
+        }
+        fn walk(base: &std::path::Path, current: &std::path::Path, files: &mut HashMap<String, String>) {
+            if let Ok(entries) = std::fs::read_dir(current) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        walk(base, &p, files);
+                    } else if p.extension().map_or(false, |e| e == "py") {
+                        if let Ok(content) = std::fs::read_to_string(&p) {
+                            let rel = p.strip_prefix(base).unwrap_or(&p);
+                            files.insert(rel.to_string_lossy().to_string(), content);
+                        }
+                    }
+                }
+            }
+        }
+        walk(path, path, &mut files);
+        files
+    }
+
+    #[test]
+    fn test_baseagent_vs_b2_real_files() {
+        let original_dir = "/mnt/c/Users/mathi/baseagent-fresh";
+        let modified_dir = "/mnt/c/Users/mathi/b2";
+
+        let original_files = load_python_files(original_dir);
+        let modified_files = load_python_files(modified_dir);
+
+        if original_files.is_empty() || modified_files.is_empty() {
+            eprintln!("Skipping test: directories not found");
+            return;
+        }
+
+        eprintln!("Original: {} Python files", original_files.len());
+        eprintln!("Modified: {} Python files", modified_files.len());
+
+        let config = PlagiarismConfig {
+            flag_threshold: 70.0,
+            reject_threshold: 95.0,
+            min_subtree_size: 10,
+            ..Default::default()
+        };
+
+        // Index the original agent
+        let mut index = PlagiarismIndex::new(config.min_subtree_size);
+        let (hashes_count, total_nodes) = index.index_agent("original_baseagent", &original_files);
+        eprintln!("Indexed original: {} hashes, {} total nodes", hashes_count, total_nodes);
+
+        // Check modified agent against original
+        let detector = PlagiarismDetector::new(&index);
+        let report = detector.check_agent("modified_b2", &modified_files, &config);
+
+        eprintln!("========================================");
+        eprintln!("RESULT: b2 vs baseagent-fresh");
+        eprintln!("========================================");
+        eprintln!("Similarity: {:.1}%", report.match_percent);
+        eprintln!("Verdict: {}", report.verdict);
+        eprintln!("Matched nodes: {}", report.matched_nodes);
+        eprintln!("Total nodes: {}", report.total_nodes);
+        eprintln!("Matches: {}", report.matches.len());
+
+        for (i, m) in report.matches.iter().take(10).enumerate() {
+            eprintln!("  Match {}: {} ({}:{}-{}) -> {} ({}:{}-{}) [{} nodes]",
+                i + 1, m.pending_file, m.pending_lines.0, m.pending_lines.1,
+                m.pending_lines.0, m.matched_file, m.matched_lines.0, m.matched_lines.1,
+                m.matched_lines.0, m.subtree_size);
+        }
+
+        // Modified agent should NOT be 100% similar (we added new code)
+        assert!(report.match_percent < 100.0,
+            "Modified agent should not be 100% similar, got {:.1}%", report.match_percent);
+        // But should still have significant overlap (core code is the same)
+        assert!(report.match_percent > 50.0,
+            "Modified agent should have >50% overlap, got {:.1}%", report.match_percent);
+
+        eprintln!("========================================");
+        eprintln!("TEST PASSED: {:.1}% similarity (not 100%)", report.match_percent);
+        eprintln!("========================================");
+
+        // Now check original vs modified (reverse direction)
+        let mut index2 = PlagiarismIndex::new(config.min_subtree_size);
+        index2.index_agent("modified_b2", &modified_files);
+        let detector2 = PlagiarismDetector::new(&index2);
+        let report2 = detector2.check_agent("original_baseagent", &original_files, &config);
+
+        eprintln!("========================================");
+        eprintln!("REVERSE: baseagent-fresh vs b2");
+        eprintln!("========================================");
+        eprintln!("Similarity: {:.1}%", report2.match_percent);
+        eprintln!("Verdict: {}", report2.verdict);
+        eprintln!("Matched nodes: {}", report2.matched_nodes);
+        eprintln!("Total nodes: {}", report2.total_nodes);
     }
 }
