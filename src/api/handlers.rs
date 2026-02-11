@@ -714,7 +714,18 @@ pub async fn get_agent_code(
             )
         })?;
 
-    // 2. Check visibility - disabled by admin
+    // 2. Block code access for non-completed agents
+    if submission.status != "completed" {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(CodeVisibilityError {
+                error: "Code is not available until evaluation is completed".to_string(),
+                hours_remaining: None,
+            }),
+        ));
+    }
+
+    // 3. Check visibility - disabled by admin
     if submission.disable_public_code {
         return Err((
             StatusCode::FORBIDDEN,
@@ -725,7 +736,7 @@ pub async fn get_agent_code(
         ));
     }
 
-    // 3. Check visibility - time-based (immediate, no delay)
+    // 4. Check visibility - time-based (immediate, no delay)
     // Note: manually_validated does NOT bypass this - it only affects leaderboard eligibility
     // VISIBILITY_HOURS = 0 means code is visible immediately when status is completed
     const VISIBILITY_HOURS: f64 = 0.0;

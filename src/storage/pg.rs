@@ -7574,16 +7574,22 @@ impl PgStorage {
         Ok(row.get(0))
     }
 
-    /// Get LLM review logs for an agent
+    /// Get LLM review logs for an agent.
+    /// Conversation is redacted for non-completed agents to prevent code leaks.
     pub async fn get_llm_review_logs(&self, agent_hash: &str) -> Result<Vec<LlmReviewLog>> {
         let client = self.pool.get().await?;
         let rows = client
             .query(
-                "SELECT id, agent_hash, submission_id, conversation, tool_calls_count, turns_count,
-                        verdict, model, started_at, completed_at, duration_ms, error
-                 FROM llm_review_logs
-                 WHERE agent_hash = $1
-                 ORDER BY started_at DESC",
+                "SELECT l.id, l.agent_hash, l.submission_id,
+                        CASE WHEN s.status = 'completed' THEN l.conversation
+                             ELSE '{\"redacted\": \"Conversation hidden until evaluation is completed\"}'::jsonb
+                        END as conversation,
+                        l.tool_calls_count, l.turns_count,
+                        l.verdict, l.model, l.started_at, l.completed_at, l.duration_ms, l.error
+                 FROM llm_review_logs l
+                 LEFT JOIN submissions s ON s.agent_hash = l.agent_hash
+                 WHERE l.agent_hash = $1
+                 ORDER BY l.started_at DESC",
                 &[&agent_hash],
             )
             .await?;
@@ -7607,15 +7613,21 @@ impl PgStorage {
             .collect())
     }
 
-    /// Get all LLM review logs (paginated)
+    /// Get all LLM review logs (paginated).
+    /// Conversation is redacted for non-completed agents to prevent code leaks.
     pub async fn get_all_llm_review_logs(&self, limit: i64, offset: i64) -> Result<Vec<LlmReviewLog>> {
         let client = self.pool.get().await?;
         let rows = client
             .query(
-                "SELECT id, agent_hash, submission_id, conversation, tool_calls_count, turns_count,
-                        verdict, model, started_at, completed_at, duration_ms, error
-                 FROM llm_review_logs
-                 ORDER BY started_at DESC
+                "SELECT l.id, l.agent_hash, l.submission_id,
+                        CASE WHEN s.status = 'completed' THEN l.conversation
+                             ELSE '{\"redacted\": \"Conversation hidden until evaluation is completed\"}'::jsonb
+                        END as conversation,
+                        l.tool_calls_count, l.turns_count,
+                        l.verdict, l.model, l.started_at, l.completed_at, l.duration_ms, l.error
+                 FROM llm_review_logs l
+                 LEFT JOIN submissions s ON s.agent_hash = l.agent_hash
+                 ORDER BY l.started_at DESC
                  LIMIT $1 OFFSET $2",
                 &[&limit, &offset],
             )
