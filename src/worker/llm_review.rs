@@ -29,6 +29,8 @@ const REVIEW_TIMEOUT_SECS: u64 = 180;
 const POLL_INTERVAL_SECS: u64 = 10;
 const BATCH_SIZE: i64 = 5;
 const LLM_MODEL: &str = "moonshotai/Kimi-K2.5-TEE";
+/// Maximum number of retries for failed LLM reviews before giving up
+const MAX_LLM_REVIEW_RETRIES: i32 = 3;
 
 pub struct LlmReviewWorkerConfig {
     pub poll_interval_secs: u64,
@@ -77,19 +79,9 @@ impl LlmReviewWorker {
 
     /// Start the worker (runs forever)
     pub async fn run(&self) {
-        let api_key_preview = if self.config.chutes_api_token.len() > 8 {
-            format!(
-                "{}...{}",
-                &self.config.chutes_api_token[..4],
-                &self.config.chutes_api_token[self.config.chutes_api_token.len() - 4..]
-            )
-        } else {
-            "****".to_string()
-        };
-
         info!(
-            "LLM Review worker started (poll={}s, batch={}, model={}, api_key={})",
-            self.config.poll_interval_secs, self.config.batch_size, LLM_MODEL, api_key_preview
+            "LLM Review worker started (poll={}s, batch={}, model={})",
+            self.config.poll_interval_secs, self.config.batch_size, LLM_MODEL
         );
 
         let mut ticker = interval(Duration::from_secs(self.config.poll_interval_secs));
@@ -104,9 +96,18 @@ impl LlmReviewWorker {
     }
 
     async fn process_pending(&self) -> Result<()> {
+        // 1. FIRST check validation rules exist before claiming any agents
+        // This prevents agents from being stuck if rules are empty
+        let rules = self.storage.get_active_validation_rules().await?;
+        if rules.is_empty() {
+            debug!("No active validation rules found - skipping LLM review cycle");
+            return Ok(());
+        }
+
+        // 2. Only NOW claim submissions (after we know we can process them)
         let pending = self
             .storage
-            .get_pending_llm_reviews(self.config.batch_size)
+            .claim_pending_llm_reviews(self.config.batch_size, MAX_LLM_REVIEW_RETRIES)
             .await?;
 
         if pending.is_empty() {
@@ -114,15 +115,7 @@ impl LlmReviewWorker {
             return Ok(());
         }
 
-        info!("Found {} agents pending LLM review", pending.len());
-
-        // Load validation rules from DB
-        let rules = self.storage.get_active_validation_rules().await?;
-        if rules.is_empty() {
-            warn!("No active validation rules found in validation_rules table. LLM review cannot proceed.");
-            warn!("Make sure migration 023_validation_rules.sql has been applied and validation_rules table has active rules.");
-            return Ok(());
-        }
+        info!("Claimed {} agents for LLM review", pending.len());
 
         let formatted_rules = rules
             .iter()
@@ -134,16 +127,6 @@ impl LlmReviewWorker {
         for submission in pending {
             let agent_hash = &submission.agent_hash;
             let short_hash = &agent_hash[..16.min(agent_hash.len())];
-
-            // Mark as reviewing
-            if let Err(e) = self
-                .storage
-                .set_llm_review_status_reviewing(agent_hash)
-                .await
-            {
-                error!("Failed to mark {} as reviewing: {}", short_hash, e);
-                continue;
-            }
 
             info!("Reviewing agent {} with {}", short_hash, LLM_MODEL);
 
@@ -191,17 +174,8 @@ impl LlmReviewWorker {
                 }
                 Err(e) => {
                     error!("LLM review failed for agent {}: {}", short_hash, e);
-                    let error_result = serde_json::json!({
-                        "approved": false,
-                        "reason": format!("Review container error: {}", e),
-                        "violations": ["container_error"]
-                    });
-                    // On error, reset to pending so it can be retried
-                    if let Err(e2) = self
-                        .storage
-                        .update_llm_review_result(agent_hash, "pending", LLM_MODEL, &error_result)
-                        .await
-                    {
+                    // On error, reset for retry (sets llm_review_called = FALSE)
+                    if let Err(e2) = self.storage.reset_llm_review_for_retry(agent_hash).await {
                         error!("Failed to reset review status for {}: {}", short_hash, e2);
                     }
                 }
@@ -256,6 +230,16 @@ impl LlmReviewWorker {
                 memory: Some(256 * 1024 * 1024),          // 256MB
                 nano_cpus: Some(1_000_000_000),           // 1 CPU
                 network_mode: Some("bridge".to_string()), // Needs network for API call
+                // SECURITY: Hardening like other containers in the codebase
+                privileged: Some(false),
+                cap_drop: Some(vec!["ALL".to_string()]),
+                cap_add: Some(vec![
+                    "CHOWN".to_string(),
+                    "SETUID".to_string(),
+                    "SETGID".to_string(),
+                ]),
+                security_opt: Some(vec!["no-new-privileges:true".to_string()]),
+                pids_limit: Some(256),
                 ..Default::default()
             }),
             ..Default::default()
