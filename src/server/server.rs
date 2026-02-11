@@ -1405,20 +1405,7 @@ pub async fn run_server_with_mode(
                 }
             }
 
-            // Try to build the LLM reviewer image at startup
-            // This is not fatal - the image may already exist or be built externally
-            match crate::container::llm_reviewer::build_llm_reviewer_image(&backend).await {
-                Ok(()) => info!("LLM reviewer image is ready"),
-                Err(e) => {
-                    warn!(
-                        "Could not build LLM reviewer image (this may be expected in containerized environments): {}",
-                        e
-                    );
-                    warn!(
-                        "Ensure term-llm-reviewer:latest is available before running LLM reviews"
-                    );
-                }
-            }
+            // LLM reviewer now uses direct HTTP calls to Chutes API (no Docker needed)
         }
         Err(e) => {
             warn!("Could not initialize container backend at startup: {}", e);
