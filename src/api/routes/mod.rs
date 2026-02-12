@@ -19,9 +19,9 @@ pub use public::{
 pub use submission::submit_agent;
 pub use transparency::{
     get_agent_journey, get_agent_llm_review_logs, get_agent_similarities, get_compilation_log,
-    get_llm_review, get_llm_review_logs, get_rejected_agents, get_task_logs,
-    AgentJourneyResponse, CompilationLogResponse, LlmReviewLogPublic, LlmReviewLogsResponse,
-    LlmReviewResponse, RejectedAgentsResponse, TaskLogsResponse,
+    get_llm_review, get_llm_review_logs, get_rejected_agents, get_task_logs, AgentJourneyResponse,
+    CompilationLogResponse, LlmReviewLogPublic, LlmReviewLogsResponse, LlmReviewResponse,
+    RejectedAgentsResponse, TaskLogsResponse,
 };
 pub use validator::{
     claim_jobs,
@@ -37,6 +37,7 @@ pub use validator::{
     get_validators_readiness,
     log_task,
     notify_cleanup_complete,
+    report_infrastructure_failure,
     task_stream_update,
     validator_heartbeat,
     // Types
@@ -60,6 +61,8 @@ pub use validator::{
     LogTaskResponse,
     NotifyCleanupCompleteRequest,
     NotifyCleanupCompleteResponse,
+    ReportInfrastructureFailureRequest,
+    ReportInfrastructureFailureResponse,
     TaskStreamUpdateRequest,
     TaskStreamUpdateResponse,
     ValidatorEvalInfo,

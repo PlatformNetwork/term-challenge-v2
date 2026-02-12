@@ -5760,6 +5760,206 @@ impl PgStorage {
         Ok((ready_count >= required, ready_count, required))
     }
 
+    /// Report infrastructure failure and trigger reassignment
+    /// Called by validators when they encounter broker connection issues
+    /// Returns true if reassignment was triggered, false if max reassignments reached
+    pub async fn report_infrastructure_failure(
+        &self,
+        agent_hash: &str,
+        validator_hotkey: &str,
+        failure_type: &str,
+        error_message: &str,
+    ) -> Result<bool> {
+        let mut client = self.pool.get().await?;
+        let transaction = client.transaction().await?;
+
+        let short_hash = &agent_hash[..16.min(agent_hash.len())];
+        let short_validator = &validator_hotkey[..16.min(validator_hotkey.len())];
+
+        // Check current reassignment count
+        let row = transaction
+            .query_one(
+                "SELECT COALESCE(reassignment_count, 0) as count, status, compile_status 
+                 FROM submissions 
+                 WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        let reassignment_count: i32 = row.get(0);
+        let status: String = row.get(1);
+        let compile_status: String = row.get(2);
+
+        // Only allow infrastructure reassignments for pending submissions with successful compile
+        if status != "pending" || compile_status != "success" {
+            info!(
+                "Infrastructure failure report ignored for agent {}: status={}, compile_status={}",
+                short_hash, status, compile_status
+            );
+            transaction.commit().await?;
+            return Ok(false);
+        }
+
+        // Check if this validator is actually assigned to this agent
+        let assignment_exists: bool = transaction
+            .query_one(
+                "SELECT EXISTS(
+                    SELECT 1 FROM validator_assignments 
+                    WHERE agent_hash = $1 AND validator_hotkey = $2 AND status = 'pending'
+                )",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?
+            .get(0);
+
+        if !assignment_exists {
+            warn!(
+                "Infrastructure failure report from validator {} for agent {}: validator not assigned",
+                short_validator, short_hash
+            );
+            transaction.commit().await?;
+            return Ok(false);
+        }
+
+        // Max 3 reassignments for infrastructure failures
+        const MAX_INFRASTRUCTURE_REASSIGNMENTS: i32 = 3;
+        if reassignment_count >= MAX_INFRASTRUCTURE_REASSIGNMENTS {
+            warn!(
+                "Agent {} reached max infrastructure reassignments ({}), marking as failed",
+                short_hash, reassignment_count
+            );
+            // Mark submission as failed due to infrastructure
+            transaction
+                .execute(
+                    "UPDATE submissions 
+                     SET status = 'infrastructure_failed',
+                         error_message = $2,
+                         updated_at = NOW()
+                     WHERE agent_hash = $1",
+                    &[
+                        &agent_hash,
+                        &format!(
+                            "Infrastructure failure after {} reassignments: {}",
+                            reassignment_count, error_message
+                        ),
+                    ],
+                )
+                .await?;
+            transaction.commit().await?;
+            return Ok(false);
+        }
+
+        // Record infrastructure failure in history
+        let history_id = uuid::Uuid::new_v4().to_string();
+        transaction
+            .execute(
+                "INSERT INTO reassignment_history 
+                 (id, agent_hash, old_validator_hotkey, new_validator_hotkey, reassignment_number, reason)
+                 VALUES ($1, $2, $3, NULL, $4, $5)
+                 ON CONFLICT DO NOTHING",
+                &[
+                    &history_id,
+                    &agent_hash,
+                    &validator_hotkey,
+                    &(reassignment_count + 1),
+                    &format!("infrastructure_failure:{} - {}", failure_type, error_message),
+                ],
+            )
+            .await?;
+
+        // Cancel current assignment
+        transaction
+            .execute(
+                "UPDATE validator_assignments 
+                 SET status = 'cancelled', 
+                     cancelled_at = NOW(),
+                     cancel_reason = $3
+                 WHERE agent_hash = $1 AND validator_hotkey = $2",
+                &[
+                    &agent_hash,
+                    &validator_hotkey,
+                    &format!("infrastructure: {}", error_message),
+                ],
+            )
+            .await?;
+
+        // Increment reassignment count
+        transaction
+            .execute(
+                "UPDATE submissions 
+                 SET reassignment_count = COALESCE(reassignment_count, 0) + 1,
+                     updated_at = NOW()
+                 WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        // Mark evaluation_tasks for this validator as unassigned (NULL validator_hotkey)
+        // so they can be picked up by a new validator
+        let unassigned_count = transaction
+            .execute(
+                "UPDATE evaluation_tasks 
+                 SET validator_hotkey = NULL
+                 WHERE agent_hash = $1 
+                   AND validator_hotkey = $2
+                   AND NOT EXISTS (
+                       SELECT 1 FROM task_logs tl
+                       WHERE tl.agent_hash = evaluation_tasks.agent_hash
+                         AND tl.task_id = evaluation_tasks.task_id
+                         AND tl.validator_hotkey = $2
+                   )",
+                &[&agent_hash, &validator_hotkey],
+            )
+            .await?;
+
+        transaction.commit().await?;
+
+        info!(
+            "Infrastructure failure reported for agent {} by validator {}: {} (reassignment {}/{}, {} tasks unassigned)",
+            short_hash,
+            short_validator,
+            failure_type,
+            reassignment_count + 1,
+            MAX_INFRASTRUCTURE_REASSIGNMENTS,
+            unassigned_count
+        );
+
+        Ok(true)
+    }
+
+    /// Get agents with infrastructure failures that need new validators assigned
+    /// Returns agents where tasks are unassigned (NULL validator_hotkey) and need assignment
+    pub async fn get_agents_with_unassigned_tasks(&self) -> Result<Vec<(String, i32)>> {
+        let client = self.pool.get().await?;
+
+        let rows = client
+            .query(
+                "SELECT 
+                    et.agent_hash,
+                    COUNT(*)::INT as unassigned_task_count
+                 FROM evaluation_tasks et
+                 JOIN submissions s ON s.agent_hash = et.agent_hash
+                 WHERE et.validator_hotkey IS NULL
+                   AND s.status = 'pending'
+                   AND s.compile_status = 'success'
+                   AND COALESCE(s.reassignment_count, 0) < 3
+                   AND NOT EXISTS (
+                       SELECT 1 FROM task_logs tl
+                       WHERE tl.agent_hash = et.agent_hash
+                         AND tl.task_id = et.task_id
+                   )
+                 GROUP BY et.agent_hash
+                 HAVING COUNT(*) > 0
+                 ORDER BY COUNT(*) DESC",
+                &[],
+            )
+            .await?;
+
+        let agents: Vec<(String, i32)> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
+
+        Ok(agents)
+    }
+
     /// Get ready validators with sufficient stake (>= 10000 TAO)
     /// Fetches stake from chain API and filters validators
     /// Returns validators sorted by stake (highest first)
@@ -7616,7 +7816,11 @@ impl PgStorage {
 
     /// Get all LLM review logs (paginated).
     /// Conversation is redacted for non-completed agents to prevent code leaks.
-    pub async fn get_all_llm_review_logs(&self, limit: i64, offset: i64) -> Result<Vec<LlmReviewLog>> {
+    pub async fn get_all_llm_review_logs(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<LlmReviewLog>> {
         let client = self.pool.get().await?;
         let rows = client
             .query(
@@ -8010,10 +8214,7 @@ impl PgStorage {
     }
 
     /// Get all similarity relationships for an agent (both directions).
-    pub async fn get_agent_similarities(
-        &self,
-        agent_hash: &str,
-    ) -> Result<serde_json::Value> {
+    pub async fn get_agent_similarities(&self, agent_hash: &str) -> Result<serde_json::Value> {
         let client = self.pool.get().await?;
 
         // 1) Forward: this agent's plagiarism matches (agents it was compared against)

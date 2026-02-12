@@ -10,8 +10,7 @@
 // Re-export transparency endpoints from routes module
 pub use crate::api::routes::transparency::{
     get_agent_journey, get_agent_llm_review_logs, get_agent_similarities, get_compilation_log,
-    get_llm_review, get_llm_review_logs, get_plagiarism_report, get_rejected_agents,
-    get_task_logs,
+    get_llm_review, get_llm_review_logs, get_plagiarism_report, get_rejected_agents, get_task_logs,
 };
 
 use crate::auth::{
@@ -2581,6 +2580,27 @@ pub async fn notify_cleanup_complete(
         success: true,
         error: None,
     }))
+}
+
+/// Request and response types for infrastructure failure reporting
+pub use crate::api::routes::validator::{
+    ReportInfrastructureFailureRequest, ReportInfrastructureFailureResponse,
+};
+
+/// POST /api/v1/validator/report_infrastructure_failure - Report broker/infrastructure failure
+///
+/// Validators call this when they encounter infrastructure issues (e.g., broker connection failure,
+/// name resolution errors) that prevent them from evaluating an agent.
+/// The server will reassign the agent's incomplete tasks to another validator (up to 3 times).
+pub async fn report_infrastructure_failure(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<ReportInfrastructureFailureRequest>,
+) -> Result<
+    Json<ReportInfrastructureFailureResponse>,
+    (StatusCode, Json<ReportInfrastructureFailureResponse>),
+> {
+    // Re-export from routes implementation
+    crate::api::routes::validator::report_infrastructure_failure(State(state), Json(req)).await
 }
 
 /// GET /api/v1/validator/agent_status/:agent_hash - Check if agent has been evaluated

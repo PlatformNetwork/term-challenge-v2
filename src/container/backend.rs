@@ -601,6 +601,30 @@ impl WsBrokerBackend {
     const MAX_RETRIES: u32 = 5;
     const RETRY_DELAY_SECS: u64 = 60;
 
+    /// Check if an error is an infrastructure failure that should trigger reassignment
+    /// Returns the failure type if it's an infrastructure error
+    pub fn classify_infrastructure_failure(error_msg: &str) -> Option<&'static str> {
+        let lower = error_msg.to_lowercase();
+        if lower.contains("temporary failure in name resolution")
+            || lower.contains("name resolution")
+            || lower.contains("dns") && lower.contains("error")
+        {
+            Some("name_resolution")
+        } else if lower.contains("connection refused")
+            || lower.contains("connect") && lower.contains("failed")
+        {
+            Some("connection_refused")
+        } else if lower.contains("timed out") || lower.contains("timeout") {
+            Some("timeout")
+        } else if lower.contains("websocket")
+            && (lower.contains("failed") || lower.contains("error"))
+        {
+            Some("websocket_failure")
+        } else {
+            None
+        }
+    }
+
     async fn send_request(&self, request: &BrokerRequest) -> Result<BrokerResponse> {
         let mut last_error = None;
 
@@ -608,9 +632,12 @@ impl WsBrokerBackend {
             match self.try_send_request(request).await {
                 Ok(response) => return Ok(response),
                 Err(e) => {
-                    let is_connection_error = e.to_string().contains("connect")
-                        || e.to_string().contains("WebSocket")
-                        || e.to_string().contains("timed out");
+                    let error_str = e.to_string();
+                    let is_connection_error = Self::classify_infrastructure_failure(&error_str)
+                        .is_some()
+                        || error_str.contains("connect")
+                        || error_str.contains("WebSocket")
+                        || error_str.contains("timed out");
 
                     if is_connection_error && attempt < Self::MAX_RETRIES {
                         warn!(

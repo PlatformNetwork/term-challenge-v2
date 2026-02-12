@@ -50,6 +50,9 @@ pub trait AssignmentStorage: Send + Sync {
         agent_hash: &str,
         validator_hotkey: &str,
     ) -> anyhow::Result<()>;
+
+    /// Get agents with unassigned tasks (from infrastructure failures)
+    async fn get_agents_with_unassigned_tasks(&self) -> anyhow::Result<Vec<(String, i32)>>;
 }
 
 #[async_trait]
@@ -89,6 +92,10 @@ impl AssignmentStorage for PgStorage {
         validator_hotkey: &str,
     ) -> anyhow::Result<()> {
         PgStorage::assign_additional_validator(self, agent_hash, validator_hotkey).await
+    }
+
+    async fn get_agents_with_unassigned_tasks(&self) -> anyhow::Result<Vec<(String, i32)>> {
+        PgStorage::get_agents_with_unassigned_tasks(self).await
     }
 }
 
@@ -150,6 +157,11 @@ impl<S: AssignmentStorage> AssignmentMonitor<S> {
         loop {
             ticker.tick().await;
 
+            // Check infrastructure failures first (higher priority)
+            if let Err(e) = self.check_and_reassign_infrastructure_failures().await {
+                error!("Error checking infrastructure failures: {}", e);
+            }
+
             if let Err(e) = self.check_and_reassign_stale().await {
                 error!("Error checking stale assignments: {}", e);
             }
@@ -159,6 +171,85 @@ impl<S: AssignmentStorage> AssignmentMonitor<S> {
                 error!("Error assigning missing validators: {}", e);
             }
         }
+    }
+
+    /// Check for agents with infrastructure failures (unassigned tasks) and reassign them
+    /// These are prioritized over stale assignments since validators actively reported the issue
+    async fn check_and_reassign_infrastructure_failures(&self) -> anyhow::Result<()> {
+        // Get agents with unassigned tasks (from infrastructure failures)
+        let agents = self.storage.get_agents_with_unassigned_tasks().await?;
+
+        if agents.is_empty() {
+            return Ok(());
+        }
+
+        info!(
+            "Found {} agents with infrastructure failures (unassigned tasks) needing reassignment",
+            agents.len()
+        );
+
+        // Fetch all active validators once
+        let all_validators = self.fetch_active_validators().await?;
+        if all_validators.is_empty() {
+            warn!("No active validators available for infrastructure failure reassignment");
+            return Ok(());
+        }
+
+        for (agent_hash, unassigned_count) in agents {
+            let short_hash = &agent_hash[..16.min(agent_hash.len())];
+
+            info!(
+                "Agent {} has {} unassigned tasks from infrastructure failure",
+                short_hash, unassigned_count
+            );
+
+            // Get validators already assigned or previously tried
+            let excluded_validators = self
+                .storage
+                .get_validators_assigned_to_agent(&agent_hash)
+                .await
+                .unwrap_or_default();
+
+            // Filter available validators
+            let available: Vec<&String> = all_validators
+                .iter()
+                .filter(|v| !excluded_validators.contains(v))
+                .collect();
+
+            if available.is_empty() {
+                warn!(
+                    "No available validators for agent {} (all {} validators already tried or assigned)",
+                    short_hash,
+                    all_validators.len()
+                );
+                continue;
+            }
+
+            // Assign the first available validator
+            let new_validator = (*available.first().unwrap()).clone();
+            let short_new = &new_validator[..16.min(new_validator.len())];
+
+            match self
+                .storage
+                .assign_additional_validator(&agent_hash, &new_validator)
+                .await
+            {
+                Ok(_) => {
+                    info!(
+                        "Reassigned agent {} with infrastructure failure to validator {} ({} tasks)",
+                        short_hash, short_new, unassigned_count
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to reassign agent {} with infrastructure failure to {}: {}",
+                        short_hash, short_new, e
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Check for agents that need more validators and assign them
@@ -546,6 +637,11 @@ mod tests {
         ) -> anyhow::Result<()> {
             // FakeStorage does nothing for additional validator assignment
             Ok(())
+        }
+
+        async fn get_agents_with_unassigned_tasks(&self) -> anyhow::Result<Vec<(String, i32)>> {
+            // FakeStorage returns empty list by default
+            Ok(Vec::new())
         }
     }
 

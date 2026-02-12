@@ -11,7 +11,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::api::ApiState;
 use crate::auth::{is_timestamp_valid, is_valid_ss58_hotkey, verify_signature};
@@ -1218,6 +1218,155 @@ pub async fn notify_cleanup_complete(
         success: true,
         error: None,
     }))
+}
+
+// ============================================================================
+// INFRASTRUCTURE FAILURE REPORTING
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct ReportInfrastructureFailureRequest {
+    pub validator_hotkey: String,
+    pub signature: String,
+    pub timestamp: i64,
+    pub agent_hash: String,
+    pub failure_type: String, // e.g., "broker_connect", "name_resolution", "timeout"
+    pub error_message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReportInfrastructureFailureResponse {
+    pub success: bool,
+    pub reassignment_triggered: bool,
+    pub reassignment_count: i32,
+    pub message: String,
+    pub error: Option<String>,
+}
+
+/// POST /api/v1/validator/report_infrastructure_failure - Report broker/infrastructure failure
+///
+/// Validators call this when they encounter infrastructure issues (e.g., broker connection failure,
+/// name resolution errors) that prevent them from evaluating an agent.
+/// The server will reassign the agent's incomplete tasks to another validator (up to 3 times).
+pub async fn report_infrastructure_failure(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<ReportInfrastructureFailureRequest>,
+) -> Result<
+    Json<ReportInfrastructureFailureResponse>,
+    (StatusCode, Json<ReportInfrastructureFailureResponse>),
+> {
+    // Validate hotkey
+    if !is_valid_ss58_hotkey(&req.validator_hotkey) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ReportInfrastructureFailureResponse {
+                success: false,
+                reassignment_triggered: false,
+                reassignment_count: 0,
+                message: String::new(),
+                error: Some("Invalid hotkey format".to_string()),
+            }),
+        ));
+    }
+
+    // Validate timestamp
+    if !is_timestamp_valid(req.timestamp) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ReportInfrastructureFailureResponse {
+                success: false,
+                reassignment_triggered: false,
+                reassignment_count: 0,
+                message: String::new(),
+                error: Some("Timestamp expired".to_string()),
+            }),
+        ));
+    }
+
+    // Verify signature
+    let message = format!(
+        "infrastructure_failure:{}:{}:{}",
+        req.agent_hash, req.failure_type, req.timestamp
+    );
+    let skip_auth = std::env::var("SKIP_AUTH")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if !skip_auth && !verify_signature(&req.validator_hotkey, &message, &req.signature) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ReportInfrastructureFailureResponse {
+                success: false,
+                reassignment_triggered: false,
+                reassignment_count: 0,
+                message: String::new(),
+                error: Some("Invalid signature".to_string()),
+            }),
+        ));
+    }
+
+    // Report the infrastructure failure
+    match state
+        .storage
+        .report_infrastructure_failure(
+            &req.agent_hash,
+            &req.validator_hotkey,
+            &req.failure_type,
+            &req.error_message,
+        )
+        .await
+    {
+        Ok(reassignment_triggered) => {
+            let message = if reassignment_triggered {
+                "Infrastructure failure reported. Agent will be reassigned to another validator."
+                    .to_string()
+            } else {
+                "Infrastructure failure reported. Max reassignments reached or reassignment not possible.".to_string()
+            };
+
+            // Get current reassignment count
+            let reassignment_count = state
+                .storage
+                .get_reassignment_history(&req.agent_hash)
+                .await
+                .map(|h| h.len() as i32)
+                .unwrap_or(0);
+
+            info!(
+                "Infrastructure failure reported by validator {} for agent {}: {} - reassignment_triggered={}, count={}",
+                &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
+                &req.agent_hash[..16.min(req.agent_hash.len())],
+                req.failure_type,
+                reassignment_triggered,
+                reassignment_count
+            );
+
+            Ok(Json(ReportInfrastructureFailureResponse {
+                success: true,
+                reassignment_triggered,
+                reassignment_count,
+                message,
+                error: None,
+            }))
+        }
+        Err(e) => {
+            error!(
+                "Failed to process infrastructure failure report from validator {} for agent {}: {}",
+                &req.validator_hotkey[..16.min(req.validator_hotkey.len())],
+                &req.agent_hash[..16.min(req.agent_hash.len())],
+                e
+            );
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ReportInfrastructureFailureResponse {
+                    success: false,
+                    reassignment_triggered: false,
+                    reassignment_count: 0,
+                    message: String::new(),
+                    error: Some(format!("Failed to process failure report: {}", e)),
+                }),
+            ))
+        }
+    }
 }
 
 // ============================================================================
