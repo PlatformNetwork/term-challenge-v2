@@ -441,6 +441,87 @@ impl ValidatorWorker {
         }
     }
 
+    /// Report infrastructure failure to the platform server
+    /// This triggers reassignment of the agent to another validator (up to 3 times)
+    async fn report_infrastructure_failure(
+        &self,
+        agent_hash: &str,
+        failure_type: &str,
+        error_message: &str,
+    ) -> Result<bool> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
+
+        let message = format!(
+            "infrastructure_failure:{}:{}:{}",
+            agent_hash, failure_type, timestamp
+        );
+        let signature = self.sign_message(&message);
+
+        let url = format!(
+            "{}/api/v1/bridge/{}/api/v1/validator/report_infrastructure_failure",
+            self.platform_url, self.challenge_id
+        );
+
+        let body = serde_json::json!({
+            "validator_hotkey": self.validator_hotkey,
+            "signature": signature,
+            "timestamp": timestamp,
+            "agent_hash": agent_hash,
+            "failure_type": failure_type,
+            "error_message": error_message,
+        });
+
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "Infrastructure failure report failed: {} - {}",
+                status,
+                text
+            );
+        }
+
+        let result: serde_json::Value = response.json().await?;
+        let reassignment_triggered = result["reassignment_triggered"].as_bool().unwrap_or(false);
+
+        info!(
+            "Infrastructure failure reported for agent {}: {} (reassignment_triggered={})",
+            &agent_hash[..16.min(agent_hash.len())],
+            failure_type,
+            reassignment_triggered
+        );
+
+        Ok(reassignment_triggered)
+    }
+
+    /// Check if an error is an infrastructure failure that should be reported
+    fn is_infrastructure_failure(error: &str) -> Option<&'static str> {
+        let lower = error.to_lowercase();
+        if lower.contains("temporary failure in name resolution")
+            || lower.contains("name resolution")
+        {
+            Some("name_resolution")
+        } else if lower.contains("connection refused") {
+            Some("connection_refused")
+        } else if lower.contains("timed out") || lower.contains("timeout") {
+            Some("timeout")
+        } else if lower.contains("broker") && lower.contains("connect") {
+            Some("broker_connect")
+        } else {
+            None
+        }
+    }
+
     /// Main entry point - runs forever
     pub async fn run(&self, mut event_rx: mpsc::Receiver<ValidatorEvent>) {
         info!("Validator worker starting...");
@@ -945,7 +1026,25 @@ impl ValidatorWorker {
                 info!("Evaluation completed for agent {}", short_hash);
             }
             Err(e) => {
-                error!("Evaluation failed for agent {}: {}", short_hash, e);
+                let error_str = format!("{}", e);
+                error!("Evaluation failed for agent {}: {}", short_hash, error_str);
+
+                // Check if this is an infrastructure failure that should trigger reassignment
+                if let Some(failure_type) = Self::is_infrastructure_failure(&error_str) {
+                    warn!(
+                        "Detected infrastructure failure '{}' for agent {}, reporting to server...",
+                        failure_type, short_hash
+                    );
+                    if let Err(report_err) = self
+                        .report_infrastructure_failure(agent_hash, failure_type, &error_str)
+                        .await
+                    {
+                        error!(
+                            "Failed to report infrastructure failure for agent {}: {}",
+                            short_hash, report_err
+                        );
+                    }
+                }
             }
         }
     }

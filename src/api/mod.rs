@@ -60,6 +60,7 @@ pub use handlers::{
     llm_chat_proxy_stream,
     log_task,
     notify_cleanup_complete,
+    report_infrastructure_failure,
     submit_agent,
     sudo_approve_agent,
     sudo_cancel_agent,

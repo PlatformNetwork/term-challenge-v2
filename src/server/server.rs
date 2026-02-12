@@ -1669,6 +1669,10 @@ pub async fn run_server_with_mode(
                 post(api::notify_cleanup_complete),
             )
             .route(
+                "/validator/report_infrastructure_failure",
+                post(api::report_infrastructure_failure),
+            )
+            .route(
                 "/validator/task_stream_update",
                 post(api::task_stream_update),
             )

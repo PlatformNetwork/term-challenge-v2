@@ -2582,6 +2582,27 @@ pub async fn notify_cleanup_complete(
     }))
 }
 
+/// Request and response types for infrastructure failure reporting
+pub use crate::api::routes::validator::{
+    ReportInfrastructureFailureRequest, ReportInfrastructureFailureResponse,
+};
+
+/// POST /api/v1/validator/report_infrastructure_failure - Report broker/infrastructure failure
+///
+/// Validators call this when they encounter infrastructure issues (e.g., broker connection failure,
+/// name resolution errors) that prevent them from evaluating an agent.
+/// The server will reassign the agent's incomplete tasks to another validator (up to 3 times).
+pub async fn report_infrastructure_failure(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<ReportInfrastructureFailureRequest>,
+) -> Result<
+    Json<ReportInfrastructureFailureResponse>,
+    (StatusCode, Json<ReportInfrastructureFailureResponse>),
+> {
+    // Re-export from routes implementation
+    crate::api::routes::validator::report_infrastructure_failure(State(state), Json(req)).await
+}
+
 /// GET /api/v1/validator/agent_status/:agent_hash - Check if agent has been evaluated
 pub async fn get_agent_eval_status(
     State(state): State<Arc<ApiState>>,

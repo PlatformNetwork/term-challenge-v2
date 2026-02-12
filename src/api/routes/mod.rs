@@ -37,6 +37,7 @@ pub use validator::{
     get_validators_readiness,
     log_task,
     notify_cleanup_complete,
+    report_infrastructure_failure,
     task_stream_update,
     validator_heartbeat,
     // Types
@@ -60,6 +61,8 @@ pub use validator::{
     LogTaskResponse,
     NotifyCleanupCompleteRequest,
     NotifyCleanupCompleteResponse,
+    ReportInfrastructureFailureRequest,
+    ReportInfrastructureFailureResponse,
     TaskStreamUpdateRequest,
     TaskStreamUpdateResponse,
     ValidatorEvalInfo,
