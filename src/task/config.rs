@@ -247,6 +247,9 @@ impl Task {
             ));
         };
 
+        // Multiply timeout by 3 from config
+        config.timeout_secs *= 3.0;
+
         // If ID is not set, use directory name
         if config.id.is_empty() {
             config.id = path
