@@ -34,6 +34,7 @@ const BATCH_SIZE: i64 = 5;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexEntry {
     pub agent_hash: String,
+    pub miner_hotkey: String,
     pub file_path: String,
     pub node_type: String,
     pub line_start: u32,
@@ -677,13 +678,19 @@ impl PlagiarismIndex {
     }
 
     /// Load index from precomputed AST hashes (from DB)
-    pub fn load_from_stored(&mut self, agent_hash: &str, ast_hashes: &serde_json::Value) {
+    pub fn load_from_stored(
+        &mut self,
+        agent_hash: &str,
+        miner_hotkey: &str,
+        ast_hashes: &serde_json::Value,
+    ) {
         if let Some(map) = ast_hashes.as_object() {
             for (hash, entries) in map {
                 if let Some(arr) = entries.as_array() {
                     for entry_val in arr {
                         let entry = IndexEntry {
                             agent_hash: agent_hash.to_string(),
+                            miner_hotkey: miner_hotkey.to_string(),
                             file_path: entry_val["file"].as_str().unwrap_or("").to_string(),
                             node_type: entry_val["node_type"].as_str().unwrap_or("").to_string(),
                             line_start: entry_val["line_start"].as_u64().unwrap_or(0) as u32,
@@ -701,6 +708,7 @@ impl PlagiarismIndex {
     pub fn index_agent(
         &mut self,
         agent_hash: &str,
+        miner_hotkey: &str,
         files: &HashMap<String, String>,
     ) -> (serde_json::Value, u32) {
         let mut ast_hashes: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
@@ -720,7 +728,7 @@ impl PlagiarismIndex {
 
             for node in &nodes {
                 total_nodes += node.size;
-                self.index_subtrees(node, agent_hash, file_path, &mut ast_hashes);
+                self.index_subtrees(node, agent_hash, miner_hotkey, file_path, &mut ast_hashes);
             }
         }
 
@@ -736,12 +744,14 @@ impl PlagiarismIndex {
         &mut self,
         node: &NormalizedNode,
         agent_hash: &str,
+        miner_hotkey: &str,
         file_path: &str,
         ast_hashes: &mut HashMap<String, Vec<serde_json::Value>>,
     ) {
         if node.size >= self.min_subtree_size {
             let entry = IndexEntry {
                 agent_hash: agent_hash.to_string(),
+                miner_hotkey: miner_hotkey.to_string(),
                 file_path: file_path.to_string(),
                 node_type: node.node_type.clone(),
                 line_start: node.line_start,
@@ -768,7 +778,7 @@ impl PlagiarismIndex {
         }
 
         for child in &node.children {
-            self.index_subtrees(child, agent_hash, file_path, ast_hashes);
+            self.index_subtrees(child, agent_hash, miner_hotkey, file_path, ast_hashes);
         }
     }
 }
@@ -790,9 +800,13 @@ impl<'a> PlagiarismDetector<'a> {
     /// Computes similarity **per reference agent** and takes the highest score.
     /// This way, reusing small snippets from many agents won't inflate the score --
     /// only copying a single specific agent triggers flag/reject.
+    ///
+    /// If `miner_hotkey` is provided, matches from agents submitted by the same
+    /// hotkey are excluded (original authors can resubmit their own code).
     pub fn check_agent(
         &self,
         agent_hash: &str,
+        miner_hotkey: Option<&str>,
         files: &HashMap<String, String>,
         config: &PlagiarismConfig,
     ) -> PlagiarismReport {
@@ -810,11 +824,18 @@ impl<'a> PlagiarismDetector<'a> {
             }
         }
 
-        // Step 2: collect all distinct reference agent hashes in the index
+        // Step 2: collect all distinct reference agents (agent_hash -> miner_hotkey)
+        // Filter out agents submitted by the same hotkey (original authors exempt)
         let mut ref_agents: HashSet<String> = HashSet::new();
         for entries in self.index.index.values() {
             for entry in entries {
                 if entry.agent_hash != agent_hash {
+                    // Skip if same hotkey (original author exemption)
+                    if let Some(hotkey) = miner_hotkey {
+                        if entry.miner_hotkey == hotkey {
+                            continue;
+                        }
+                    }
                     ref_agents.insert(entry.agent_hash.clone());
                 }
             }
@@ -1005,10 +1026,10 @@ impl PlagiarismWorker {
         let config = self.storage.get_plagiarism_config().await?;
         let mut index = PlagiarismIndex::new(config.min_subtree_size);
 
-        // Load existing AST index entries from DB
+        // Load existing AST index entries from DB (now includes miner_hotkey)
         let stored = self.storage.load_ast_index().await?;
-        for (agent_hash, ast_hashes, _total_nodes) in &stored {
-            index.load_from_stored(agent_hash, ast_hashes);
+        for (agent_hash, miner_hotkey, ast_hashes, _total_nodes) in &stored {
+            index.load_from_stored(agent_hash, miner_hotkey, ast_hashes);
         }
 
         if stored.is_empty() {
@@ -1036,7 +1057,8 @@ impl PlagiarismWorker {
                     }
                 };
 
-                let (ast_hashes, total_nodes) = index.index_agent(&agent.agent_hash, &files);
+                let (ast_hashes, total_nodes) =
+                    index.index_agent(&agent.agent_hash, &agent.miner_hotkey, &files);
 
                 // Save to DB for persistence
                 if let Err(e) = self
@@ -1125,11 +1147,16 @@ impl PlagiarismWorker {
                 }
             };
 
-            // Run detection
+            // Run detection (pass miner_hotkey to exempt original author from plagiarism checks)
             let report = {
                 let index = self.index.read().await;
                 let detector = PlagiarismDetector::new(&index);
-                detector.check_agent(&submission.agent_hash, &files, &config)
+                detector.check_agent(
+                    &submission.agent_hash,
+                    Some(&submission.miner_hotkey),
+                    &files,
+                    &config,
+                )
             };
 
             info!(
@@ -1186,7 +1213,7 @@ impl PlagiarismWorker {
             if report.verdict != "rejected" {
                 let (ast_hashes, total_nodes) = {
                     let mut index = self.index.write().await;
-                    index.index_agent(&submission.agent_hash, &files)
+                    index.index_agent(&submission.agent_hash, &submission.miner_hotkey, &files)
                 };
                 let _ = self
                     .storage
@@ -1281,9 +1308,9 @@ class Agent:
 
         let mut files1 = HashMap::new();
         files1.insert("agent.py".to_string(), agent1_code.to_string());
-        let (_hashes, _total) = index.index_agent("agent1hash", &files1);
+        let (_hashes, _total) = index.index_agent("agent1hash", "hotkey1", &files1);
 
-        // Same code, different agent
+        // Same code, different agent with different hotkey
         let agent2_code = r#"
 class MyBot:
     def solve(self, req):
@@ -1307,7 +1334,7 @@ class MyBot:
         };
 
         let detector = PlagiarismDetector::new(&index);
-        let report = detector.check_agent("agent2hash", &files2, &config);
+        let report = detector.check_agent("agent2hash", Some("hotkey2"), &files2, &config);
 
         // Should detect high similarity
         assert!(
@@ -1326,7 +1353,7 @@ class MyBot:
         let mut files = HashMap::new();
         files.insert("agent.py".to_string(), code.to_string());
 
-        let (_hashes, _total) = index.index_agent("agent1", &files);
+        let (_hashes, _total) = index.index_agent("agent1", "hotkey1", &files);
 
         let config = PlagiarismConfig {
             flag_threshold: 50.0,
@@ -1337,7 +1364,7 @@ class MyBot:
 
         // Check same agent against itself -> should find 0 matches (self excluded)
         let detector = PlagiarismDetector::new(&index);
-        let report = detector.check_agent("agent1", &files, &config);
+        let report = detector.check_agent("agent1", Some("hotkey1"), &files, &config);
         assert_eq!(report.matched_nodes, 0);
     }
 
@@ -1354,9 +1381,69 @@ class MyBot:
         let config = PlagiarismConfig::default();
         let detector = PlagiarismDetector::new(&index);
         let files = HashMap::new();
-        let report = detector.check_agent("empty", &files, &config);
+        let report = detector.check_agent("empty", Some("hotkey1"), &files, &config);
         assert_eq!(report.match_percent, 0.0);
         assert_eq!(report.verdict, "cleared");
+    }
+
+    #[test]
+    fn test_original_author_exemption() {
+        // Test that the original author is exempt from plagiarism detection
+        let mut index = PlagiarismIndex::new(3);
+
+        let code = r#"
+class Agent:
+    def solve(self, req):
+        result = self.compute(req.data)
+        return Response.cmd(result)
+
+    def compute(self, data):
+        x = data.split()
+        y = len(x)
+        return str(y)
+"#;
+
+        let mut files = HashMap::new();
+        files.insert("agent.py".to_string(), code.to_string());
+
+        // Index the original agent with hotkey1
+        let (_hashes, _total) = index.index_agent("original_agent", "hotkey1", &files);
+
+        let config = PlagiarismConfig {
+            flag_threshold: 50.0,
+            reject_threshold: 90.0,
+            min_subtree_size: 3,
+            ..Default::default()
+        };
+
+        // Same hotkey resubmitting similar code should NOT be flagged
+        let detector = PlagiarismDetector::new(&index);
+        let report_same_hotkey =
+            detector.check_agent("resubmitted_agent", Some("hotkey1"), &files, &config);
+
+        // Original author should be exempt (0% match because same-hotkey matches are filtered)
+        assert_eq!(
+            report_same_hotkey.matched_nodes, 0,
+            "Original author should be exempt from plagiarism detection"
+        );
+        assert_eq!(
+            report_same_hotkey.verdict, "cleared",
+            "Original author should be cleared"
+        );
+
+        // Different hotkey submitting same code SHOULD be flagged
+        let report_different_hotkey =
+            detector.check_agent("stolen_agent", Some("hotkey2"), &files, &config);
+
+        // Different hotkey should be detected
+        assert!(
+            report_different_hotkey.matched_nodes > 0,
+            "Different hotkey should be detected for plagiarism"
+        );
+        assert!(
+            report_different_hotkey.match_percent > 50.0,
+            "Different hotkey should have high similarity score"
+        );
     }
 
     fn load_python_files(dir: &str) -> HashMap<String, String> {
@@ -1413,15 +1500,16 @@ class MyBot:
 
         // Index the original agent
         let mut index = PlagiarismIndex::new(config.min_subtree_size);
-        let (hashes_count, total_nodes) = index.index_agent("original_baseagent", &original_files);
+        let (hashes_count, total_nodes) =
+            index.index_agent("original_baseagent", "hotkey1", &original_files);
         eprintln!(
             "Indexed original: {} hashes, {} total nodes",
             hashes_count, total_nodes
         );
 
-        // Check modified agent against original
+        // Check modified agent against original (different hotkey)
         let detector = PlagiarismDetector::new(&index);
-        let report = detector.check_agent("modified_b2", &modified_files, &config);
+        let report = detector.check_agent("modified_b2", Some("hotkey2"), &modified_files, &config);
 
         eprintln!("========================================");
         eprintln!("RESULT: b2 vs baseagent-fresh");
@@ -1468,11 +1556,16 @@ class MyBot:
         );
         eprintln!("========================================");
 
-        // Now check original vs modified (reverse direction)
+        // Now check original vs modified (reverse direction, different hotkey)
         let mut index2 = PlagiarismIndex::new(config.min_subtree_size);
-        index2.index_agent("modified_b2", &modified_files);
+        index2.index_agent("modified_b2", "hotkey2", &modified_files);
         let detector2 = PlagiarismDetector::new(&index2);
-        let report2 = detector2.check_agent("original_baseagent", &original_files, &config);
+        let report2 = detector2.check_agent(
+            "original_baseagent",
+            Some("hotkey1"),
+            &original_files,
+            &config,
+        );
 
         eprintln!("========================================");
         eprintln!("REVERSE: baseagent-fresh vs b2");

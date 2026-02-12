@@ -300,6 +300,7 @@ pub struct MinerSubmissionHistory {
 #[derive(Debug, Clone)]
 pub struct PendingLlmReview {
     pub agent_hash: String,
+    pub miner_hotkey: String,
     pub source_code: String,
     pub is_package: bool,
     pub package_data: Option<Vec<u8>>,
@@ -5006,7 +5007,7 @@ impl PgStorage {
         let client = self.pool.get().await?;
         let rows = client
             .query(
-                "SELECT agent_hash, source_code, COALESCE(is_package, false),
+                "SELECT agent_hash, miner_hotkey, source_code, COALESCE(is_package, false),
                         package_data, package_format, entry_point
                  FROM submissions
                  WHERE llm_review_status = 'pending'
@@ -5019,11 +5020,12 @@ impl PgStorage {
             .iter()
             .map(|r| PendingLlmReview {
                 agent_hash: r.get(0),
-                source_code: r.get(1),
-                is_package: r.get::<_, Option<bool>>(2).unwrap_or(false),
-                package_data: r.get(3),
-                package_format: r.get(4),
-                entry_point: r.get(5),
+                miner_hotkey: r.get(1),
+                source_code: r.get(2),
+                is_package: r.get::<_, Option<bool>>(3).unwrap_or(false),
+                package_data: r.get(4),
+                package_format: r.get(5),
+                entry_point: r.get(6),
             })
             .collect())
     }
@@ -5057,7 +5059,7 @@ impl PgStorage {
                 SET llm_review_called = TRUE
                 FROM to_claim t
                 WHERE s.agent_hash = t.agent_hash
-                RETURNING s.agent_hash, s.source_code,
+                RETURNING s.agent_hash, s.miner_hotkey, s.source_code,
                           COALESCE(s.is_package, false), s.package_data,
                           s.package_format, s.entry_point",
                 &[&limit, &max_retries],
@@ -5071,11 +5073,12 @@ impl PgStorage {
             .iter()
             .map(|r| PendingLlmReview {
                 agent_hash: r.get(0),
-                source_code: r.get(1),
-                is_package: r.get::<_, Option<bool>>(2).unwrap_or(false),
-                package_data: r.get(3),
-                package_format: r.get(4),
-                entry_point: r.get(5),
+                miner_hotkey: r.get(1),
+                source_code: r.get(2),
+                is_package: r.get::<_, Option<bool>>(3).unwrap_or(false),
+                package_data: r.get(4),
+                package_format: r.get(5),
+                entry_point: r.get(6),
             })
             .collect())
     }
@@ -7981,7 +7984,7 @@ impl PgStorage {
                 SET plagiarism_called = TRUE
                 FROM to_claim t
                 WHERE s.agent_hash = t.agent_hash
-                RETURNING s.agent_hash, s.source_code,
+                RETURNING s.agent_hash, s.miner_hotkey, s.source_code,
                           COALESCE(s.is_package, false), s.package_data,
                           s.package_format, s.entry_point",
                 &[&(limit as i64)],
@@ -7998,11 +8001,12 @@ impl PgStorage {
             .iter()
             .map(|r| PendingLlmReview {
                 agent_hash: r.get(0),
-                source_code: r.get(1),
-                is_package: r.get::<_, Option<bool>>(2).unwrap_or(false),
-                package_data: r.get(3),
-                package_format: r.get(4),
-                entry_point: r.get(5),
+                miner_hotkey: r.get(1),
+                source_code: r.get(2),
+                is_package: r.get::<_, Option<bool>>(3).unwrap_or(false),
+                package_data: r.get(4),
+                package_format: r.get(5),
+                entry_point: r.get(6),
             })
             .collect())
     }
@@ -8079,12 +8083,14 @@ impl PgStorage {
         Ok(())
     }
 
-    /// Load all AST index entries from DB
-    pub async fn load_ast_index(&self) -> Result<Vec<(String, serde_json::Value, i32)>> {
+    /// Load all AST index entries from DB with miner_hotkey from submissions
+    pub async fn load_ast_index(&self) -> Result<Vec<(String, String, serde_json::Value, i32)>> {
         let client = self.pool.get().await?;
         let rows = client
             .query(
-                "SELECT agent_hash, ast_hashes, total_nodes FROM plagiarism_ast_index",
+                "SELECT i.agent_hash, s.miner_hotkey, i.ast_hashes, i.total_nodes
+                 FROM plagiarism_ast_index i
+                 JOIN submissions s ON s.agent_hash = i.agent_hash",
                 &[],
             )
             .await;
@@ -8092,7 +8098,7 @@ impl PgStorage {
         match rows {
             Ok(rows) => Ok(rows
                 .iter()
-                .map(|r| (r.get(0), r.get(1), r.get(2)))
+                .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3)))
                 .collect()),
             Err(_) => {
                 // Table might not exist yet (pre-migration)
@@ -8106,7 +8112,7 @@ impl PgStorage {
         let client = self.pool.get().await?;
         let rows = client
             .query(
-                "SELECT s.agent_hash, s.source_code,
+                "SELECT s.agent_hash, s.miner_hotkey, s.source_code,
                         COALESCE(s.is_package, false), s.package_data,
                         s.package_format, s.entry_point
                  FROM submissions s
@@ -8127,11 +8133,12 @@ impl PgStorage {
             .iter()
             .map(|r| PendingLlmReview {
                 agent_hash: r.get(0),
-                source_code: r.get(1),
-                is_package: r.get::<_, Option<bool>>(2).unwrap_or(false),
-                package_data: r.get(3),
-                package_format: r.get(4),
-                entry_point: r.get(5),
+                miner_hotkey: r.get(1),
+                source_code: r.get(2),
+                is_package: r.get::<_, Option<bool>>(3).unwrap_or(false),
+                package_data: r.get(4),
+                package_format: r.get(5),
+                entry_point: r.get(6),
             })
             .collect())
     }
@@ -8193,7 +8200,7 @@ impl PgStorage {
         for hash in unique {
             let row = client
                 .query_opt(
-                    "SELECT agent_hash, source_code, COALESCE(is_package, false),
+                    "SELECT agent_hash, miner_hotkey, source_code, COALESCE(is_package, false),
                             package_data, package_format, entry_point
                      FROM submissions WHERE agent_hash = $1",
                     &[&hash],
@@ -8202,11 +8209,12 @@ impl PgStorage {
             if let Some(r) = row {
                 results.push(PendingLlmReview {
                     agent_hash: r.get(0),
-                    source_code: r.get(1),
-                    is_package: r.get::<_, Option<bool>>(2).unwrap_or(false),
-                    package_data: r.get(3),
-                    package_format: r.get(4),
-                    entry_point: r.get(5),
+                    miner_hotkey: r.get(1),
+                    source_code: r.get(2),
+                    is_package: r.get::<_, Option<bool>>(3).unwrap_or(false),
+                    package_data: r.get(4),
+                    package_format: r.get(5),
+                    entry_point: r.get(6),
                 });
             }
         }
