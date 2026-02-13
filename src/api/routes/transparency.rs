@@ -535,7 +535,11 @@ pub async fn get_agent_instructions(
     State(state): State<Arc<ApiState>>,
     Path(agent_hash): Path<String>,
 ) -> Result<Json<InstructionsResponse>, (StatusCode, Json<InstructionsResponse>)> {
-    match state.storage.get_llm_review_instructions_json(&agent_hash).await {
+    match state
+        .storage
+        .get_llm_review_instructions_json(&agent_hash)
+        .await
+    {
         Ok(json_array) => {
             let instructions: Vec<serde_json::Value> = json_array
                 .as_array()

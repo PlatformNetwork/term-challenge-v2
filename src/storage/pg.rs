@@ -7859,6 +7859,112 @@ impl PgStorage {
             })
             .collect())
     }
+
+    // ========================================================================
+    // LLM REVIEW INSTRUCTIONS (Database-based instruction extraction)
+    // ========================================================================
+
+    /// Store an instruction extracted by the LLM reviewer
+    /// This replaces the file-based instructions.jsonl approach
+    pub async fn store_llm_review_instruction(
+        &self,
+        agent_hash: &str,
+        instruction_data: &serde_json::Value,
+    ) -> Result<i32> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                "INSERT INTO llm_review_instructions (agent_hash, instruction_data)
+                 VALUES ($1, $2)
+                 RETURNING id",
+                &[&agent_hash, &instruction_data],
+            )
+            .await?;
+
+        let id: i32 = row.get(0);
+
+        debug!(
+            "Stored LLM review instruction {} for agent {}: {:?}",
+            id,
+            &agent_hash[..12.min(agent_hash.len())],
+            instruction_data
+        );
+
+        Ok(id)
+    }
+
+    /// Get all instructions stored for an agent during LLM review
+    pub async fn get_llm_review_instructions(
+        &self,
+        agent_hash: &str,
+    ) -> Result<Vec<LlmReviewInstruction>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                "SELECT id, agent_hash, instruction_data, created_at
+                 FROM llm_review_instructions
+                 WHERE agent_hash = $1
+                 ORDER BY created_at ASC",
+                &[&agent_hash],
+            )
+            .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| LlmReviewInstruction {
+                id: r.get(0),
+                agent_hash: r.get(1),
+                instruction_data: r.get(2),
+                created_at: r.get(3),
+            })
+            .collect())
+    }
+
+    /// Get all instructions as a JSON array for analysis
+    /// This is useful for batch analysis of miner instructions
+    pub async fn get_llm_review_instructions_json(
+        &self,
+        agent_hash: &str,
+    ) -> Result<serde_json::Value> {
+        let instructions = self.get_llm_review_instructions(agent_hash).await?;
+
+        let json_array: Vec<serde_json::Value> = instructions
+            .into_iter()
+            .map(|i| i.instruction_data)
+            .collect();
+
+        Ok(serde_json::Value::Array(json_array))
+    }
+
+    /// Delete instructions for an agent (used when retrying LLM review)
+    pub async fn clear_llm_review_instructions(&self, agent_hash: &str) -> Result<u64> {
+        let client = self.pool.get().await?;
+        let result = client
+            .execute(
+                "DELETE FROM llm_review_instructions WHERE agent_hash = $1",
+                &[&agent_hash],
+            )
+            .await?;
+
+        if result > 0 {
+            debug!(
+                "Cleared {} LLM review instructions for agent {}",
+                result,
+                &agent_hash[..12.min(agent_hash.len())]
+            );
+        }
+
+        Ok(result)
+    }
+}
+
+/// LLM review instruction record
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmReviewInstruction {
+    pub id: i32,
+    pub agent_hash: String,
+    pub instruction_data: serde_json::Value,
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// LLM review conversation log
