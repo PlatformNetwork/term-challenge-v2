@@ -5135,7 +5135,8 @@ impl PgStorage {
                     llm_rules_review_status = $1,
                     llm_rules_review_model = $2,
                     llm_rules_review_result = $3,
-                    llm_rules_reviewed_at = NOW()
+                    llm_rules_reviewed_at = NOW(),
+                    manually_validated = ($1 = 'approved')
                  WHERE agent_hash = $4",
                 &[&status, &model, &result_json, &agent_hash],
             )
