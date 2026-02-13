@@ -274,8 +274,16 @@ pub const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../migrations/033_plagiarism_detection.sql"),
     ),
     (
+        "034_llm_review_prompt_keys",
+        include_str!("../../migrations/034_llm_review_prompt_keys.sql"),
+    ),
+    (
         "035_llm_review_instructions",
         include_str!("../../migrations/035_llm_review_instructions.sql"),
+    ),
+    (
+        "036_separate_llm_review_columns",
+        include_str!("../../migrations/036_separate_llm_review_columns.sql"),
     ),
 ];
 

@@ -256,8 +256,29 @@ fn get_tools() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "write_file",
+                "description": "Write content to a file in the workspace. Use for recording analysis results.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file relative to workspace root"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Content to write to the file"
+                        }
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "dump_instruction",
-                "description": "Store an extracted instruction or prompt variable as JSON in the database for analysis. Call this for EACH instruction/prompt you detect. The JSON will be stored in an array that can be queried later.",
+                "description": "Store an extracted instruction or prompt variable as JSON in the database for analysis. You MUST call this for EACH instruction/prompt you detect. This is MANDATORY before submit_verdict.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -272,6 +293,10 @@ fn get_tools() -> serde_json::Value {
                         "context": {
                             "type": "string",
                             "description": "Optional context about where this was found (file path, function name, line number, etc.)"
+                        },
+                        "has_hardcoded_secrets": {
+                            "type": "boolean",
+                            "description": "Whether this prompt/instruction contains hardcoded API keys, secrets, or credentials"
                         }
                     },
                     "required": ["variable", "prompt"]
@@ -282,7 +307,7 @@ fn get_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "submit_verdict",
-                "description": "Submit your final code review verdict. Call this when you have finished analyzing the code.",
+                "description": "Submit your final code review verdict. Call this when you have finished analyzing the code. Will fail if no instructions were reported via dump_instruction.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -377,9 +402,20 @@ impl ReviewWorkspace {
     }
 
     fn read_file(&self, path: &str) -> String {
-        let file_path = self.root.join(path);
+        // Security: reject path traversal and absolute paths at component level
+        for component in Path::new(path).components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    return "Error: Access denied - path traversal detected".to_string();
+                }
+                std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                    return "Error: Access denied - absolute paths not allowed".to_string();
+                }
+                _ => {}
+            }
+        }
 
-        // Security: prevent path traversal
+        let file_path = self.root.join(path);
         if !file_path.starts_with(&self.root) {
             return "Error: Access denied - path traversal detected".to_string();
         }
@@ -397,6 +433,36 @@ impl ReviewWorkspace {
                 }
             }
             Err(e) => format!("Error reading file '{}': {}", path, e),
+        }
+    }
+
+    fn write_file(&self, path: &str, content: &str) -> String {
+        for component in Path::new(path).components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    return "Error: Access denied - path traversal detected".to_string();
+                }
+                std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                    return "Error: Access denied - absolute paths not allowed".to_string();
+                }
+                _ => {}
+            }
+        }
+
+        let file_path = self.root.join(path);
+        if !file_path.starts_with(&self.root) {
+            return "Error: Access denied - path traversal detected".to_string();
+        }
+
+        if let Some(parent) = file_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return format!("Error creating directories for '{}': {}", path, e);
+            }
+        }
+
+        match std::fs::write(&file_path, content) {
+            Ok(_) => format!("Successfully wrote {} bytes to '{}'", content.len(), path),
+            Err(e) => format!("Error writing file '{}': {}", path, e),
         }
     }
 
@@ -991,6 +1057,7 @@ impl LlmReviewWorker {
         ];
 
         let mut verdict: Option<serde_json::Value> = None;
+        let mut dumped_instructions_count: i32 = 0;
         let mut tool_calls_count: i32 = 0;
         let mut turns_count: i32 = 0;
         let started_at = Utc::now();
@@ -1165,8 +1232,12 @@ impl LlmReviewWorker {
                             let path = args["path"].as_str().unwrap_or(".");
                             workspace.grep(pattern, path)
                         }
+                        "write_file" => {
+                            let path = args["path"].as_str().unwrap_or("");
+                            let content = args["content"].as_str().unwrap_or("");
+                            workspace.write_file(path, content)
+                        }
                         "dump_instruction" => {
-                            // Store the instruction in the database
                             if let Err(e) = self
                                 .storage
                                 .store_llm_review_instruction(agent_hash, &args)
@@ -1175,21 +1246,32 @@ impl LlmReviewWorker {
                                 warn!("Failed to store instruction for {}: {}", agent_hash, e);
                                 format!("Error storing instruction: {}", e)
                             } else {
+                                dumped_instructions_count += 1;
                                 let variable = args["variable"].as_str().unwrap_or("unknown");
                                 debug!(
-                                    "Stored instruction '{}' for agent {}",
-                                    variable, agent_hash
+                                    "Stored instruction '{}' for agent {} (total: {})",
+                                    variable, agent_hash, dumped_instructions_count
                                 );
                                 format!(
-                                    "Successfully stored instruction '{}' for analysis",
-                                    variable
+                                    "Instruction '{}' stored (total: {})",
+                                    variable, dumped_instructions_count
                                 )
                             }
                         }
                         "submit_verdict" => {
-                            info!("LLM submitted verdict: approved={}", args["approved"]);
-                            verdict = Some(args.clone());
-                            "Verdict received.".to_string()
+                            if dumped_instructions_count == 0 {
+                                "Error: You MUST call dump_instruction at least once to report the prompt variables found in the code before submitting your verdict. Please analyze the code and report all instructions/prompts/templates you found.".to_string()
+                            } else {
+                                info!(
+                                    "LLM submitted verdict: approved={}, {} instructions dumped",
+                                    args["approved"], dumped_instructions_count
+                                );
+                                verdict = Some(args.clone());
+                                format!(
+                                    "Verdict received with {} dumped instructions.",
+                                    dumped_instructions_count
+                                )
+                            }
                         }
                         _ => format!("Unknown function: {}", func_name),
                     };

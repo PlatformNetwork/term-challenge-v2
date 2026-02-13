@@ -4828,7 +4828,7 @@ impl PgStorage {
                 "SELECT agent_hash, source_code, is_package, package_data, package_format, entry_point 
                  FROM submissions 
                  WHERE compile_status = 'pending'
-                   AND llm_review_status = 'approved'
+                   AND COALESCE(llm_rules_review_status, llm_review_status) = 'approved'
                  ORDER BY created_at ASC
                  LIMIT $1",
                 &[&(limit as i64)],
@@ -4855,7 +4855,7 @@ impl PgStorage {
     /// Atomically claim submissions for compilation
     /// Uses UPDATE ... RETURNING with FOR UPDATE SKIP LOCKED for race condition safety
     /// Only claims submissions that:
-    /// - Have llm_review_status = 'approved'
+    /// - Have rules review approved (llm_rules_review_status or llm_review_status = 'approved')
     /// - Have compile_called = FALSE (not yet claimed)
     /// - Have compile_retry_count below max_retries limit
     pub async fn claim_pending_compilations(
@@ -4870,7 +4870,7 @@ impl PgStorage {
                     SELECT agent_hash
                     FROM submissions
                     WHERE compile_called = FALSE
-                      AND llm_review_status = 'approved'
+                      AND COALESCE(llm_rules_review_status, llm_review_status) = 'approved'
                       AND COALESCE(plagiarism_status, 'pending') IN ('cleared', 'flagged')
                       AND COALESCE(compile_retry_count, 0) < $2
                     ORDER BY created_at ASC
@@ -5010,7 +5010,7 @@ impl PgStorage {
                 "SELECT agent_hash, miner_hotkey, source_code, COALESCE(is_package, false),
                         package_data, package_format, entry_point
                  FROM submissions
-                 WHERE llm_review_status = 'pending'
+                 WHERE COALESCE(llm_rules_review_status, llm_review_status, 'pending') = 'pending'
                  ORDER BY created_at ASC
                  LIMIT $1",
                 &[&limit],
@@ -5033,7 +5033,7 @@ impl PgStorage {
     /// Atomically claim submissions for LLM review
     /// Uses UPDATE ... RETURNING with FOR UPDATE SKIP LOCKED for race condition safety
     /// Only claims submissions that:
-    /// - Have llm_review_status = 'pending'
+    /// - Have rules review pending (llm_rules_review_status or llm_review_status = 'pending')
     /// - Have llm_review_called = FALSE (not yet claimed)
     /// - Have llm_review_retry_count below max_retries limit
     pub async fn claim_pending_llm_reviews(
@@ -5048,7 +5048,7 @@ impl PgStorage {
                     SELECT agent_hash
                     FROM submissions
                     WHERE llm_review_called = FALSE
-                      AND llm_review_status = 'pending'
+                      AND COALESCE(llm_rules_review_status, llm_review_status, 'pending') = 'pending'
                       AND COALESCE(plagiarism_status, 'pending') IN ('cleared', 'flagged')
                       AND COALESCE(llm_review_retry_count, 0) < $2
                     ORDER BY created_at ASC
@@ -5092,6 +5092,7 @@ impl PgStorage {
                 "UPDATE submissions 
                  SET llm_review_called = FALSE, 
                      llm_review_status = 'pending',
+                     llm_rules_review_status = 'pending',
                      llm_review_retry_count = COALESCE(llm_review_retry_count, 0) + 1 
                  WHERE agent_hash = $1",
                 &[&agent_hash],
@@ -5105,7 +5106,10 @@ impl PgStorage {
         let client = self.pool.get().await?;
         client
             .execute(
-                "UPDATE submissions SET llm_review_status = 'reviewing' WHERE agent_hash = $1",
+                "UPDATE submissions SET
+                    llm_review_status = 'reviewing',
+                    llm_rules_review_status = 'reviewing'
+                 WHERE agent_hash = $1",
                 &[&agent_hash],
             )
             .await?;
@@ -5127,7 +5131,11 @@ impl PgStorage {
                     llm_review_status = $1,
                     llm_review_model = $2,
                     llm_review_result = $3,
-                    llm_reviewed_at = NOW()
+                    llm_reviewed_at = NOW(),
+                    llm_rules_review_status = $1,
+                    llm_rules_review_model = $2,
+                    llm_rules_review_result = $3,
+                    llm_rules_reviewed_at = NOW()
                  WHERE agent_hash = $4",
                 &[&status, &model, &result_json, &agent_hash],
             )
@@ -5152,6 +5160,10 @@ impl PgStorage {
                     llm_review_model = $1,
                     llm_review_result = $2,
                     llm_reviewed_at = NOW(),
+                    llm_rules_review_status = 'rejected',
+                    llm_rules_review_model = $1,
+                    llm_rules_review_result = $2,
+                    llm_rules_reviewed_at = NOW(),
                     flagged = TRUE,
                     flag_reason = $3,
                     manually_validated = FALSE
