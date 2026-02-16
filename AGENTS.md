@@ -1,683 +1,166 @@
-# Term Challenge - Agent Developer Guide
+# AGENTS.md — Term Challenge
 
-Complete documentation for building agents that compete in the Term Challenge.
+## Project Purpose
 
-## Table of Contents
-
-1. [Architecture Overview](#architecture-overview)
-2. [Submission Flow](#submission-flow)
-3. [SDK 2.0 Architecture](#sdk-20-architecture)
-4. [Agent Structure](#agent-structure)
-5. [Task Structure](#task-structure)
-6. [LLM Integration](#llm-integration)
-7. [Evaluation Flow](#evaluation-flow)
-8. [Scoring & Consensus](#scoring--consensus)
-9. [Environment Variables](#environment-variables)
-10. [Best Practices](#best-practices)
-
----
+Term Challenge is a terminal-based evaluation framework for AI agents on the Bittensor network. Miners submit Python agents that solve command-line tasks inside Docker containers; validators evaluate them across distributed nodes and produce consensus scores that determine miner weights and TAO emissions. The system is written in Rust (~95k lines) with a Python SDK and agent runner.
 
 ## Architecture Overview
 
-```mermaid
-flowchart LR
-    Platform["Platform Server"] --> V1["Validator 1"]
-    Platform --> V2["Validator 2"]
-    Platform --> V3["Validator 3"]
-    V1 --> Docker["🐳 Docker"]
-    V2 --> Docker
-    V3 --> Docker
+```
+term-challenge/
+├── bin/
+│   ├── server/main.rs       # term-server — always-on challenge server (axum HTTP + WebSocket)
+│   └── term/main.rs         # term — CLI for miners (submit, bench, status, leaderboard)
+├── src/
+│   ├── lib.rs               # Crate root — module declarations and re-exports
+│   ├── core/                # Fundamental types: Hotkey, ChallengeId, TaskResult
+│   ├── crypto/              # sr25519 auth, x25519 encryption, SS58, API key handling
+│   ├── util/                # Timestamp, hashing (SHA-256, Blake2), encoding helpers
+│   ├── storage/             # Persistence: PostgreSQL (server), SQLite (validator), chain
+│   ├── cache/               # In-memory caches: metagraph, task stream
+│   ├── client/              # HTTP client, WebSocket (platform & validator), LLM proxy
+│   ├── chain/               # Bittensor integration: block sync, epoch calc, on-chain eval
+│   ├── weights/             # Weight calculation: scoring, decay, emission, distribution
+│   ├── evaluation/          # Eval pipeline: evaluator, orchestrator, progress tracking
+│   ├── validation/          # Code validation: Python whitelist, package checks, visibility
+│   ├── worker/              # Background workers: compile, queue, plagiarism, LLM review
+│   ├── container/           # Docker management: backend abstraction, compiler, executor
+│   ├── task/                # Task types, registry, harness, challenge definitions
+│   ├── agent/               # Agent management: registry, submission, review
+│   ├── admin/               # Sudo/admin controls, subnet config, challenge config
+│   ├── server/              # Server startup and state (uses axum)
+│   ├── api/                 # REST API: routes, handlers, middleware, LLM proxy, errors
+│   ├── bench/               # Local benchmarking: agent runners, Docker env, verifier
+│   └── synthetic/           # Synthetic dataset generation
+├── docker/                  # Dockerfiles for base image, compiler, agent runner
+├── migrations/              # PostgreSQL schema migrations (001–037)
+├── data/tasks/              # Built-in task definitions (hello-world, etc.)
+├── checkpoints/             # Checkpoint JSON files for evaluation datasets
+├── tests/                   # Rust integration tests + Python integration tests
+├── examples/                # Example agents (baseagent, validator_agent)
+├── scripts/                 # Multi-agent review scripts (Python)
+└── docs/                    # Documentation (miner, validator, reference, architecture)
 ```
 
-### Key Components
+### Data Flow
 
-| Component | Description |
-|-----------|-------------|
-| **Platform Server** | Central orchestrator at `chain.platform.network` |
-| **Bridge API** | Routes all challenge traffic through `/api/v1/bridge/term-challenge/` |
-| **Validators** | 3 distributed nodes that evaluate agents on tasks |
-| **Task Containers** | Isolated Docker environments for each task execution |
+1. **Miner** writes a Python agent and submits via `term wizard` CLI
+2. **Server** (`term-server`) receives the submission, validates code, compiles to PyInstaller binary
+3. **Server** assigns the agent to 3 **Validators** via WebSocket
+4. **Validators** download the binary, run it in Docker containers against 10 tasks each (30 total)
+5. **Validators** submit signed evaluation results back to the server
+6. **Server** aggregates scores, calculates weights, and submits to the Bittensor chain
 
-### Datasets
+### Two Operational Modes
 
-| Dataset | Tasks | Usage |
-|---------|-------|-------|
-| `checkpoint2` | 30 | Production evaluation (validators use this) |
-| `terminal-bench@2.0` | 91 | Local testing and development |
+- **Server mode** (`term-server`): Requires `DATABASE_URL` (PostgreSQL). Handles submissions, compilation, validator assignment, scoring, weight setting.
+- **Validator mode**: No `DATABASE_URL`. Connects via WebSocket, downloads binaries, evaluates agents, submits results.
 
----
+## Tech Stack
 
-## Submission Flow
+| Layer | Technology |
+|-------|-----------|
+| Language | Rust 1.90+ (edition 2021) |
+| Async Runtime | Tokio (full features) |
+| HTTP Framework | Axum 0.7 |
+| CLI Framework | Clap 4.5 (derive) |
+| Database (server) | PostgreSQL via `tokio-postgres` + `deadpool-postgres` |
+| Database (validator) | SQLite via `rusqlite` (bundled) |
+| Docker | Bollard 0.18 |
+| Crypto | `sp-core` (sr25519), `schnorrkel`, `x25519-dalek`, `chacha20poly1305` |
+| Serialization | serde + serde_json + serde_yaml + toml |
+| Agent Language | Python 3.10+ (agents run inside Docker) |
+| Agent SDK | `term_sdk` (Python) / litellm (SDK 3.0) |
+| Container Runtime | Docker with optional secure-container-runtime |
 
-```mermaid
-flowchart LR
-    A["1. Code"] --> B["2. Package"] --> C["3. Submit"] --> D["4. Compile"]
-```
-
-```mermaid
-flowchart LR
-    E["5. Execute"] --> F["6. Verify"] --> G["7. Score"]
-```
-
-### Step-by-Step
-
-1. **Write Agent Code**: Python code using `term_sdk`
-2. **Package**: Single file or ZIP archive with `agent.py` entry point
-3. **Sign & Submit**: 
-   - Sign with sr25519 keypair (miner hotkey)
-   - Message format: `submit_agent:{sha256_of_content}`
-   - Submit via Bridge API
-4. **Compilation**: 
-   - Server compiles to PyInstaller binary in isolated Docker
-   - Security: No network access, limited memory (2GB), limited CPU
-5. **Distribution**: Binary sent to 3 validators
-6. **Evaluation**: Each validator runs 10 tasks (30 total from checkpoint2 dataset)
-7. **Scoring**: Consensus across validators determines final score
-
----
-
-## SDK 2.0 Architecture
-
-SDK 2.0 uses an **agent-controlled execution model**:
-
-- Agent runs as HTTP server on port 8765
-- Agent controls its own execution loop
-- Commands executed via subprocess (`ctx.shell()`)
-- Agent signals completion with `ctx.done()`
-
-### HTTP Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Returns `{"status": "ok"}` when ready |
-| `/start` | POST | Receives instruction, starts execution |
-| `/status` | GET | Returns execution state and progress |
-
-### Execution Flow
-
-```mermaid
-flowchart LR
-    A["GET /health"] --> B["POST /start"] --> C["Poll /status"] --> D["completed"]
-```
-
----
-
-## Agent Structure
-
-### Agent Lifecycle
-
-```mermaid
-flowchart LR
-    A["setup()"] --> B["run(ctx)"] --> C["cleanup()"]
-```
-
-### Minimal Agent
-
-```python
-from term_sdk import Agent, AgentContext, run
-
-class MyAgent(Agent):
-    def run(self, ctx: AgentContext):
-        # Execute commands
-        result = ctx.shell("ls -la")
-        
-        # Check results
-        if result.has("file.txt"):
-            ctx.shell("cat file.txt")
-        
-        # Signal completion
-        ctx.done()
-
-if __name__ == "__main__":
-    run(MyAgent())
-```
-
-### Agent with LLM
-
-```python
-from term_sdk import Agent, AgentContext, LLM, run
-
-class LLMAgent(Agent):
-    def setup(self):
-        # Initialize LLM (uses platform proxy in evaluation)
-        self.llm = LLM(default_model="anthropic/claude-3.5-sonnet")
-    
-    def run(self, ctx: AgentContext):
-        # Get task instruction
-        ctx.log(f"Task: {ctx.instruction[:100]}...")
-        
-        # Explore environment
-        result = ctx.shell("ls -la")
-        
-        # Use LLM to decide action
-        response = self.llm.ask(
-            f"Task: {ctx.instruction}\n"
-            f"Files: {result.stdout[:2000]}\n"
-            "What command should I run?"
-        )
-        
-        # Execute LLM suggestion
-        ctx.shell(response.text)
-        ctx.done()
-    
-    def cleanup(self):
-        # Release resources
-        self.llm.close()
-
-if __name__ == "__main__":
-    run(LLMAgent())
-```
-
-### Agent Loop Pattern
-
-```python
-from term_sdk import Agent, AgentContext, LLM, run
-
-class LoopAgent(Agent):
-    def setup(self):
-        self.llm = LLM(default_model="anthropic/claude-3.5-sonnet")
-    
-    def run(self, ctx: AgentContext):
-        messages = [{"role": "user", "content": ctx.instruction}]
-        
-        while ctx.step < 100:  # Step limit
-            # Get LLM response
-            response = self.llm.chat(messages)
-            
-            # Parse command from response
-            cmd = self.parse_command(response.text)
-            if not cmd:
-                ctx.done()
-                return
-            
-            # Execute and track
-            result = ctx.shell(cmd)
-            messages.append({"role": "assistant", "content": response.text})
-            messages.append({"role": "user", "content": f"Output:\n{result.stdout[-3000:]}"})
-            
-            if self.is_task_complete(result):
-                ctx.done()
-                return
-        
-        ctx.done()  # Step limit reached
-    
-    def parse_command(self, text):
-        # Extract command from LLM response
-        if "```bash" in text:
-            return text.split("```bash")[1].split("```")[0].strip()
-        return None
-    
-    def is_task_complete(self, result):
-        return result.has("success", "complete", "done")
-    
-    def cleanup(self):
-        self.llm.close()
-
-if __name__ == "__main__":
-    run(LoopAgent())
-```
-
-### AgentContext API
-
-```python
-class AgentContext:
-    # Properties
-    instruction: str      # Task instruction
-    step: int            # Current step number (starts at 1)
-    history: List        # Command execution history
-    is_done: bool        # Whether task is marked done
-    elapsed_secs: float  # Time elapsed
-    cwd: str             # Current working directory
-    
-    # Methods
-    def shell(cmd: str, timeout: int = 60, cwd: str = None) -> ShellResult:
-        """Execute shell command"""
-    
-    def read(path: str) -> str:
-        """Read file contents"""
-    
-    def write(path: str, content: str) -> bool:
-        """Write file contents"""
-    
-    def log(msg: str) -> None:
-        """Log message to stderr"""
-    
-    def done() -> None:
-        """Signal task completion"""
-```
-
-### ShellResult API
-
-```python
-class ShellResult:
-    command: str      # Command that was executed
-    stdout: str       # Standard output
-    stderr: str       # Standard error
-    exit_code: int    # Exit code (0 = success)
-    timed_out: bool   # Whether command timed out
-    duration_ms: int  # Execution time in milliseconds
-    
-    @property
-    def output(self) -> str:
-        """Combined stdout + stderr"""
-    
-    @property
-    def ok(self) -> bool:
-        """True if exit_code == 0"""
-    
-    @property
-    def failed(self) -> bool:
-        """True if exit_code != 0"""
-    
-    def has(*patterns: str) -> bool:
-        """Check if output contains any pattern (case-insensitive)"""
-```
-
----
-
-## Task Structure
-
-Tasks follow the Terminal-Bench format:
-
-### Task Directory
-
-```
-task-001/
-├── task.yaml          # Task configuration
-├── Dockerfile         # Container image (optional)
-├── setup.sh          # Setup script (optional)
-└── tests/
-    └── test.sh       # Verification script
-```
-
-### task.yaml
-
-```yaml
-id: "task-001"
-name: "Create hello.txt"
-
-# Instruction (what agent sees)
-instruction: |
-  Create a file named hello.txt containing "Hello, World!"
-
-# Or terminal-bench format with multiple descriptions
-descriptions:
-  - key: "base"
-    description: "Create hello.txt with 'Hello, World!'"
-
-# Difficulty
-difficulty: easy  # easy, medium, hard
-
-# Timeouts
-timeout_secs: 180           # Agent timeout (default: 180s)
-test_timeout_secs: 30       # Test timeout (default: 30s)
-
-# Docker
-docker_image: "python:3.11"
-memory_limit: "2g"
-cpu_limit: 1.0
-network_mode: "bridge"      # none, bridge, host
-
-# Tags
-tags: ["file", "beginner"]
-```
-
-### Test Script (tests/test.sh)
-
-Test scripts verify task completion by writing to `/logs/verifier/reward.txt`:
+## Build & Test Commands
 
 ```bash
-#!/bin/bash
+# Build (debug)
+cargo build
 
-# Create output directory
-mkdir -p /logs/verifier
+# Build (release)
+cargo build --release
 
-# Check if task is complete
-if [ -f "hello.txt" ] && grep -q "Hello, World!" hello.txt; then
-    echo 1 > /logs/verifier/reward.txt  # PASS
-else
-    echo 0 > /logs/verifier/reward.txt  # FAIL
-fi
-```
+# Run tests (skip live/integration tests that need external services)
+cargo test --workspace -- --skip live --skip integration
 
-**Important**: 
-- Write `1` for pass, `0` for fail
-- Always write to `/logs/verifier/reward.txt`
-- Test script exit code is secondary to reward.txt content
+# Run tests with nextest (CI uses this)
+cargo nextest run --workspace -E 'not (test(/live/) | test(/integration/))'
 
----
+# Format code
+cargo fmt --all
 
-## LLM Integration
+# Format check (CI)
+cargo fmt --check
 
-### Platform Proxy Architecture
+# Lint
+cargo clippy --all-targets --workspace -- -W clippy::all \
+  -A clippy::too_many_arguments \
+  -A clippy::type_complexity \
+  -A clippy::large_enum_variant \
+  -A clippy::should_implement_trait
 
-During evaluation, all LLM requests go through the platform:
+# Run the CLI
+cargo run --bin term -- --help
 
-```mermaid
-flowchart LR
-    Agent["Agent"] --> Proxy["Proxy"] --> Platform["Platform"] --> LLM["LLM Provider"]
-```
+# Run the server
+cargo run --bin term-server -- --help
 
-### LLM Class
-
-```python
-from term_sdk import LLM, LLMError, CostLimitExceeded
-
-# Initialize
-llm = LLM(
-    provider="openrouter",      # openrouter, chutes, openai, anthropic, grok
-    default_model="anthropic/claude-3.5-sonnet",
-    temperature=0.3,
-    max_tokens=4096,
-)
-
-# Simple ask
-response = llm.ask("What is 2+2?")
-print(response.text)      # "4"
-print(response.tokens)    # Token count
-print(response.cost)      # Cost in USD
-
-# Chat with messages
-messages = [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Hello!"}
-]
-response = llm.chat(messages)
-
-# Streaming
-for chunk in llm.stream("Write a story"):
-    print(chunk, end="", flush=True)
-
-# Error handling
-try:
-    response = llm.ask("Question")
-except CostLimitExceeded as e:
-    print(f"Budget exhausted: ${e.used:.4f} / ${e.limit:.4f}")
-except LLMError as e:
-    print(f"Error: {e.code} - {e.message}")
-
-# Always close when done
-llm.close()
-```
-
-### Supported Providers & Models
-
-| Provider | Default Model | Notes |
-|----------|---------------|-------|
-| openrouter | anthropic/claude-3.5-sonnet | Multi-model gateway (recommended) |
-| chutes | deepseek-ai/DeepSeek-V3-0324 | Fast inference |
-| openai | gpt-4o-mini | GPT models |
-| anthropic | claude-3-5-sonnet-20241022 | Claude models (direct) |
-| grok | grok-2-latest | xAI Grok |
-
-### Cost Tracking
-
-The platform tracks LLM costs per agent. When budget is exhausted:
-
-```python
-from term_sdk import CostLimitExceeded
-
-try:
-    response = llm.ask("Question")
-except CostLimitExceeded as e:
-    # Agent should stop gracefully
-    ctx.log(f"Cost limit reached: ${e.used:.4f}")
-    ctx.done()
-```
-
----
-
-## Evaluation Flow
-
-### Detailed Execution Sequence
-
-```mermaid
-flowchart LR
-    A["1. Assignment"] --> B["2. Container"] --> C["3. Execute"] --> D["4. Verify"] --> E["5. Log"]
-```
-
-### Timeout Handling
-
-| Timeout | Default | Description |
-|---------|---------|-------------|
-| Agent startup | 15s | Time to reach /health OK |
-| Agent execution | 180s | Total time for task |
-| Test execution | 30s | Time for verification |
-| Global | ~420s | Full execution with retry |
-
-On timeout, the agent is retried once before marking as failed.
-
-### Concurrency
-
-| Setting | Value | Description |
-|---------|-------|-------------|
-| Tasks per evaluation | 30 | Total tasks from checkpoint2 dataset |
-| Validators | 3 | Tasks split across validators |
-| Tasks per validator | 10 | Each validator gets 10 tasks |
-| Concurrent tasks per agent | 2 | Parallel task execution |
-| Max steps (validator) | 500 | Maximum shell commands allowed |
-| Max steps (local bench) | 200 | Default for local testing |
-
----
-
-## Scoring & Consensus
-
-### Per-Validator Scoring
-
-```
-Score = tasks_passed / tasks_total
-```
-
-Each validator evaluates 10 tasks from the checkpoint2 dataset (30 total).
-
-### Consensus Mechanism
-
-1. Each validator submits results independently
-2. Platform aggregates scores
-3. Final score = weighted average across validators
-4. Outlier detection prevents gaming
-
-### Task Assignment
-
-- 30 total tasks in checkpoint2 dataset
-- Distributed across 3 validators (10 each)
-- Task IDs fetched from `/api/v1/validator/get_assigned_tasks`
-- No fallback: if no tasks assigned, evaluation skipped
-
----
-
-## Environment Variables
-
-### During Evaluation
-
-| Variable | Description |
-|----------|-------------|
-| `AGENT_PORT` | HTTP server port (8765) |
-| `LLM_PROXY_URL` | Validator's LLM proxy endpoint |
-| `TERM_AGENT_HASH` | Unique agent identifier |
-| `TERM_TASK_ID` | Current task ID |
-| `EVALUATION_MODE` | Set to "true" during evaluation |
-| `FORCE_HTTP_SERVER` | Forces HTTP mode (always "1") |
-| `PYTHONUNBUFFERED` | Ensures real-time logging |
-
-### For Local Development
-
-| Variable | Description |
-|----------|-------------|
-| `OPENROUTER_API_KEY` | OpenRouter API key |
-| `CHUTES_API_KEY` | Chutes API key |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `LLM_API_KEY` | Override any provider key |
-| `LLM_TIMEOUT` | Request timeout (default: 300s) |
-
----
-
-## Best Practices
-
-### Code Quality
-
-1. **Handle errors gracefully**
-   ```python
-   try:
-       result = ctx.shell("risky-command")
-   except Exception as e:
-       ctx.log(f"Error: {e}")
-       # Continue or fallback
-   ```
-
-2. **Limit step count**
-   ```python
-   while ctx.step < 100:
-       # Prevent infinite loops
-   ```
-
-3. **Log progress**
-   ```python
-   ctx.log(f"Step {ctx.step}: Executing {cmd}")
-   ```
-
-### LLM Usage
-
-1. **Truncate long outputs**
-   ```python
-   output = result.stdout[-3000:]  # Last 3000 chars
-   ```
-
-2. **Use structured prompts**
-   ```python
-   prompt = f"""
-   Task: {ctx.instruction}
-   
-   Current files:
-   {file_list}
-   
-   Previous command output:
-   {last_output}
-   
-   What command should I run next? Reply with just the command.
-   """
-   ```
-
-3. **Handle cost limits**
-   ```python
-   try:
-       response = self.llm.ask(prompt)
-   except CostLimitExceeded:
-       ctx.log("Budget exhausted, stopping")
-       ctx.done()
-       return
-   ```
-
-### Performance
-
-1. **Minimize LLM calls** - Each call costs time and money
-2. **Use efficient commands** - `grep` instead of reading full files
-3. **Check results before continuing** - Avoid wasted steps
-4. **Call ctx.done() as soon as task is complete**
-
-### Security
-
-1. **No hardcoded secrets** - Use environment variables
-2. **No external network calls** - Network may be restricted
-3. **No file system escapes** - Stay in allowed directories
-4. **Validate LLM output** - Don't blindly execute suggestions
-
----
-
-## Quick Reference
-
-### Submission Command
-
-```bash
-# Interactive wizard (recommended)
-term
-
-# Or direct submission
-term wizard
-```
-
-### Local Testing
-
-```bash
-# Download dataset first
-term bench download terminal-bench@2.0
-
-# Test on a single task
-term bench agent -a ./my_agent.py \
-    -t ~/.cache/term-challenge/datasets/terminal-bench@2.0/hello-world
-
-# Run on full dataset
-term bench agent -a ./my_agent.py \
-    -d terminal-bench@2.0 \
-    --concurrent 4
-
-# For folder-based agents, specify the entry point
-term bench agent -a ./my_agent_folder \
-    --entry-point src/main.py \
-    -d terminal-bench@2.0
-
-# Note: API key must be in your agent code (hardcoded, .env, or PRIVATE_* env vars)
-# Note: The --max-steps flag is deprecated in SDK 2.0+. Agents manage their own limits.
-```
-
-### SDK Installation
-
-```bash
-# From GitHub (recommended)
+# Install Python SDK (for agent development)
+pip install -e sdk/python  # if sdk/python exists
 pip install git+https://github.com/PlatformNetwork/term-challenge.git#subdirectory=sdk/python
-
-# Or for development
-git clone https://github.com/PlatformNetwork/term-challenge.git
-pip install -e term-challenge/sdk/python
 ```
 
-### Minimal Template
+## Git Hooks
 
-```python
-from term_sdk import Agent, AgentContext, run
+Git hooks live in `.githooks/` and are activated with `git config core.hooksPath .githooks`.
 
-class MyAgent(Agent):
-    def run(self, ctx: AgentContext):
-        ctx.shell("echo 'Hello'")
-        ctx.done()
+| Hook | What it does |
+|------|-------------|
+| `pre-commit` | Runs `cargo fmt --all`, stages formatted files. Skippable with `SKIP_GIT_HOOKS=1`. |
+| `pre-push` | Full quality gate: format check → `cargo check` → `cargo clippy` → `cargo test` (skipping live/integration). Skippable with `SKIP_GIT_HOOKS=1` or `git push --no-verify`. |
 
-if __name__ == "__main__":
-    run(MyAgent())
-```
+To install hooks: `bash .githooks/install.sh` or `git config core.hooksPath .githooks`.
 
----
+## CRITICAL RULES
 
-## Bug Bounty Rewards
+1. **Never hardcode secrets or API keys.** All credentials (hotkeys, API keys, database URLs) must come from environment variables. The codebase uses `clap(env = "...")` for CLI args and `std::env::var()` for runtime config. Agents that hardcode secrets will be rejected by the validation pipeline (`src/validation/`).
 
-We offer **TAO rewards** for valid bug reports on this repository!
+2. **All async code must use Tokio.** The entire crate uses `tokio` with full features. Do NOT introduce alternative async runtimes (async-std, smol). All `#[tokio::main]` and `#[tokio::test]` annotations must remain consistent.
 
-### How It Works
+3. **Docker containers are the security boundary.** Agents run in sandboxed Docker containers with memory limits (2GB), CPU limits, and optional network restrictions. Never bypass container isolation. All container operations go through `src/container/backend.rs` (which abstracts between Docker and secure-container-runtime).
 
-1. Find a bug in the term-challenge codebase
-2. Open a GitHub issue with clear reproduction steps
-3. If the issue is valid and resolved, you earn TAO rewards
+4. **Cryptographic signatures use sr25519 (Substrate/Bittensor standard).** Authentication uses `sp-core` and `schnorrkel` for sr25519 signing/verification. SS58 encoding uses prefix 42. Do NOT switch to ed25519 or secp256k1 — the Bittensor chain requires sr25519.
 
-### Reward Calculation
+5. **PostgreSQL migrations are append-only.** The `migrations/` directory contains numbered SQL files (001–037). Never modify existing migrations. Always add new migrations with the next sequential number. The migration runner in `src/storage/migrations.rs` applies them in order.
 
-Rewards are distributed based on:
-- **Severity**: Critical bugs earn more than minor issues
-- **Quality**: Clear, well-documented reports are prioritized
-- **Resolution**: Only resolved issues count toward rewards
+6. **Clippy must pass with the project's specific allow-list.** CI runs clippy with `-W clippy::all -D warnings` plus these allowed lints: `too_many_arguments`, `type_complexity`, `large_enum_variant`, `should_implement_trait`. Do not add new global allows without justification.
 
-### Eligibility
+7. **Error handling uses `anyhow` for binaries and `thiserror` for library code.** Binary crates (`bin/server/`, `bin/term/`) return `anyhow::Result`. Library modules in `src/` define typed errors with `thiserror::Error` derive. Do not use `unwrap()` or `expect()` in library code paths that handle user input or network data.
 
-To receive rewards, you must:
-1. Register your GitHub account with your miner hotkey via the [Bounty Challenge API](https://chain.platform.network/api/v1/bridge/bounty-challenge)
-2. Submit issues to this repository
-3. Have your issues verified and resolved by maintainers
+8. **Conventional commits are required.** The project uses `release-please` for automated releases. All commits must follow the conventional commits format (`feat:`, `fix:`, `chore:`, `docs:`, `perf:`, `refactor:`, `ci:`, `test:`). Breaking changes use `feat!:` or `fix!:` or a `BREAKING CHANGE:` footer.
 
-See the [Bounty Challenge](https://github.com/PlatformNetwork/bounty-challenge) for full details on the reward system.
+## DO / DO NOT
 
----
+### DO
 
-## Support
+- Use `tracing::info!`, `tracing::debug!`, `tracing::error!` for logging (not `println!` in library code)
+- Add tests for new functionality; run `cargo test --workspace -- --skip live --skip integration` before pushing
+- Use `serde` derive macros for all serializable types
+- Follow the existing module structure: add new modules under the appropriate thematic directory in `src/`
+- Use `clap` derive macros for any new CLI arguments
+- Handle Docker errors gracefully — validators must continue operating if a single container fails
+- Use `parking_lot::Mutex`/`RwLock` over `std::sync::Mutex` (the project already uses `parking_lot`)
+- Keep re-exports in `src/lib.rs` updated when adding public types
 
-- Documentation: This file
-- SDK Source: `sdk/python/term_sdk/`
-- Examples: `examples/baseagent/`
-- Issues: GitHub repository (with bounty rewards!)
+### DO NOT
+
+- Do NOT add new direct dependencies without checking if an existing dep already covers the use case
+- Do NOT use `tokio::spawn` without proper error handling — spawned tasks must log errors
+- Do NOT modify the agent protocol endpoints (`/health`, `/start`, `/status`) without updating validators AND the SDK
+- Do NOT use `std::thread` for concurrent work — use `tokio::spawn` or `tokio::task::spawn_blocking`
+- Do NOT store sensitive data in logs — the system handles hotkeys, API keys, and agent source code
+- Do NOT break the `term_sdk` Python API contract — miners depend on `AgentContext`, `ShellResult`, `LLM`
+- Do NOT change SS58 prefix (42) or signature scheme (sr25519) — these are Bittensor chain requirements
+- Do NOT add `#[allow(dead_code)]` broadly — fix unused code or remove it
