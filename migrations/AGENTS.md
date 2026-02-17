@@ -7,7 +7,7 @@ Sequential SQL migration files for the PostgreSQL database used in server mode. 
 ## Rules
 
 1. **Append-only** — never modify existing migration files
-2. **Sequential numbering** — next migration is `038_description.sql`
+2. **Sequential numbering** — next migration is `039_description.sql`
 3. **Idempotent** — use `IF NOT EXISTS`, `IF EXISTS` where possible
 4. **Each migration is a single transaction** — the runner wraps each file in a transaction
 
@@ -24,3 +24,4 @@ Sequential SQL migration files for the PostgreSQL database used in server mode. 
 | `llm_usage` | 008 | LLM API cost tracking per agent |
 | `plagiarism` | 033 | Plagiarism detection results |
 | `llm_review` | 026+ | LLM-based code review results |
+| `swe_forge_evaluations` | 038 | SWE-Forge evaluation results from term-executor workers |
