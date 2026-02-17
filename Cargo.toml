@@ -77,7 +77,7 @@ sentry = { version = "0.35", default-features = false, features = ["backtrace", 
 sentry-tracing = "0.35"
 
 # HTTP for agent communication and RPC
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 axum = { version = "0.7", features = ["json", "multipart"] }
 tokio-stream = "0.1"
 tower = "0.5"

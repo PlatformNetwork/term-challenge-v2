@@ -78,6 +78,9 @@ pub mod api;
 /// Synthetic dataset generation
 pub mod synthetic;
 
+/// SWE-Forge integration (term-executor communication)
+pub mod swe_forge;
+
 // ============================================================================
 // RE-EXPORTS FOR BACKWARDS COMPATIBILITY
 // ============================================================================
@@ -229,6 +232,13 @@ pub use client::websocket::validator::{ValidatorEvent, ValidatorWsClient};
 pub use synthetic::{
     GenerationConfig, GenerationResult, SchedulerConfig, SyntheticGenerator, SyntheticScheduler,
     SyntheticTask, TaskConverter,
+};
+
+// SWE-Forge re-exports
+pub use swe_forge::client::SweForgeClient;
+pub use swe_forge::types::{
+    BatchResult as SweForgeBatchResult, BatchStatus as SweForgeBatchStatus,
+    SubmitResponse as SweForgeSubmitResponse, SweForgeTaskResult, TaskStatus as SweForgeTaskStatus,
 };
 
 // ============================================================================
