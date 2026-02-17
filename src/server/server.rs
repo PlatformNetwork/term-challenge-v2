@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use sp_core::crypto::Ss58Codec;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -371,34 +372,161 @@ pub struct TaskResultResponse {
     pub error: Option<String>,
 }
 
-/// POST /evaluate - Evaluate agent on real Terminal-Bench tasks
+/// POST /evaluate - Evaluate agent on real Terminal-Bench tasks via SWE-Forge
 ///
-/// DEPRECATED: Direct Docker evaluation has been removed.
-/// Evaluation is now handled by SWE-Forge via Basilica.
+/// Delegates evaluation to term-executor workers running on Basilica miner nodes.
+/// Requires TERM_EXECUTOR_URL and TERM_EXECUTOR_API_KEY environment variables.
 pub async fn evaluate_agent(
-    State(_state): State<Arc<ChallengeServerState>>,
+    State(state): State<Arc<ChallengeServerState>>,
     Json(req): Json<EvaluateRequest>,
 ) -> Result<Json<EvaluateResponse>, (StatusCode, String)> {
     let start = std::time::Instant::now();
 
     let agent_hash_short = &req.agent_hash[..16.min(req.agent_hash.len())];
-    warn!(
-        "Direct Docker evaluation removed: agent={} — use SWE-Forge via Basilica",
-        agent_hash_short
+
+    if !is_valid_ss58_hotkey(&req.miner_hotkey) {
+        return Ok(Json(EvaluateResponse {
+            success: false,
+            error: Some("Invalid miner_hotkey: not a valid SS58 address".to_string()),
+            score: 0.0,
+            tasks_passed: 0,
+            tasks_total: 0,
+            tasks_failed: 0,
+            total_cost_usd: 0.0,
+            execution_time_ms: start.elapsed().as_millis() as i64,
+            task_results: None,
+            execution_log: None,
+        }));
+    }
+
+    let executor_url =
+        std::env::var("TERM_EXECUTOR_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let executor_api_key = std::env::var("TERM_EXECUTOR_API_KEY").unwrap_or_default();
+
+    let keypair = load_validator_keypair().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Validator keypair not configured: {}", e),
+        )
+    })?;
+
+    let client = crate::swe_forge::SweForgeClient::new(executor_api_key, keypair)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if let Err(e) = client.check_health(&executor_url).await {
+        warn!("term-executor health check failed: {}", e);
+        return Ok(Json(EvaluateResponse {
+            success: false,
+            error: Some(format!("term-executor not available: {}", e)),
+            score: 0.0,
+            tasks_passed: 0,
+            tasks_total: 0,
+            tasks_failed: 0,
+            total_cost_usd: 0.0,
+            execution_time_ms: start.elapsed().as_millis() as i64,
+            task_results: None,
+            execution_log: None,
+        }));
+    }
+
+    let archive_data = create_evaluation_archive(&req.source_code, &req.agent_hash)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let submit_result = client
+        .submit_batch(&executor_url, archive_data)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Submission failed: {}", e)))?;
+
+    info!(
+        "Submitted batch {} to term-executor for agent {}",
+        submit_result.batch_id, agent_hash_short
+    );
+
+    let batch_result = client
+        .poll_batch_completion(
+            &executor_url,
+            &submit_result.batch_id,
+            Duration::from_secs(5),
+            Duration::from_secs(1800),
+        )
+        .await
+        .map_err(|e| (StatusCode::GATEWAY_TIMEOUT, e.to_string()))?;
+
+    let score = batch_result.aggregate_reward;
+    let tasks_passed = batch_result.passed_tasks as u32;
+    let tasks_total = batch_result.total_tasks as u32;
+    let tasks_failed = batch_result.failed_tasks as u32;
+
+    let task_results: Vec<TaskResultResponse> = batch_result
+        .tasks
+        .iter()
+        .map(|t| TaskResultResponse {
+            task_id: t.task_id.clone(),
+            task_name: t.task_id.clone(),
+            passed: t.passed.unwrap_or(false),
+            score: t.reward,
+            execution_time_ms: t.duration_ms.unwrap_or(0) as i64,
+            steps: 0,
+            error: t.error.clone(),
+        })
+        .collect();
+
+    let execution_time_ms = start.elapsed().as_millis() as i64;
+
+    if let Some(pg) = &state.pg_storage {
+        let eval_record = crate::storage::pg::EvaluationRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            submission_id: req.submission_id.clone(),
+            agent_hash: req.agent_hash.clone(),
+            miner_hotkey: req.miner_hotkey.clone(),
+            score,
+            tasks_passed: tasks_passed as i32,
+            tasks_total: tasks_total as i32,
+            tasks_failed: tasks_failed as i32,
+            total_cost_usd: 0.0,
+            execution_time_ms: Some(execution_time_ms),
+            task_results: serde_json::to_value(&task_results).ok(),
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        if let Err(e) = pg.store_evaluation(&eval_record).await {
+            error!("Failed to store evaluation record: {}", e);
+        }
+    }
+
+    info!(
+        "Evaluation complete for agent {}: score={:.4}, passed={}/{}, time={}ms",
+        agent_hash_short, score, tasks_passed, tasks_total, execution_time_ms
     );
 
     Ok(Json(EvaluateResponse {
-        success: false,
-        error: Some("Direct Docker evaluation removed — use SWE-Forge via Basilica".to_string()),
-        score: 0.0,
-        tasks_passed: 0,
-        tasks_total: 0,
-        tasks_failed: 0,
+        success: true,
+        error: None,
+        score,
+        tasks_passed,
+        tasks_total,
+        tasks_failed,
         total_cost_usd: 0.0,
-        execution_time_ms: start.elapsed().as_millis() as i64,
-        task_results: None,
+        execution_time_ms,
+        task_results: Some(task_results),
         execution_log: None,
     }))
+}
+
+/// Create a tar.gz archive containing the agent source code for submission to term-executor
+fn create_evaluation_archive(source_code: &str, agent_hash: &str) -> anyhow::Result<Vec<u8>> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    {
+        let mut tar_builder = tar::Builder::new(&mut encoder);
+        let source_bytes = source_code.as_bytes();
+        let mut header = tar::Header::new_gnu();
+        header.set_path(format!("{}/agent.py", agent_hash))?;
+        header.set_size(source_bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar_builder.append(&header, source_bytes)?;
+        tar_builder.finish()?;
+    }
+    encoder.finish().map_err(Into::into)
 }
 
 /// Estimate cost per task step (LLM calls)

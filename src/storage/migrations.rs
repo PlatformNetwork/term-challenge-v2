@@ -289,6 +289,10 @@ pub const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         "037_llm_similarity_instructions",
         include_str!("../../migrations/037_llm_similarity_instructions.sql"),
     ),
+    (
+        "038_swe_forge_integration",
+        include_str!("../../migrations/038_swe_forge_integration.sql"),
+    ),
 ];
 
 /// Run embedded migrations (when migrations dir is not available)

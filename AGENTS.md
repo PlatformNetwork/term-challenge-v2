@@ -24,16 +24,15 @@ term-challenge/
 │   ├── evaluation/          # Eval pipeline: evaluator, orchestrator, progress tracking
 │   ├── validation/          # Code validation: Python whitelist, package checks, visibility
 │   ├── worker/              # Background workers: compile, queue, plagiarism, LLM review
-│   ├── container/           # Docker management: backend abstraction, compiler, executor
+│   ├── swe_forge/           # SWE-Forge integration: term-executor client, result types
 │   ├── task/                # Task types, registry, harness, challenge definitions
 │   ├── agent/               # Agent management: registry, submission, review
 │   ├── admin/               # Sudo/admin controls, subnet config, challenge config
 │   ├── server/              # Server startup and state (uses axum)
 │   ├── api/                 # REST API: routes, handlers, middleware, LLM proxy, errors
-│   ├── bench/               # Local benchmarking: agent runners, Docker env, verifier
 │   └── synthetic/           # Synthetic dataset generation
 ├── docker/                  # Dockerfiles for base image, compiler, agent runner
-├── migrations/              # PostgreSQL schema migrations (001–037)
+├── migrations/              # PostgreSQL schema migrations (001–038)
 ├── data/tasks/              # Built-in task definitions (hello-world, etc.)
 ├── checkpoints/             # Checkpoint JSON files for evaluation datasets
 ├── tests/                   # Rust integration tests + Python integration tests
@@ -47,14 +46,14 @@ term-challenge/
 1. **Miner** writes a Python agent and submits via `term wizard` CLI
 2. **Server** (`term-server`) receives the submission, validates code, compiles to PyInstaller binary
 3. **Server** assigns the agent to 3 **Validators** via WebSocket
-4. **Validators** download the binary, run it in Docker containers against 10 tasks each (30 total)
-5. **Validators** submit signed evaluation results back to the server
+4. **Validators** download the binary and dispatch evaluation batches to **term-executor** workers via **Basilica** for SWE-Forge evaluation
+5. **term-executor** workers run agents against SWE-Forge tasks and return results through Basilica
 6. **Server** aggregates scores, calculates weights, and submits to the Bittensor chain
 
 ### Two Operational Modes
 
 - **Server mode** (`term-server`): Requires `DATABASE_URL` (PostgreSQL). Handles submissions, compilation, validator assignment, scoring, weight setting.
-- **Validator mode**: No `DATABASE_URL`. Connects via WebSocket, downloads binaries, evaluates agents, submits results.
+- **Validator mode**: No `DATABASE_URL`. Connects via WebSocket, downloads binaries, dispatches SWE-Forge evaluations to term-executor workers via Basilica, submits results.
 
 ## Tech Stack
 
@@ -129,11 +128,11 @@ To install hooks: `bash .githooks/install.sh` or `git config core.hooksPath .git
 
 2. **All async code must use Tokio.** The entire crate uses `tokio` with full features. Do NOT introduce alternative async runtimes (async-std, smol). All `#[tokio::main]` and `#[tokio::test]` annotations must remain consistent.
 
-3. **Docker containers are the security boundary.** Agents run in sandboxed Docker containers with memory limits (2GB), CPU limits, and optional network restrictions. Never bypass container isolation. All container operations go through `src/container/backend.rs` (which abstracts between Docker and secure-container-runtime).
+3. **SWE-Forge evaluations run on term-executor workers.** Agents are evaluated by term-executor workers coordinated through Basilica. The `src/swe_forge/` module handles communication with these workers. Docker containers on executor nodes provide the security boundary with memory limits, CPU limits, and network restrictions.
 
 4. **Cryptographic signatures use sr25519 (Substrate/Bittensor standard).** Authentication uses `sp-core` and `schnorrkel` for sr25519 signing/verification. SS58 encoding uses prefix 42. Do NOT switch to ed25519 or secp256k1 — the Bittensor chain requires sr25519.
 
-5. **PostgreSQL migrations are append-only.** The `migrations/` directory contains numbered SQL files (001–037). Never modify existing migrations. Always add new migrations with the next sequential number. The migration runner in `src/storage/migrations.rs` applies them in order.
+5. **PostgreSQL migrations are append-only.** The `migrations/` directory contains numbered SQL files (001–038). Never modify existing migrations. Always add new migrations with the next sequential number. The migration runner in `src/storage/migrations.rs` applies them in order.
 
 6. **Clippy must pass with the project's specific allow-list.** CI runs clippy with `-W clippy::all -D warnings` plus these allowed lints: `too_many_arguments`, `type_complexity`, `large_enum_variant`, `should_implement_trait`. Do not add new global allows without justification.
 

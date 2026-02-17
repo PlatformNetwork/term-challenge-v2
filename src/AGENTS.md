@@ -19,13 +19,12 @@ This is the main library crate (`term-challenge`) containing all shared logic. B
 | `evaluation` | `src/evaluation/` | Eval pipeline: evaluator, orchestrator, progress tracking |
 | `validation` | `src/validation/` | Python code whitelist, package validation, code visibility |
 | `worker` | `src/worker/` | Background workers: compile, queue, plagiarism, LLM review, timeout monitor |
-| `container` | `src/container/` | Docker management: backend abstraction, compiler, executor |
+| `swe_forge` | `src/swe_forge/` | SWE-Forge integration: term-executor client, result types |
 | `task` | `src/task/` | Task types, registry, harness, challenge definitions |
 | `agent` | `src/agent/` | Agent registry, submission handling, review |
 | `admin` | `src/admin/` | Sudo controls, subnet config, challenge config |
 | `server` | `src/server/` | Server startup, state management |
 | `api` | `src/api/` | REST API: routes, handlers, middleware, LLM proxy, errors |
-| `bench` | `src/bench/` | Local benchmarking: agent runners, Docker env, verifier, results |
 | `synthetic` | `src/synthetic/` | Synthetic task generation via LLM, scheduling |
 
 ## Conventions
