@@ -221,7 +221,6 @@ fn handle_leaderboard() -> Vec<u8> {
 
 fn handle_stats() -> Vec<u8> {
     let total_submissions = host_consensus_get_submission_count() as u64;
-    let epoch = host_consensus_get_epoch();
     let active_miners = host_storage_get(b"active_miner_count")
         .ok()
         .and_then(|d| {
@@ -252,7 +251,6 @@ fn handle_stats() -> Vec<u8> {
         active_miners,
         validator_count,
     };
-    let _ = epoch;
     bincode::serialize(&stats).unwrap_or_default()
 }
 

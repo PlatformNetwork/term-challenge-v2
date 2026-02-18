@@ -326,4 +326,6 @@ pub struct WasmRouteRequest {
     pub method: String,
     pub path: String,
     pub body: Vec<u8>,
+    #[serde(default)]
+    pub auth_hotkey: Option<String>,
 }

@@ -54,7 +54,7 @@ pub fn check_dataset_consensus() -> Option<Vec<u32>> {
     let mut counts: Vec<(Vec<u32>, usize)> = Vec::new();
     for (_, indices) in &proposals {
         let mut sorted = indices.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         if let Some(entry) = counts.iter_mut().find(|(k, _)| *k == sorted) {
             entry.1 += 1;
         } else {

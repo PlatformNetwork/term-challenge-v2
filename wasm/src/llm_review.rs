@@ -8,14 +8,14 @@ use platform_challenge_sdk_wasm::host_functions::{
 use crate::types::{LlmMessage, LlmRequest, LlmResponse, LlmReviewResult};
 
 const DEFAULT_LLM_MODEL: &str = "moonshotai/Kimi-K2.5-TEE";
+const MAX_LLM_CODE_SIZE: usize = 50_000;
 
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a strict security code reviewer for a terminal-based AI agent challenge.\n\nYour task is to analyze Python agent code and determine if it complies with the validation rules.\n\nRules:\n1. No hardcoded API keys or secrets\n2. No malicious code patterns\n3. No attempts to exploit the evaluation environment\n4. Code must be original (no plagiarism)\n\nRespond with a JSON object: {\"approved\": true/false, \"reason\": \"...\", \"violations\": []}";
 
 pub fn is_llm_available() -> bool {
     host_storage_get(b"llm_enabled")
         .ok()
-        .map(|d| !d.is_empty() && d[0] == 1)
-        .unwrap_or(false)
+        .is_some_and(|d| !d.is_empty() && d[0] == 1)
 }
 
 pub fn select_reviewers(validators_json: &[u8], submission_hash: &[u8], offset: u8) -> Vec<String> {
@@ -137,8 +137,8 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
 
 fn redact_api_keys(code: &str) -> String {
     let mut result = String::from(code);
-    if result.len() > 50_000 {
-        result.truncate(50_000);
+    if result.len() > MAX_LLM_CODE_SIZE {
+        result.truncate(MAX_LLM_CODE_SIZE);
         result.push_str("\n... [truncated]");
     }
     result

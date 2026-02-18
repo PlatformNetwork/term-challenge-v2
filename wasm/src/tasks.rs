@@ -5,6 +5,7 @@ use crate::types::{DatasetSelection, TaskDefinition};
 
 const ACTIVE_DATASET_KEY: &[u8] = b"active_dataset";
 const DATASET_HISTORY_KEY: &[u8] = b"dataset_history";
+const MAX_DATASET_HISTORY: usize = 100;
 
 pub fn get_active_dataset() -> Option<Vec<TaskDefinition>> {
     let data = host_storage_get(ACTIVE_DATASET_KEY).ok()?;
@@ -40,8 +41,8 @@ fn append_dataset_history(selection: &DatasetSelection) -> bool {
 
     history.push(selection.clone());
 
-    if history.len() > 100 {
-        history.drain(0..history.len() - 100);
+    if history.len() > MAX_DATASET_HISTORY {
+        history.drain(0..history.len() - MAX_DATASET_HISTORY);
     }
 
     let data = match bincode::serialize(&history) {

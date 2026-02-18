@@ -63,8 +63,11 @@ pub fn truncate_output(output: &str, max_len: usize) -> String {
     if output.len() <= max_len {
         return String::from(output);
     }
-    let truncated = &output[..max_len];
-    String::from(truncated)
+    let mut end = max_len;
+    while end > 0 && !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    String::from(&output[..end])
 }
 
 pub fn store_evaluation_status(miner_hotkey: &str, epoch: u64, status: EvaluationStatus) -> bool {
