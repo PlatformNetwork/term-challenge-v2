@@ -24,8 +24,17 @@ use crate::types::{
 const MAX_SUBMISSION_SIZE: u64 = 64 * 1024 * 1024;
 const MAX_PARAMS_SIZE: u64 = 4 * 1024 * 1024;
 const MAX_LLM_RESPONSE_SIZE: u64 = 1024 * 1024;
+const MAX_CONFIG_SIZE: u64 = 4 * 1024 * 1024;
 const MAX_TASKS: usize = 256;
 const EPOCH_RATE_LIMIT: u64 = 3;
+
+const MAX_HOTKEY_LEN: usize = 256;
+const MAX_HASH_LEN: usize = 256;
+const MAX_URL_LEN: usize = 2048;
+const MAX_TASK_ID_LEN: usize = 512;
+const MAX_OUTPUT_LEN: usize = 10 * 1024 * 1024;
+const MAX_INSTANCE_LEN: usize = 512;
+const EXPECTED_TOKEN_HASH_LEN: usize = 32;
 
 fn bincode_options_submission() -> impl Options {
     bincode::DefaultOptions::new()
@@ -48,11 +57,48 @@ fn bincode_options_llm() -> impl Options {
         .allow_trailing_bytes()
 }
 
+fn bincode_options_config() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_limit(MAX_CONFIG_SIZE)
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+}
+
 fn validate_task_result(result: &TaskResult) -> bool {
-    if result.task_id.is_empty() {
+    if result.task_id.is_empty() || result.task_id.len() > MAX_TASK_ID_LEN {
         return false;
     }
     if !result.score.is_finite() || !(0.0..=1.0).contains(&result.score) {
+        return false;
+    }
+    if result.test_output.len() > MAX_OUTPUT_LEN || result.agent_output.len() > MAX_OUTPUT_LEN {
+        return false;
+    }
+    true
+}
+
+fn validate_submission_fields(submission: &Submission) -> bool {
+    if submission.agent_hash.is_empty() || submission.agent_hash.len() > MAX_HASH_LEN {
+        return false;
+    }
+    if submission.miner_hotkey.is_empty() || submission.miner_hotkey.len() > MAX_HOTKEY_LEN {
+        return false;
+    }
+    if submission.signature.is_empty() {
+        return false;
+    }
+    if submission.package_zip.is_empty() {
+        return false;
+    }
+    if submission.basilica_instance.is_empty()
+        || submission.basilica_instance.len() > MAX_INSTANCE_LEN
+    {
+        return false;
+    }
+    if submission.executor_url.is_empty() || submission.executor_url.len() > MAX_URL_LEN {
+        return false;
+    }
+    if submission.executor_token_hash.len() != EXPECTED_TOKEN_HASH_LEN {
         return false;
     }
     true
@@ -112,11 +158,11 @@ impl TermChallengeWasm {
             Err(_) => return None,
         };
 
-        let judge_resp: LlmJudgeResponse =
-            match bincode_options_llm().deserialize(&response_bytes) {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
+        let judge_resp: LlmJudgeResponse = match bincode_options_llm().deserialize(&response_bytes)
+        {
+            Ok(r) => r,
+            Err(_) => return None,
+        };
 
         if !judge_resp.score.is_finite() {
             return None;
@@ -146,6 +192,10 @@ impl Challenge for TermChallengeWasm {
             Ok(p) => p,
             Err(_) => return EvaluationOutput::failure("failed to deserialize challenge params"),
         };
+
+        if !validate_submission_fields(&submission) {
+            return EvaluationOutput::failure("submission contains invalid or oversized fields");
+        }
 
         if submission.task_results.is_empty() {
             return EvaluationOutput::failure("submission contains no task results");
@@ -188,7 +238,10 @@ impl Challenge for TermChallengeWasm {
         let score = (weight * 10_000.0) as i64;
         let message = format_summary(&aggregate);
 
-        set_last_submission_epoch(&submission.miner_hotkey, submission.epoch);
+        let current_epoch = host_consensus_get_epoch();
+        if current_epoch >= 0 {
+            set_last_submission_epoch(&submission.miner_hotkey, current_epoch as u64);
+        }
 
         EvaluationOutput::success(score, &message)
     }
@@ -205,22 +258,7 @@ impl Challenge for TermChallengeWasm {
             Err(_) => return false,
         };
 
-        if submission.agent_hash.is_empty() || submission.miner_hotkey.is_empty() {
-            return false;
-        }
-
-        if submission.signature.is_empty() {
-            return false;
-        }
-
-        if submission.package_zip.is_empty() {
-            return false;
-        }
-
-        if submission.basilica_instance.is_empty()
-            || submission.executor_url.is_empty()
-            || submission.executor_token.is_empty()
-        {
+        if !validate_submission_fields(&submission) {
             return false;
         }
 
@@ -264,7 +302,7 @@ impl Challenge for TermChallengeWasm {
     }
 
     fn configure(&self, config: &[u8]) {
-        if let Ok(selection) = bincode::deserialize::<DatasetSelection>(config) {
+        if let Ok(selection) = bincode_options_config().deserialize::<DatasetSelection>(config) {
             tasks::store_dataset(&selection);
         }
     }

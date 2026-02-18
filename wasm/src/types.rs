@@ -47,7 +47,7 @@ pub struct Submission {
     pub package_zip: Vec<u8>,
     pub basilica_instance: String,
     pub executor_url: String,
-    pub executor_token: String,
+    pub executor_token_hash: Vec<u8>,
     pub task_results: Vec<TaskResult>,
 }
 

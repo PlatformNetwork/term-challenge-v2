@@ -12,6 +12,39 @@ const TOTAL_SWE_BENCH_TASKS: usize = 2294;
 const TASKS_TO_SELECT: usize = 100;
 const CONSENSUS_DATASET_SIZE: usize = 50;
 
+fn fnv1a_mix(data: &[u8]) -> [u8; 32] {
+    let mut h0: u64 = 0xcbf29ce484222325;
+    let mut h1: u64 = 0x100000001b3_u64.wrapping_mul(0xcbf29ce484222325);
+    let mut h2: u64 = 0x6c62272e07bb0142;
+    let mut h3: u64 = 0x62b821756295c58d;
+
+    for &b in data {
+        h0 ^= b as u64;
+        h0 = h0.wrapping_mul(0x100000001b3);
+        h1 ^= b as u64;
+        h1 = h1.wrapping_mul(0x100000001b3).wrapping_add(h0);
+        h2 ^= b as u64;
+        h2 = h2.wrapping_mul(0x100000001b3).wrapping_add(h1);
+        h3 ^= b as u64;
+        h3 = h3.wrapping_mul(0x100000001b3).wrapping_add(h2);
+    }
+
+    let mut out = [0u8; 32];
+    out[..8].copy_from_slice(&h0.to_le_bytes());
+    out[8..16].copy_from_slice(&h1.to_le_bytes());
+    out[16..24].copy_from_slice(&h2.to_le_bytes());
+    out[24..32].copy_from_slice(&h3.to_le_bytes());
+    out
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        let _ = write!(s, "{:02x}", b);
+    }
+    s
+}
+
 pub fn select_random_task_indices() -> Vec<usize> {
     let mut seed = [0u8; 32];
     if host_random_seed(&mut seed).is_err() {
@@ -88,14 +121,20 @@ pub fn build_consensus_dataset(
 pub fn create_dataset_selection(tasks: Vec<TaskDefinition>) -> DatasetSelection {
     let epoch = host_consensus_get_epoch();
 
-    let mut hash_input = String::new();
+    let mut hash_input = Vec::new();
     for task in &tasks {
-        let _ = write!(hash_input, "{}:{};", task.id, task.name);
+        hash_input.extend_from_slice(task.id.as_bytes());
+        hash_input.push(b':');
+        hash_input.extend_from_slice(task.name.as_bytes());
+        hash_input.push(b';');
     }
+
+    let hash_bytes = fnv1a_mix(&hash_input);
+    let dataset_hash = bytes_to_hex(&hash_bytes);
 
     DatasetSelection {
         tasks,
         selected_at_epoch: if epoch >= 0 { epoch as u64 } else { 0 },
-        dataset_hash: hash_input,
+        dataset_hash,
     }
 }
