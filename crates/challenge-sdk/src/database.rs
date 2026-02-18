@@ -165,7 +165,7 @@ impl ChallengeDatabase {
         for result in self.get_all_results()? {
             let dominated = latest
                 .get(&result.agent_hash)
-                .map_or(true, |existing| existing.timestamp < result.timestamp);
+                .is_none_or(|existing| existing.timestamp < result.timestamp);
             if dominated {
                 latest.insert(result.agent_hash.clone(), result);
             }
