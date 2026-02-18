@@ -3,10 +3,14 @@
 extern crate alloc;
 
 mod agent_storage;
+mod ast_validation;
 mod dataset;
+mod llm_review;
 mod routes;
 mod scoring;
+mod submission;
 mod tasks;
+mod timeout_handler;
 mod types;
 
 use alloc::string::String;
@@ -19,13 +23,14 @@ use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput};
 
 use crate::scoring::{calculate_aggregate, format_summary, to_weight};
 use crate::types::{
-    AgentLogEntry, AgentLogs, ChallengeParams, DatasetSelection, LlmJudgeRequest, LlmJudgeResponse,
-    Submission, TaskResult,
+    AgentLogEntry, AgentLogs, ChallengeParams, DatasetSelection, EvaluationStatus, LlmJudgeRequest,
+    LlmJudgeResponse, Submission, TaskResult, WasmRouteRequest,
 };
 
 const MAX_SUBMISSION_SIZE: u64 = 64 * 1024 * 1024;
 const MAX_PARAMS_SIZE: u64 = 4 * 1024 * 1024;
 const MAX_LLM_RESPONSE_SIZE: u64 = 1024 * 1024;
+const MAX_ROUTE_REQUEST_SIZE: u64 = 1024 * 1024;
 const MAX_TASKS: usize = 256;
 const EPOCH_RATE_LIMIT: u64 = 3;
 
@@ -46,6 +51,13 @@ fn bincode_options_params() -> impl Options {
 fn bincode_options_llm() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_LLM_RESPONSE_SIZE)
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+}
+
+fn bincode_options_route_request() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_limit(MAX_ROUTE_REQUEST_SIZE)
         .with_fixint_encoding()
         .allow_trailing_bytes()
 }
@@ -80,6 +92,20 @@ fn get_last_submission_epoch(miner_hotkey: &str) -> Option<u64> {
 fn set_last_submission_epoch(miner_hotkey: &str, epoch: u64) {
     let key = last_submission_key(miner_hotkey);
     let _ = host_storage_set(&key, &epoch.to_le_bytes());
+}
+
+fn store_score(hotkey: &str, score: f64) {
+    let mut key = Vec::from(b"score:" as &[u8]);
+    key.extend_from_slice(hotkey.as_bytes());
+    let _ = host_storage_set(&key, &score.to_le_bytes());
+}
+
+fn store_submission_record(hotkey: &str, epoch: u64, agent_hash: &str) {
+    let mut key = Vec::from(b"submission:" as &[u8]);
+    key.extend_from_slice(hotkey.as_bytes());
+    key.push(b':');
+    key.extend_from_slice(&epoch.to_le_bytes());
+    let _ = host_storage_set(&key, agent_hash.as_bytes());
 }
 
 pub struct TermChallengeWasm;
@@ -126,6 +152,20 @@ impl TermChallengeWasm {
 
         Some(judge_resp.score.clamp(0.0, 1.0))
     }
+
+    pub fn routes(&self) -> Vec<u8> {
+        let defs = routes::get_route_definitions();
+        bincode::serialize(&defs).unwrap_or_default()
+    }
+
+    pub fn handle_route(&self, request_data: &[u8]) -> Vec<u8> {
+        let request: WasmRouteRequest =
+            match bincode_options_route_request().deserialize(request_data) {
+                Ok(r) => r,
+                Err(_) => return Vec::new(),
+            };
+        routes::handle_route_request(&request)
+    }
 }
 
 impl Challenge for TermChallengeWasm {
@@ -138,7 +178,7 @@ impl Challenge for TermChallengeWasm {
     }
 
     fn evaluate(&self, input: EvaluationInput) -> EvaluationOutput {
-        let submission: Submission =
+        let submission_data: Submission =
             match bincode_options_submission().deserialize(&input.agent_data) {
                 Ok(s) => s,
                 Err(_) => return EvaluationOutput::failure("failed to deserialize submission"),
@@ -149,19 +189,19 @@ impl Challenge for TermChallengeWasm {
             Err(_) => return EvaluationOutput::failure("failed to deserialize challenge params"),
         };
 
-        if submission.task_results.is_empty() {
+        if submission_data.task_results.is_empty() {
             return EvaluationOutput::failure("submission contains no task results");
         }
 
-        if submission.task_results.len() > MAX_TASKS {
+        if submission_data.task_results.len() > MAX_TASKS {
             return EvaluationOutput::failure("submission exceeds maximum task count");
         }
 
-        if submission.task_results.len() != params.tasks.len() {
+        if submission_data.task_results.len() != params.tasks.len() {
             return EvaluationOutput::failure("task result count does not match task definitions");
         }
 
-        for result in &submission.task_results {
+        for result in &submission_data.task_results {
             if !validate_task_result(result) {
                 return EvaluationOutput::failure(
                     "invalid task result: bad score or empty task_id",
@@ -169,11 +209,59 @@ impl Challenge for TermChallengeWasm {
             }
         }
 
-        let miner_hotkey = submission.miner_hotkey;
-        let epoch = submission.epoch;
-        let agent_hash = submission.agent_hash;
-        let package_zip = submission.package_zip;
-        let mut results: Vec<TaskResult> = submission.task_results;
+        let miner_hotkey = submission_data.miner_hotkey;
+        let epoch = submission_data.epoch;
+        let agent_hash = submission_data.agent_hash;
+        let package_zip = submission_data.package_zip;
+        let mut results: Vec<TaskResult> = submission_data.task_results;
+
+        let _ =
+            agent_storage::store_evaluation_status(&miner_hotkey, epoch, EvaluationStatus::Pending);
+
+        let _ = agent_storage::store_evaluation_status(
+            &miner_hotkey,
+            epoch,
+            EvaluationStatus::AstReview,
+        );
+        let whitelist_config = ast_validation::get_whitelist_config();
+        let code_str = core::str::from_utf8(&package_zip).unwrap_or("");
+        let ast_result = ast_validation::validate_python_code(code_str, &whitelist_config);
+        let _ = ast_validation::store_ast_result(&agent_hash, &ast_result);
+        if !ast_result.passed {
+            let _ = agent_storage::store_evaluation_status(
+                &miner_hotkey,
+                epoch,
+                EvaluationStatus::Failed,
+            );
+            return EvaluationOutput::failure("AST validation failed");
+        }
+
+        let _ = agent_storage::store_evaluation_status(
+            &miner_hotkey,
+            epoch,
+            EvaluationStatus::LlmReview,
+        );
+        if let Some(ref url) = params.llm_judge_url {
+            if let Some(review_result) = llm_review::run_llm_review(code_str, url) {
+                let _ = llm_review::store_review_result(&agent_hash, &review_result);
+                if !review_result.approved {
+                    let _ = agent_storage::store_evaluation_status(
+                        &miner_hotkey,
+                        epoch,
+                        EvaluationStatus::Failed,
+                    );
+                    return EvaluationOutput::failure("LLM review rejected submission");
+                }
+            }
+        }
+
+        let _ = agent_storage::store_evaluation_status(
+            &miner_hotkey,
+            epoch,
+            EvaluationStatus::Evaluating,
+        );
+
+        let _ = submission::submit_versioned(&miner_hotkey, &miner_hotkey, &agent_hash, epoch);
 
         if let Some(ref url) = params.llm_judge_url {
             for (result, task) in results.iter_mut().zip(params.tasks.iter()) {
@@ -191,11 +279,23 @@ impl Challenge for TermChallengeWasm {
 
         let aggregate = calculate_aggregate(&params.tasks, &results);
         let weight = to_weight(&aggregate);
-        let score = (weight * 10_000.0) as i64;
+
+        let final_weight = if let Some(ref decay_params) = params.decay_params {
+            scoring::apply_epoch_decay(weight, decay_params)
+        } else {
+            weight
+        };
+
+        let score = (final_weight * 10_000.0) as i64;
         let message = format_summary(&aggregate);
 
         let _ = agent_storage::store_agent_code(&miner_hotkey, epoch, &package_zip);
         let _ = agent_storage::store_agent_hash(&miner_hotkey, epoch, &agent_hash);
+
+        let _ = scoring::update_top_agent_state(&agent_hash, final_weight, epoch);
+
+        store_score(&miner_hotkey, final_weight);
+        store_submission_record(&miner_hotkey, epoch, &agent_hash);
 
         let mut entries = Vec::with_capacity(results.len());
         let mut total_size_bytes: u64 = 0;
@@ -226,11 +326,17 @@ impl Challenge for TermChallengeWasm {
 
         set_last_submission_epoch(&miner_hotkey, epoch);
 
+        let _ = agent_storage::store_evaluation_status(
+            &miner_hotkey,
+            epoch,
+            EvaluationStatus::Completed,
+        );
+
         EvaluationOutput::success(score, &message)
     }
 
     fn validate(&self, input: EvaluationInput) -> bool {
-        let submission: Submission =
+        let submission_data: Submission =
             match bincode_options_submission().deserialize(&input.agent_data) {
                 Ok(s) => s,
                 Err(_) => return false,
@@ -241,32 +347,32 @@ impl Challenge for TermChallengeWasm {
             Err(_) => return false,
         };
 
-        if submission.agent_hash.is_empty() || submission.miner_hotkey.is_empty() {
+        if submission_data.agent_hash.is_empty() || submission_data.miner_hotkey.is_empty() {
             return false;
         }
 
-        if submission.signature.is_empty() {
+        if submission_data.signature.is_empty() {
             return false;
         }
 
-        if submission.package_zip.is_empty() {
+        if submission_data.package_zip.is_empty() {
             return false;
         }
 
-        if submission.package_zip.len() > 1_048_576 {
+        if submission_data.package_zip.len() > 1_048_576 {
             return false;
         }
 
-        if submission.basilica_instance.is_empty()
-            || submission.executor_url.is_empty()
-            || submission.executor_token.is_empty()
+        if submission_data.basilica_instance.is_empty()
+            || submission_data.executor_url.is_empty()
+            || submission_data.executor_token.is_empty()
         {
             return false;
         }
 
         let current_epoch = host_consensus_get_epoch();
         if current_epoch >= 0 {
-            if let Some(last_epoch) = get_last_submission_epoch(&submission.miner_hotkey) {
+            if let Some(last_epoch) = get_last_submission_epoch(&submission_data.miner_hotkey) {
                 let current = current_epoch as u64;
                 if current < last_epoch.saturating_add(EPOCH_RATE_LIMIT) {
                     return false;
@@ -274,19 +380,19 @@ impl Challenge for TermChallengeWasm {
             }
         }
 
-        if submission.task_results.is_empty() {
+        if submission_data.task_results.is_empty() {
             return false;
         }
 
-        if submission.task_results.len() > MAX_TASKS {
+        if submission_data.task_results.len() > MAX_TASKS {
             return false;
         }
 
-        if submission.task_results.len() != params.tasks.len() {
+        if submission_data.task_results.len() != params.tasks.len() {
             return false;
         }
 
-        for result in &submission.task_results {
+        for result in &submission_data.task_results {
             if !validate_task_result(result) {
                 return false;
             }
@@ -311,3 +417,38 @@ impl Challenge for TermChallengeWasm {
 }
 
 platform_challenge_sdk_wasm::register_challenge!(TermChallengeWasm, TermChallengeWasm::new());
+
+#[no_mangle]
+pub extern "C" fn get_routes() -> i64 {
+    let challenge = TermChallengeWasm::new();
+    let output = challenge.routes();
+    if output.is_empty() {
+        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
+    }
+    let ptr = platform_challenge_sdk_wasm::alloc_impl::sdk_alloc(output.len());
+    if ptr.is_null() {
+        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(output.as_ptr(), ptr, output.len());
+    }
+    platform_challenge_sdk_wasm::pack_ptr_len(ptr as i32, output.len() as i32)
+}
+
+#[no_mangle]
+pub extern "C" fn handle_route(req_ptr: i32, req_len: i32) -> i64 {
+    let slice = unsafe { core::slice::from_raw_parts(req_ptr as *const u8, req_len as usize) };
+    let challenge = TermChallengeWasm::new();
+    let output = challenge.handle_route(slice);
+    if output.is_empty() {
+        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
+    }
+    let ptr = platform_challenge_sdk_wasm::alloc_impl::sdk_alloc(output.len());
+    if ptr.is_null() {
+        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(output.as_ptr(), ptr, output.len());
+    }
+    platform_challenge_sdk_wasm::pack_ptr_len(ptr as i32, output.len() as i32)
+}

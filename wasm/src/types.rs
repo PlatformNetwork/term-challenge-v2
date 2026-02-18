@@ -120,3 +120,212 @@ pub struct RouteDefinition {
     pub path: String,
     pub description: String,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubmissionName {
+    pub name: String,
+    pub owner_hotkey: String,
+    pub registered_epoch: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubmissionVersion {
+    pub version: u32,
+    pub agent_hash: String,
+    pub epoch: u64,
+    pub score: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LlmReviewResult {
+    pub approved: bool,
+    pub reason: String,
+    pub violations: Vec<String>,
+    pub reviewer_validators: Vec<String>,
+    pub scores: Vec<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AstReviewResult {
+    pub passed: bool,
+    pub violations: Vec<String>,
+    pub reviewer_validators: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EvaluationStatus {
+    Pending,
+    LlmReview,
+    AstReview,
+    Evaluating,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TopAgentState {
+    pub agent_hash: String,
+    pub score: f64,
+    pub achieved_epoch: u64,
+    pub epochs_stale: u64,
+    pub decay_active: bool,
+    pub current_burn_percent: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LeaderboardEntry {
+    pub rank: u32,
+    pub hotkey: String,
+    pub score: f64,
+    pub pass_rate: f64,
+    pub submissions: u32,
+    pub last_epoch: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StatsResponse {
+    pub total_submissions: u64,
+    pub active_miners: u64,
+    pub validator_count: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TimeoutConfig {
+    pub evaluation_timeout_ms: u64,
+    pub llm_review_timeout_ms: u64,
+    pub ast_review_timeout_ms: u64,
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            evaluation_timeout_ms: 6 * 60 * 60 * 1000,
+            llm_review_timeout_ms: 3 * 60 * 1000,
+            ast_review_timeout_ms: 60 * 1000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WhitelistConfig {
+    pub allowed_stdlib: Vec<String>,
+    pub allowed_third_party: Vec<String>,
+    pub forbidden_builtins: Vec<String>,
+    pub max_code_size: usize,
+}
+
+impl Default for WhitelistConfig {
+    fn default() -> Self {
+        use alloc::string::ToString;
+        Self {
+            allowed_stdlib: [
+                "json",
+                "re",
+                "math",
+                "random",
+                "collections",
+                "itertools",
+                "functools",
+                "operator",
+                "string",
+                "textwrap",
+                "datetime",
+                "time",
+                "copy",
+                "pprint",
+                "typing",
+                "dataclasses",
+                "enum",
+                "abc",
+                "contextlib",
+                "warnings",
+                "bisect",
+                "heapq",
+                "array",
+                "types",
+                "decimal",
+                "fractions",
+                "statistics",
+                "hashlib",
+                "hmac",
+                "secrets",
+                "base64",
+                "binascii",
+                "struct",
+                "codecs",
+                "io",
+                "pathlib",
+                "argparse",
+                "logging",
+                "traceback",
+                "difflib",
+                "uuid",
+                "html",
+                "csv",
+                "os",
+                "sys",
+                "shutil",
+                "glob",
+                "subprocess",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+            allowed_third_party: [
+                "term_sdk",
+                "numpy",
+                "pandas",
+                "scipy",
+                "sklearn",
+                "torch",
+                "tensorflow",
+                "transformers",
+                "openai",
+                "anthropic",
+                "httpx",
+                "aiohttp",
+                "requests",
+                "pydantic",
+                "rich",
+                "tqdm",
+                "litellm",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+            forbidden_builtins: ["exec", "eval", "compile", "__import__"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            max_code_size: 1_048_576,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LlmMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LlmRequest {
+    pub model: String,
+    pub messages: Vec<LlmMessage>,
+    pub max_tokens: u32,
+    pub temperature: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LlmResponse {
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WasmRouteRequest {
+    pub method: String,
+    pub path: String,
+    pub body: Vec<u8>,
+    #[serde(default)]
+    pub auth_hotkey: Option<String>,
+}

@@ -1,7 +1,16 @@
 use alloc::string::String;
 use core::fmt::Write as _;
+use platform_challenge_sdk_wasm::host_functions::{
+    host_consensus_get_epoch, host_storage_get, host_storage_set,
+};
 
-use crate::types::{DecayParams, Difficulty, DifficultyStats, TaskDefinition, TaskResult};
+use crate::types::{
+    DecayParams, Difficulty, DifficultyStats, TaskDefinition, TaskResult, TopAgentState,
+};
+
+const TOP_AGENT_KEY: &[u8] = b"top_agent_state";
+const GRACE_EPOCHS: u64 = 60;
+const HALF_LIFE_EPOCHS: f64 = 20.0;
 
 pub struct AggregateScore {
     pub tasks_passed: u32,
@@ -19,6 +28,7 @@ impl AggregateScore {
     }
 }
 
+/// Calculate aggregate scoring statistics from task definitions and results.
 pub fn calculate_aggregate(tasks: &[TaskDefinition], results: &[TaskResult]) -> AggregateScore {
     let mut passed: u32 = 0;
     let mut failed: u32 = 0;
@@ -79,28 +89,7 @@ pub fn to_weight(score: &AggregateScore) -> f64 {
     score.pass_rate.clamp(0.0, 1.0)
 }
 
-/// Apply decay to weight based on hours since top score.
-///
-/// Note: This function is reserved for future use when decay mechanics are
-/// integrated with the scoring system via challenge configuration.
-#[allow(dead_code)]
-pub fn apply_decay(weight: f64, hours_since_top: f64, params: &DecayParams) -> f64 {
-    let grace = params.grace_period_hours as f64;
-    if hours_since_top <= grace {
-        return weight;
-    }
-
-    let elapsed = hours_since_top - grace;
-    let half_life = params.half_life_hours as f64;
-    if half_life <= 0.0 {
-        return params.min_multiplier;
-    }
-
-    let multiplier = 0.5f64.powf(elapsed / half_life);
-    let clamped = multiplier.max(params.min_multiplier);
-    weight * clamped
-}
-
+/// Format a human-readable summary of aggregate scoring results.
 pub fn format_summary(score: &AggregateScore) -> String {
     let mut msg = String::new();
     let _ = write!(
@@ -133,4 +122,62 @@ pub fn format_summary(score: &AggregateScore) -> String {
     }
     let _ = write!(msg, " time={}ms", score.total_execution_time_ms);
     msg
+}
+
+/// Retrieve the current top agent state from storage.
+pub fn get_top_agent_state() -> Option<TopAgentState> {
+    let data = host_storage_get(TOP_AGENT_KEY).ok()?;
+    if data.is_empty() {
+        return None;
+    }
+    bincode::deserialize(&data).ok()
+}
+
+/// Update the top agent state if the new score is higher, or refresh staleness.
+pub fn update_top_agent_state(agent_hash: &str, score: f64, epoch: u64) -> bool {
+    let current = get_top_agent_state();
+    let should_update = match &current {
+        Some(state) => score > state.score,
+        None => true,
+    };
+
+    if should_update {
+        let state = TopAgentState {
+            agent_hash: String::from(agent_hash),
+            score,
+            achieved_epoch: epoch,
+            epochs_stale: 0,
+            decay_active: false,
+            current_burn_percent: 0.0,
+        };
+        if let Ok(data) = bincode::serialize(&state) {
+            return host_storage_set(TOP_AGENT_KEY, &data).is_ok();
+        }
+    } else if let Some(mut state) = current {
+        let current_epoch = host_consensus_get_epoch();
+        if current_epoch >= 0 {
+            state.epochs_stale = (current_epoch as u64).saturating_sub(state.achieved_epoch);
+            state.decay_active = state.epochs_stale > GRACE_EPOCHS;
+            if state.decay_active {
+                let decay_epochs = state.epochs_stale.saturating_sub(GRACE_EPOCHS);
+                let multiplier = 0.5f64.powf(decay_epochs as f64 / HALF_LIFE_EPOCHS);
+                state.current_burn_percent = (1.0 - multiplier) * 100.0;
+            }
+            if let Ok(data) = bincode::serialize(&state) {
+                let _ = host_storage_set(TOP_AGENT_KEY, &data);
+            }
+        }
+    }
+    false
+}
+
+/// Apply epoch-based decay using the stored top agent staleness state.
+pub fn apply_epoch_decay(weight: f64, params: &DecayParams) -> f64 {
+    if let Some(state) = get_top_agent_state() {
+        if state.decay_active {
+            let multiplier = 1.0 - (state.current_burn_percent / 100.0);
+            return weight * multiplier.max(params.min_multiplier);
+        }
+    }
+    weight
 }

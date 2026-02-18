@@ -23,8 +23,8 @@ struct JsonRpcRequest<'a> {
 struct JsonRpcResponse {
     result: Option<serde_json::Value>,
     error: Option<JsonRpcError>,
-    #[allow(dead_code)]
-    id: Option<u64>,
+    #[serde(rename = "id")]
+    _id: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -213,5 +213,52 @@ impl RpcClient {
             .into_iter()
             .map(|r| ChallengeInfo { id: r.id })
             .collect())
+    }
+
+    pub async fn fetch_agent_journey(
+        &self,
+        challenge_id: &str,
+        hotkey: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let params = serde_json::json!({
+            "challengeId": challenge_id,
+            "method": "GET",
+            "path": format!("/agent/{}/journey", hotkey)
+        });
+        self.call("challenge_call", params).await
+    }
+
+    pub async fn fetch_submission_history(
+        &self,
+        challenge_id: &str,
+        hotkey: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let params = serde_json::json!({
+            "challengeId": challenge_id,
+            "method": "GET",
+            "path": format!("/agent/{}/logs", hotkey)
+        });
+        self.call("challenge_call", params).await
+    }
+
+    pub async fn fetch_stats(&self, challenge_id: &str) -> anyhow::Result<serde_json::Value> {
+        let params = serde_json::json!({
+            "challengeId": challenge_id,
+            "method": "GET",
+            "path": "/stats"
+        });
+        self.call("challenge_call", params).await
+    }
+
+    pub async fn fetch_decay_status(
+        &self,
+        challenge_id: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let params = serde_json::json!({
+            "challengeId": challenge_id,
+            "method": "GET",
+            "path": "/decay"
+        });
+        self.call("challenge_call", params).await
     }
 }

@@ -2,7 +2,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use platform_challenge_sdk_wasm::host_functions::{host_storage_get, host_storage_set};
 
-use crate::types::AgentLogs;
+use crate::types::{AgentLogs, EvaluationStatus};
 
 pub const MAX_AGENT_PACKAGE_SIZE: usize = 1_048_576;
 const MAX_LOG_SIZE: usize = 262_144;
@@ -41,9 +41,6 @@ pub fn store_agent_logs(miner_hotkey: &str, epoch: u64, logs: &AgentLogs) -> boo
     host_storage_set(&key, &data).is_ok()
 }
 
-/// Retrieve stored agent code for a miner/epoch.
-/// Called by platform-v2's challenge route handler for `/agent/:hotkey/code` requests.
-#[allow(dead_code)]
 pub fn get_agent_code(miner_hotkey: &str, epoch: u64) -> Option<Vec<u8>> {
     let key = make_key(b"agent_code:", miner_hotkey, epoch);
     let data = host_storage_get(&key).ok()?;
@@ -53,9 +50,6 @@ pub fn get_agent_code(miner_hotkey: &str, epoch: u64) -> Option<Vec<u8>> {
     Some(data)
 }
 
-/// Retrieve stored agent logs for a miner/epoch.
-/// Called by platform-v2's challenge route handler for `/agent/:hotkey/logs` requests.
-#[allow(dead_code)]
 pub fn get_agent_logs(miner_hotkey: &str, epoch: u64) -> Option<AgentLogs> {
     let key = make_key(b"agent_logs:", miner_hotkey, epoch);
     let data = host_storage_get(&key).ok()?;
@@ -69,6 +63,26 @@ pub fn truncate_output(output: &str, max_len: usize) -> String {
     if output.len() <= max_len {
         return String::from(output);
     }
-    let truncated = &output[..max_len];
-    String::from(truncated)
+    let mut end = max_len;
+    while end > 0 && !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    String::from(&output[..end])
+}
+
+pub fn store_evaluation_status(miner_hotkey: &str, epoch: u64, status: EvaluationStatus) -> bool {
+    let key = make_key(b"eval_status:", miner_hotkey, epoch);
+    if let Ok(data) = bincode::serialize(&status) {
+        return host_storage_set(&key, &data).is_ok();
+    }
+    false
+}
+
+pub fn get_evaluation_status(miner_hotkey: &str, epoch: u64) -> Option<EvaluationStatus> {
+    let key = make_key(b"eval_status:", miner_hotkey, epoch);
+    let data = host_storage_get(&key).ok()?;
+    if data.is_empty() {
+        return None;
+    }
+    bincode::deserialize(&data).ok()
 }

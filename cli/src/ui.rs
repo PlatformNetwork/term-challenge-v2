@@ -257,7 +257,7 @@ fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
         "Disconnected"
     };
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled("Status:      ", Style::default().fg(Color::Yellow).bold()),
             Span::styled(connected_text, connected_style),
@@ -279,6 +279,14 @@ fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("Validators:  ", Style::default().fg(Color::Yellow).bold()),
             Span::raw(ns.validators.to_string()),
         ]),
+        Line::from(vec![
+            Span::styled("Submissions: ", Style::default().fg(Color::Yellow).bold()),
+            Span::raw(ns.total_submissions.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Miners:      ", Style::default().fg(Color::Yellow).bold()),
+            Span::raw(ns.active_miners.to_string()),
+        ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("RPC URL:     ", Style::default().fg(Color::Yellow).bold()),
@@ -287,25 +295,56 @@ fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
     ];
 
     if let Some(cid) = &app.challenge_id {
-        let mut all_lines = lines;
-        all_lines.push(Line::from(vec![
+        lines.push(Line::from(vec![
             Span::styled("Challenge:   ", Style::default().fg(Color::Yellow).bold()),
             Span::raw(cid.clone()),
         ]));
-        let paragraph = Paragraph::new(all_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Network Status"),
-        );
-        frame.render_widget(paragraph, area);
-    } else {
-        let paragraph = Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Network Status"),
-        );
-        frame.render_widget(paragraph, area);
     }
+
+    if let Some(decay) = &app.decay_status {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "── Top Agent Decay ──",
+            Style::default().fg(Color::Cyan).bold(),
+        )));
+        lines.push(Line::from(vec![
+            Span::styled("Agent:       ", Style::default().fg(Color::Yellow).bold()),
+            Span::raw(truncate_hotkey(&decay.agent_hash, 16)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Score:       ", Style::default().fg(Color::Yellow).bold()),
+            Span::raw(format!("{:.4}", decay.score)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Achieved:    ", Style::default().fg(Color::Yellow).bold()),
+            Span::raw(format!("epoch {}", decay.achieved_epoch)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Stale:       ", Style::default().fg(Color::Yellow).bold()),
+            Span::raw(format!("{} epochs", decay.epochs_stale)),
+        ]));
+        let decay_style = if decay.decay_active {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+        let decay_text = if decay.decay_active {
+            format!("Active ({:.1}% burned)", decay.current_burn_percent)
+        } else {
+            "Inactive".to_string()
+        };
+        lines.push(Line::from(vec![
+            Span::styled("Decay:       ", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(decay_text, decay_style),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Network Status"),
+    );
+    frame.render_widget(paragraph, area);
 }
 
 fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
