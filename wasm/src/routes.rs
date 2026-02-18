@@ -1,9 +1,21 @@
+//! Route definitions for the term-challenge module
+//!
+//! These routes are designed to be queried via platform-v2's `challenge_call` RPC method.
+//! When the challenge SDK's route integration is complete, these routes will be registered
+//! automatically. Until then, validators can access this data via direct storage queries.
+
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::types::RouteDefinition;
 
+/// Returns route definitions for the term-challenge module.
+///
+/// Note: This function is currently unused pending integration with platform-v2's
+/// challenge route registration system. The routes are defined here for documentation
+/// and future automatic registration.
+#[allow(dead_code)]
 pub fn get_route_definitions() -> Vec<RouteDefinition> {
     vec![
         RouteDefinition {

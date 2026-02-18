@@ -41,6 +41,9 @@ pub fn store_agent_logs(miner_hotkey: &str, epoch: u64, logs: &AgentLogs) -> boo
     host_storage_set(&key, &data).is_ok()
 }
 
+/// Retrieve stored agent code for a miner/epoch.
+/// Called by platform-v2's challenge route handler for `/agent/:hotkey/code` requests.
+#[allow(dead_code)]
 pub fn get_agent_code(miner_hotkey: &str, epoch: u64) -> Option<Vec<u8>> {
     let key = make_key(b"agent_code:", miner_hotkey, epoch);
     let data = host_storage_get(&key).ok()?;
@@ -50,6 +53,9 @@ pub fn get_agent_code(miner_hotkey: &str, epoch: u64) -> Option<Vec<u8>> {
     Some(data)
 }
 
+/// Retrieve stored agent logs for a miner/epoch.
+/// Called by platform-v2's challenge route handler for `/agent/:hotkey/logs` requests.
+#[allow(dead_code)]
 pub fn get_agent_logs(miner_hotkey: &str, epoch: u64) -> Option<AgentLogs> {
     let key = make_key(b"agent_logs:", miner_hotkey, epoch);
     let data = host_storage_get(&key).ok()?;
