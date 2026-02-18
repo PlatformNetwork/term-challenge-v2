@@ -215,6 +215,7 @@ impl RpcClient {
             .collect())
     }
 
+    #[allow(dead_code)]
     pub async fn fetch_agent_journey(
         &self,
         challenge_id: &str,
@@ -229,6 +230,7 @@ impl RpcClient {
         Ok(result)
     }
 
+    #[allow(dead_code)]
     pub async fn fetch_submission_history(
         &self,
         challenge_id: &str,
@@ -243,6 +245,7 @@ impl RpcClient {
         Ok(result)
     }
 
+    #[allow(dead_code)]
     pub async fn fetch_stats(&self, challenge_id: &str) -> anyhow::Result<serde_json::Value> {
         let params = serde_json::json!({
             "challengeId": challenge_id,
@@ -253,6 +256,7 @@ impl RpcClient {
         Ok(result)
     }
 
+    #[allow(dead_code)]
     pub async fn fetch_decay_status(
         &self,
         challenge_id: &str,
