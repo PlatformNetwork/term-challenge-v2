@@ -163,6 +163,7 @@ pub struct WasmModuleMetadata {
 }
 
 impl WasmModuleMetadata {
+    /// Create metadata with only a code hash (other fields set to defaults)
     pub fn from_code_hash(code_hash: String) -> Self {
         Self {
             module_path: String::new(),

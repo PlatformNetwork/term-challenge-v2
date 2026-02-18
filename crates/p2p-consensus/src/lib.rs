@@ -45,14 +45,15 @@ pub mod validator;
 pub use config::{P2PConfig, DEFAULT_BOOTSTRAP_NODES};
 pub use consensus::{ConsensusDecision, ConsensusEngine, ConsensusError, ConsensusPhase};
 pub use messages::{
-    ChallengeUpdateMessage, CommitMessage, ConsensusProposal, DataRequestMessage,
-    DataResponseMessage, EvaluationMessage, EvaluationMetrics, HeartbeatMessage,
-    JobAssignmentMessage, JobClaimMessage, LeaderboardRequestMessage, LeaderboardResponseMessage,
-    MerkleNode, MerkleProof, NewViewMessage, P2PMessage, PeerAnnounceMessage, PrePrepare,
-    PrepareMessage, PreparedProof, ProposalContent, RoundId, SequenceNumber, SignedP2PMessage,
-    StateChangeType, StateRequest, StateResponse, StorageProposalMessage, StorageVoteMessage,
-    SubmissionMessage, SudoActionMessage, TaskProgressMessage, TaskResultMessage,
-    ViewChangeMessage, ViewNumber, WeightVoteMessage,
+    AgentLogProposalMessage, ChallengeUpdateMessage, CommitMessage, ConsensusProposal,
+    DataRequestMessage, DataResponseMessage, EvaluationMessage, EvaluationMetrics,
+    HeartbeatMessage, JobAssignmentMessage, JobClaimMessage, LeaderboardRequestMessage,
+    LeaderboardResponseMessage, MerkleNode, MerkleProof, NewViewMessage, P2PMessage,
+    PeerAnnounceMessage, PrePrepare, PrepareMessage, PreparedProof, ProposalContent,
+    ReviewAssignmentMessage, ReviewDeclineMessage, ReviewResultMessage, ReviewType, RoundId,
+    SequenceNumber, SignedP2PMessage, StateChangeType, StateRequest, StateResponse,
+    StorageProposalMessage, StorageVoteMessage, SubmissionMessage, SudoActionMessage,
+    TaskProgressMessage, TaskResultMessage, ViewChangeMessage, ViewNumber, WeightVoteMessage,
 };
 pub use network::{
     NetworkBehaviour, NetworkError, NetworkEvent, NetworkRunner, P2PCommand, P2PEvent, P2PNetwork,

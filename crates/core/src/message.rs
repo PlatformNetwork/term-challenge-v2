@@ -96,6 +96,7 @@ pub struct TaskProgressMessage {
 }
 
 impl TaskProgressMessage {
+    /// Create a new task progress message
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         challenge_id: String,
@@ -243,6 +244,7 @@ pub struct HandshakeMessage {
 }
 
 impl HandshakeMessage {
+    /// Create a new handshake message with the current protocol version
     pub fn new(hotkey: Hotkey, block_height: BlockHeight, state_hash: [u8; 32]) -> Self {
         use crate::constants::{
             PROTOCOL_VERSION, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR,
@@ -379,6 +381,7 @@ pub struct MechanismWeightConfig {
 }
 
 impl MechanismWeightConfig {
+    /// Create a new mechanism weight configuration with defaults
     pub fn new(mechanism_id: u8) -> Self {
         Self {
             mechanism_id,
@@ -390,11 +393,13 @@ impl MechanismWeightConfig {
         }
     }
 
+    /// Set the base burn rate (clamped to 0.0–1.0)
     pub fn with_burn_rate(mut self, rate: f64) -> Self {
         self.base_burn_rate = rate.clamp(0.0, 1.0);
         self
     }
 
+    /// Set the maximum weight cap (clamped to 0.0–1.0)
     pub fn with_max_cap(mut self, cap: f64) -> Self {
         self.max_weight_cap = cap.clamp(0.0, 1.0);
         self
@@ -422,6 +427,7 @@ pub struct ChallengeWeightAllocation {
 }
 
 impl ChallengeWeightAllocation {
+    /// Create a new active challenge weight allocation
     pub fn new(challenge_id: ChallengeId, mechanism_id: u8, weight_ratio: f64) -> Self {
         Self {
             challenge_id,
@@ -443,6 +449,7 @@ pub struct Proposal {
 }
 
 impl Proposal {
+    /// Create a new proposal with a unique ID and current timestamp
     pub fn new(action: ProposalAction, proposer: Hotkey, block_height: BlockHeight) -> Self {
         Self {
             id: uuid::Uuid::new_v4(),
@@ -482,6 +489,7 @@ pub struct Vote {
 }
 
 impl Vote {
+    /// Create an approval vote for the given proposal
     pub fn approve(proposal_id: uuid::Uuid, voter: Hotkey) -> Self {
         Self {
             proposal_id,
@@ -491,6 +499,7 @@ impl Vote {
         }
     }
 
+    /// Create a rejection vote for the given proposal
     pub fn reject(proposal_id: uuid::Uuid, voter: Hotkey) -> Self {
         Self {
             proposal_id,
@@ -522,6 +531,7 @@ pub struct EvaluationResult {
 }
 
 impl EvaluationResult {
+    /// Create a new evaluation result
     pub fn new(
         job_id: uuid::Uuid,
         challenge_id: ChallengeId,
@@ -584,6 +594,7 @@ pub struct HeartbeatMessage {
 }
 
 impl HeartbeatMessage {
+    /// Create a new heartbeat message with the current timestamp
     pub fn new(hotkey: Hotkey, block_height: BlockHeight, state_hash: [u8; 32]) -> Self {
         Self {
             hotkey,
@@ -605,6 +616,7 @@ pub struct WeightCommitmentMessage {
 }
 
 impl WeightCommitmentMessage {
+    /// Create a new weight commitment message
     pub fn new(
         validator: Hotkey,
         challenge_id: ChallengeId,
@@ -640,6 +652,7 @@ pub struct WeightEntry {
 }
 
 impl WeightRevealMessage {
+    /// Create a new weight reveal message with secret
     pub fn new(
         validator: Hotkey,
         challenge_id: ChallengeId,
@@ -668,6 +681,7 @@ pub struct EpochTransitionMessage {
 }
 
 impl EpochTransitionMessage {
+    /// Create a new epoch transition notification
     pub fn new(epoch: u64, phase: &str, block_height: BlockHeight) -> Self {
         Self {
             epoch,

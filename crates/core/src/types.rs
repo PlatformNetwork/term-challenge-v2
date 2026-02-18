@@ -8,6 +8,7 @@ use std::fmt;
 pub struct Hotkey(pub [u8; 32]);
 
 impl Hotkey {
+    /// Create a hotkey from a byte slice (must be exactly 32 bytes)
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() == 32 {
             let mut arr = [0u8; 32];
@@ -18,14 +19,17 @@ impl Hotkey {
         }
     }
 
+    /// Returns a reference to the underlying 32-byte array
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
+    /// Encode the hotkey as a lowercase hex string
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }
 
+    /// Parse a hotkey from a hex string
     pub fn from_hex(s: &str) -> Option<Self> {
         hex::decode(s).ok().and_then(|b| Self::from_bytes(&b))
     }
@@ -67,14 +71,17 @@ impl fmt::Display for Hotkey {
 pub struct ChallengeId(pub uuid::Uuid);
 
 impl ChallengeId {
+    /// Generate a new random challenge ID
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4())
     }
 
+    /// Create a challenge ID from an existing UUID
     pub fn from_uuid(uuid: uuid::Uuid) -> Self {
         Self(uuid)
     }
 
+    /// Parse a challenge ID from a string (UUID or arbitrary identifier)
     pub fn from_string(s: &str) -> Self {
         match uuid::Uuid::parse_str(s) {
             Ok(uuid) => Self(uuid),
@@ -115,10 +122,12 @@ pub type BlockHeight = u64;
 pub struct Stake(pub u64);
 
 impl Stake {
+    /// Create a new stake amount (raw units with 9 decimal places)
     pub fn new(amount: u64) -> Self {
         Self(amount)
     }
 
+    /// Convert to TAO (divides by 10^9)
     pub fn as_tao(&self) -> f64 {
         self.0 as f64 / 1_000_000_000.0
     }
@@ -138,6 +147,7 @@ pub struct ValidatorInfo {
 }
 
 impl ValidatorInfo {
+    /// Create a new active validator with the given hotkey and stake
     pub fn new(hotkey: Hotkey, stake: Stake) -> Self {
         Self {
             hotkey,
@@ -196,6 +206,7 @@ pub struct Score {
 }
 
 impl Score {
+    /// Create a new score with value and weight clamped to [0.0, 1.0]
     pub fn new(value: f64, weight: f64) -> Self {
         Self {
             value: value.clamp(0.0, 1.0),
@@ -203,6 +214,7 @@ impl Score {
         }
     }
 
+    /// Returns value multiplied by weight
     pub fn weighted_value(&self) -> f64 {
         self.value * self.weight
     }
@@ -236,6 +248,7 @@ pub struct Job {
 }
 
 impl Job {
+    /// Create a new pending evaluation job
     pub fn new(challenge_id: ChallengeId, agent_hash: String) -> Self {
         Self {
             id: uuid::Uuid::new_v4(),

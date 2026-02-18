@@ -22,6 +22,7 @@ pub const PROTOCOL_VERSION: &str = "0.1.0";
 
 /// Minimum compatible protocol version (validators below this are rejected)
 pub const MIN_COMPATIBLE_VERSION_MAJOR: u32 = 0;
+/// Minimum compatible minor version
 pub const MIN_COMPATIBLE_VERSION_MINOR: u32 = 1;
 
 /// Check if a version is compatible with current protocol
