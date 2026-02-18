@@ -63,6 +63,70 @@ pub enum ContainerExecError {
     Disabled,
 }
 
+/// Container execution policy.
+///
+/// All container execution is disabled in WASM-only mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerPolicy {
+    /// Whether container execution is enabled (always false in WASM-only mode).
+    pub enabled: bool,
+}
+
+impl Default for ContainerPolicy {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
+}
+
+/// Container execution request (stub for backward compatibility).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerRunRequest {
+    /// Container image to run.
+    pub image: String,
+    /// Command to execute.
+    pub command: Vec<String>,
+}
+
+/// Container execution response (stub for backward compatibility).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerRunResponse {
+    /// Exit code from the container.
+    pub exit_code: i32,
+    /// Standard output.
+    pub stdout: Vec<u8>,
+    /// Standard error.
+    pub stderr: Vec<u8>,
+}
+
+/// Container execution state tracking.
+pub struct ContainerState {
+    /// Policy governing container execution.
+    pub policy: ContainerPolicy,
+    /// Challenge identifier.
+    pub challenge_id: String,
+    /// Validator identifier.
+    pub validator_id: String,
+    /// Number of container executions attempted.
+    pub executions: u32,
+}
+
+impl ContainerState {
+    /// Create a new container state.
+    pub fn new(policy: ContainerPolicy, challenge_id: String, validator_id: String) -> Self {
+        Self {
+            policy,
+            challenge_id,
+            validator_id,
+            executions: 0,
+        }
+    }
+
+    /// Reset execution counters.
+    pub fn reset_counters(&mut self) {
+        self.executions = 0;
+    }
+}
+
 /// Container host functions - DISABLED
 ///
 /// All operations return Disabled status. This is a stub implementation
