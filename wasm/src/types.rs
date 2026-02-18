@@ -38,7 +38,7 @@ pub struct ChallengeParams {
     pub active_dataset: Option<Vec<TaskDefinition>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Submission {
     pub agent_hash: String,
     pub miner_hotkey: String,
@@ -49,6 +49,22 @@ pub struct Submission {
     pub executor_url: String,
     pub executor_token_hash: Vec<u8>,
     pub task_results: Vec<TaskResult>,
+}
+
+impl core::fmt::Debug for Submission {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Submission")
+            .field("agent_hash", &self.agent_hash)
+            .field("miner_hotkey", &self.miner_hotkey)
+            .field("signature", &"[REDACTED]")
+            .field("epoch", &self.epoch)
+            .field("package_zip_len", &self.package_zip.len())
+            .field("basilica_instance", &self.basilica_instance)
+            .field("executor_url", &self.executor_url)
+            .field("executor_token_hash", &"[REDACTED]")
+            .field("task_results", &self.task_results)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -76,16 +92,6 @@ pub struct DecayParams {
     pub grace_period_hours: u64,
     pub half_life_hours: u64,
     pub min_multiplier: f64,
-}
-
-impl Default for DecayParams {
-    fn default() -> Self {
-        Self {
-            grace_period_hours: 72,
-            half_life_hours: 24,
-            min_multiplier: 0.0,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -115,10 +115,13 @@ jobs:
         with:
           name: term-challenge-wasm
           path: release/
-      - run: |
+      - name: Package release artifacts
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
           cd release
           sha256sum term_challenge_wasm.wasm > term_challenge_wasm.wasm.sha256
-          tar -czvf ../term-challenge-${{ github.ref_name }}-wasm.tar.gz .
+          tar -czvf "../term-challenge-${TAG_NAME}-wasm.tar.gz" .
       - uses: softprops/action-gh-release@v2
         with:
           files: |

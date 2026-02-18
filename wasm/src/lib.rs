@@ -94,6 +94,13 @@ fn validate_submission_fields(submission: &Submission) -> bool {
     if submission.miner_hotkey.is_empty() || submission.miner_hotkey.len() > MAX_HOTKEY_LEN {
         return false;
     }
+    if !submission
+        .miner_hotkey
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric())
+    {
+        return false;
+    }
     if submission.signature.is_empty() {
         return false;
     }
@@ -115,8 +122,11 @@ fn validate_submission_fields(submission: &Submission) -> bool {
 }
 
 fn last_submission_key(miner_hotkey: &str) -> Vec<u8> {
+    let hotkey_bytes = miner_hotkey.as_bytes();
+    let len = hotkey_bytes.len() as u32;
     let mut key = Vec::from(b"last_submission:" as &[u8]);
-    key.extend_from_slice(miner_hotkey.as_bytes());
+    key.extend_from_slice(&len.to_le_bytes());
+    key.extend_from_slice(hotkey_bytes);
     key
 }
 
