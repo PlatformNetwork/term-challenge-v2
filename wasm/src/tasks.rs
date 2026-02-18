@@ -22,6 +22,7 @@ fn bincode_options_history() -> impl Options {
         .with_fixint_encoding()
 }
 
+/// Retrieve the currently active task dataset from host storage.
 pub fn get_active_dataset() -> Option<Vec<TaskDefinition>> {
     let data = host_storage_get(ACTIVE_DATASET_KEY).ok()?;
     if data.is_empty() {
@@ -31,6 +32,7 @@ pub fn get_active_dataset() -> Option<Vec<TaskDefinition>> {
     Some(selection.tasks)
 }
 
+/// Persist a dataset selection to host storage and append it to history.
 pub fn store_dataset(selection: &DatasetSelection) -> bool {
     let data = match bincode_options_dataset().serialize(selection) {
         Ok(d) => d,

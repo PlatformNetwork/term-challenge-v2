@@ -3,6 +3,7 @@ use core::fmt::Write as _;
 
 use crate::types::{Difficulty, DifficultyStats, TaskDefinition, TaskResult};
 
+/// Aggregated scoring breakdown across all evaluated tasks.
 pub struct AggregateScore {
     pub tasks_passed: u32,
     pub tasks_failed: u32,
@@ -19,6 +20,7 @@ impl AggregateScore {
     }
 }
 
+/// Compute aggregate pass/fail statistics from task definitions and results.
 pub fn calculate_aggregate(tasks: &[TaskDefinition], results: &[TaskResult]) -> AggregateScore {
     let mut passed: u32 = 0;
     let mut failed: u32 = 0;
@@ -74,10 +76,12 @@ pub fn calculate_aggregate(tasks: &[TaskDefinition], results: &[TaskResult]) -> 
     }
 }
 
+/// Convert an aggregate score to a weight in the range `[0.0, 1.0]`.
 pub fn to_weight(score: &AggregateScore) -> f64 {
     score.pass_rate.clamp(0.0, 1.0)
 }
 
+/// Format an aggregate score as a human-readable summary string.
 pub fn format_summary(score: &AggregateScore) -> String {
     let mut msg = String::new();
     let _ = write!(

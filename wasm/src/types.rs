@@ -2,6 +2,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
+/// Task difficulty level used for per-category scoring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Difficulty {
     Easy,
@@ -9,6 +10,7 @@ pub enum Difficulty {
     Hard,
 }
 
+/// Definition of a single SWE-bench evaluation task.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskDefinition {
     pub id: String,
@@ -19,6 +21,7 @@ pub struct TaskDefinition {
     pub timeout_secs: u64,
 }
 
+/// Result produced by a miner for a single task.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskResult {
     pub task_id: String,
@@ -30,12 +33,14 @@ pub struct TaskResult {
     pub error: Option<String>,
 }
 
+/// Parameters supplied to the challenge during evaluation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChallengeParams {
     pub tasks: Vec<TaskDefinition>,
     pub llm_judge_url: Option<String>,
 }
 
+/// A miner's submission containing agent metadata and task results.
 #[derive(Clone, Deserialize)]
 pub struct Submission {
     pub agent_hash: String,
@@ -65,12 +70,14 @@ impl core::fmt::Debug for Submission {
     }
 }
 
+/// Pass/total statistics for a single difficulty level.
 #[derive(Clone, Debug)]
 pub struct DifficultyStats {
     pub total: u32,
     pub passed: u32,
 }
 
+/// Request payload sent to the LLM judge endpoint.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LlmJudgeRequest {
     pub task_id: String,
@@ -79,12 +86,14 @@ pub struct LlmJudgeRequest {
     pub test_output: String,
 }
 
+/// Response received from the LLM judge endpoint.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LlmJudgeResponse {
     pub score: f64,
     pub reasoning: String,
 }
 
+/// A selected set of tasks stored via `configure()` for later retrieval.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DatasetSelection {
     pub tasks: Vec<TaskDefinition>,

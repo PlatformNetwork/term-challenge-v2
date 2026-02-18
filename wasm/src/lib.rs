@@ -1,3 +1,8 @@
+//! Terminal Benchmark Challenge – WASM evaluation module.
+//!
+//! This crate implements the [`Challenge`] trait from `platform-challenge-sdk-wasm`
+//! to validate and score miner submissions against SWE-bench tasks.
+//! It compiles to `wasm32-unknown-unknown` and runs inside platform-v2 validators.
 #![no_std]
 
 extern crate alloc;
@@ -147,6 +152,10 @@ fn set_last_submission_epoch(miner_hotkey: &str, epoch: u64) {
     let _ = host_storage_set(&key, &epoch.to_le_bytes());
 }
 
+/// WASM challenge implementation for the Terminal Benchmark.
+///
+/// Evaluates miner submissions containing SWE-bench task results, applies
+/// optional LLM judge scoring, and computes aggregate weights.
 pub struct TermChallengeWasm;
 
 impl Default for TermChallengeWasm {
