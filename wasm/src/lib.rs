@@ -22,7 +22,9 @@ use crate::types::{
 const MAX_SUBMISSION_SIZE: u64 = 64 * 1024 * 1024;
 const MAX_PARAMS_SIZE: u64 = 4 * 1024 * 1024;
 const MAX_LLM_RESPONSE_SIZE: u64 = 1024 * 1024;
+const MAX_LLM_REQUEST_SIZE: u64 = 32 * 1024 * 1024;
 const MAX_CONFIG_SIZE: u64 = 4 * 1024 * 1024;
+const MAX_TASKS_SERIALIZED_SIZE: u64 = 16 * 1024 * 1024;
 const MAX_TASKS: usize = 256;
 const EPOCH_RATE_LIMIT: u64 = 3;
 
@@ -57,6 +59,18 @@ fn bincode_options_llm() -> impl Options {
 fn bincode_options_config() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_CONFIG_SIZE)
+        .with_fixint_encoding()
+}
+
+fn bincode_options_llm_request() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_limit(MAX_LLM_REQUEST_SIZE)
+        .with_fixint_encoding()
+}
+
+fn bincode_options_tasks_output() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_limit(MAX_TASKS_SERIALIZED_SIZE)
         .with_fixint_encoding()
 }
 
@@ -144,7 +158,7 @@ impl TermChallengeWasm {
         };
 
         let url_bytes = url.as_bytes();
-        let body = match bincode::serialize(&request) {
+        let body = match bincode_options_llm_request().serialize(&request) {
             Ok(b) => b,
             Err(_) => return None,
         };
@@ -292,7 +306,9 @@ impl Challenge for TermChallengeWasm {
     fn tasks(&self) -> Vec<u8> {
         let dataset = tasks::get_active_dataset();
         match dataset {
-            Some(task_defs) => bincode::serialize(&task_defs).unwrap_or_default(),
+            Some(task_defs) => bincode_options_tasks_output()
+                .serialize(&task_defs)
+                .unwrap_or_default(),
             None => Vec::new(),
         }
     }

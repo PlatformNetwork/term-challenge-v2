@@ -56,7 +56,7 @@ pub fn calculate_aggregate(tasks: &[TaskDefinition], results: &[TaskResult]) -> 
         }
     }
 
-    let total = passed + failed;
+    let total = passed.saturating_add(failed);
     let pass_rate = if total > 0 {
         passed as f64 / total as f64
     } else {
