@@ -21,7 +21,7 @@ use platform_challenge_sdk_wasm::host_functions::{
 };
 use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput};
 
-use crate::scoring::{apply_decay, calculate_aggregate, format_summary, to_weight};
+use crate::scoring::{calculate_aggregate, format_summary, to_weight};
 use crate::types::{
     AgentLogEntry, AgentLogs, ChallengeParams, DatasetSelection, EvaluationStatus, LlmJudgeRequest,
     LlmJudgeResponse, Submission, TaskResult, WasmRouteRequest,
@@ -281,12 +281,7 @@ impl Challenge for TermChallengeWasm {
         let weight = to_weight(&aggregate);
 
         let final_weight = if let Some(ref decay_params) = params.decay_params {
-            let epoch_decayed = scoring::apply_epoch_decay(weight, decay_params);
-            if let Some(state) = scoring::get_top_agent_state() {
-                apply_decay(epoch_decayed, state.epochs_stale as f64, decay_params)
-            } else {
-                epoch_decayed
-            }
+            scoring::apply_epoch_decay(weight, decay_params)
         } else {
             weight
         };

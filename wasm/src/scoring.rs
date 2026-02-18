@@ -28,6 +28,7 @@ impl AggregateScore {
     }
 }
 
+/// Calculate aggregate scoring statistics from task definitions and results.
 pub fn calculate_aggregate(tasks: &[TaskDefinition], results: &[TaskResult]) -> AggregateScore {
     let mut passed: u32 = 0;
     let mut failed: u32 = 0;
@@ -88,24 +89,7 @@ pub fn to_weight(score: &AggregateScore) -> f64 {
     score.pass_rate.clamp(0.0, 1.0)
 }
 
-/// Apply decay to weight based on hours since top score.
-pub fn apply_decay(weight: f64, hours_since_top: f64, params: &DecayParams) -> f64 {
-    let grace = params.grace_period_hours as f64;
-    if hours_since_top <= grace {
-        return weight;
-    }
-
-    let elapsed = hours_since_top - grace;
-    let half_life = params.half_life_hours as f64;
-    if half_life <= 0.0 {
-        return params.min_multiplier;
-    }
-
-    let multiplier = 0.5f64.powf(elapsed / half_life);
-    let clamped = multiplier.max(params.min_multiplier);
-    weight * clamped
-}
-
+/// Format a human-readable summary of aggregate scoring results.
 pub fn format_summary(score: &AggregateScore) -> String {
     let mut msg = String::new();
     let _ = write!(
@@ -140,6 +124,7 @@ pub fn format_summary(score: &AggregateScore) -> String {
     msg
 }
 
+/// Retrieve the current top agent state from storage.
 pub fn get_top_agent_state() -> Option<TopAgentState> {
     let data = host_storage_get(TOP_AGENT_KEY).ok()?;
     if data.is_empty() {
@@ -148,6 +133,7 @@ pub fn get_top_agent_state() -> Option<TopAgentState> {
     bincode::deserialize(&data).ok()
 }
 
+/// Update the top agent state if the new score is higher, or refresh staleness.
 pub fn update_top_agent_state(agent_hash: &str, score: f64, epoch: u64) -> bool {
     let current = get_top_agent_state();
     let should_update = match &current {
@@ -185,6 +171,7 @@ pub fn update_top_agent_state(agent_hash: &str, score: f64, epoch: u64) -> bool 
     false
 }
 
+/// Apply epoch-based decay using the stored top agent staleness state.
 pub fn apply_epoch_decay(weight: f64, params: &DecayParams) -> f64 {
     if let Some(state) = get_top_agent_state() {
         if state.decay_active {
