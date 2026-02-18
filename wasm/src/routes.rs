@@ -48,5 +48,15 @@ pub fn get_route_definitions() -> Vec<RouteDefinition> {
             path: String::from("/stats"),
             description: String::from("Challenge statistics: total submissions, active miners"),
         },
+        RouteDefinition {
+            method: String::from("GET"),
+            path: String::from("/agent/:hotkey/code"),
+            description: String::from("Returns stored agent code package for a miner"),
+        },
+        RouteDefinition {
+            method: String::from("GET"),
+            path: String::from("/agent/:hotkey/logs"),
+            description: String::from("Returns evaluation logs for a miner"),
+        },
     ]
 }

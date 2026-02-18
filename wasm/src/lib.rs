@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+mod agent_storage;
 mod dataset;
 mod routes;
 mod scoring;
@@ -18,7 +19,8 @@ use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput};
 
 use crate::scoring::{calculate_aggregate, format_summary, to_weight};
 use crate::types::{
-    ChallengeParams, DatasetSelection, LlmJudgeRequest, LlmJudgeResponse, Submission, TaskResult,
+    AgentLogEntry, AgentLogs, ChallengeParams, DatasetSelection, LlmJudgeRequest,
+    LlmJudgeResponse, Submission, TaskResult,
 };
 
 const MAX_SUBMISSION_SIZE: u64 = 64 * 1024 * 1024;
@@ -167,6 +169,10 @@ impl Challenge for TermChallengeWasm {
             }
         }
 
+        let miner_hotkey = submission.miner_hotkey;
+        let epoch = submission.epoch;
+        let agent_hash = submission.agent_hash;
+        let package_zip = submission.package_zip;
         let mut results: Vec<TaskResult> = submission.task_results;
 
         if let Some(ref url) = params.llm_judge_url {
@@ -188,7 +194,37 @@ impl Challenge for TermChallengeWasm {
         let score = (weight * 10_000.0) as i64;
         let message = format_summary(&aggregate);
 
-        set_last_submission_epoch(&submission.miner_hotkey, submission.epoch);
+        let _ = agent_storage::store_agent_code(&miner_hotkey, epoch, &package_zip);
+        let _ = agent_storage::store_agent_hash(&miner_hotkey, epoch, &agent_hash);
+
+        let mut entries = Vec::with_capacity(results.len());
+        let mut total_size_bytes: u64 = 0;
+        for r in &results {
+            let output_preview = agent_storage::truncate_output(
+                &r.agent_output,
+                agent_storage::MAX_TASK_OUTPUT_PREVIEW,
+            );
+            total_size_bytes = total_size_bytes.saturating_add(output_preview.len() as u64);
+            entries.push(AgentLogEntry {
+                task_id: r.task_id.clone(),
+                passed: r.passed,
+                score: r.score,
+                execution_time_ms: r.execution_time_ms,
+                output_preview,
+                error: r.error.clone(),
+            });
+        }
+
+        let logs = AgentLogs {
+            miner_hotkey: miner_hotkey.clone(),
+            epoch,
+            agent_hash: agent_hash.clone(),
+            entries,
+            total_size_bytes,
+        };
+        let _ = agent_storage::store_agent_logs(&miner_hotkey, epoch, &logs);
+
+        set_last_submission_epoch(&miner_hotkey, epoch);
 
         EvaluationOutput::success(score, &message)
     }
@@ -214,6 +250,10 @@ impl Challenge for TermChallengeWasm {
         }
 
         if submission.package_zip.is_empty() {
+            return false;
+        }
+
+        if submission.package_zip.len() > 1_048_576 {
             return false;
         }
 
