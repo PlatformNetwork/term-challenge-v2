@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This is the main library crate (`term-challenge`) containing all shared logic. Both binaries (`term` and `term-server`) depend on this crate. The entry point is `src/lib.rs`.
+This is the main library crate (`term-challenge`) containing all shared logic. The `term` CLI binary and the `term-challenge-wasm` evaluation module depend on this crate. The entry point is `src/lib.rs`.
 
 ## Module Map
 
@@ -23,9 +23,6 @@ This is the main library crate (`term-challenge`) containing all shared logic. B
 | `task` | `src/task/` | Task types, registry, harness, challenge definitions |
 | `agent` | `src/agent/` | Agent registry, submission handling, review |
 | `admin` | `src/admin/` | Sudo controls, subnet config, challenge config |
-| `server` | `src/server/` | Server startup, state management |
-| `api` | `src/api/` | REST API: routes, handlers, middleware, LLM proxy, errors |
-| `synthetic` | `src/synthetic/` | Synthetic task generation via LLM, scheduling |
 
 ## Conventions
 

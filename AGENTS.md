@@ -9,14 +9,13 @@ Term Challenge is a terminal-based evaluation framework for AI agents on the Bit
 ```
 term-challenge/
 ├── bin/
-│   ├── server/main.rs       # term-server — always-on challenge server (axum HTTP + WebSocket)
 │   └── term/main.rs         # term — CLI for miners (submit, bench, status, leaderboard)
 ├── src/
 │   ├── lib.rs               # Crate root — module declarations and re-exports
 │   ├── core/                # Fundamental types: Hotkey, ChallengeId, TaskResult
 │   ├── crypto/              # sr25519 auth, x25519 encryption, SS58, API key handling
 │   ├── util/                # Timestamp, hashing (SHA-256, Blake2), encoding helpers
-│   ├── storage/             # Persistence: PostgreSQL (server), SQLite (validator), chain
+│   ├── storage/             # Persistence: PostgreSQL, SQLite (validator), chain
 │   ├── cache/               # In-memory caches: metagraph, task stream
 │   ├── client/              # HTTP client, WebSocket (platform & validator), LLM proxy
 │   ├── chain/               # Bittensor integration: block sync, epoch calc, on-chain eval
@@ -27,11 +26,8 @@ term-challenge/
 │   ├── swe_forge/           # SWE-Forge integration: term-executor client, result types
 │   ├── task/                # Task types, registry, harness, challenge definitions
 │   ├── agent/               # Agent management: registry, submission, review
-│   ├── admin/               # Sudo/admin controls, subnet config, challenge config
-│   ├── server/              # Server startup and state (uses axum)
-│   ├── api/                 # REST API: routes, handlers, middleware, LLM proxy, errors
-│   └── synthetic/           # Synthetic dataset generation
-├── docker/                  # Dockerfiles for base image, compiler, agent runner
+│   └── admin/               # Sudo/admin controls, subnet config, challenge config
+├── wasm/                    # WASM challenge evaluation module (no_std)
 ├── migrations/              # PostgreSQL schema migrations (001–038)
 ├── data/tasks/              # Built-in task definitions (hello-world, etc.)
 ├── checkpoints/             # Checkpoint JSON files for evaluation datasets
@@ -44,16 +40,10 @@ term-challenge/
 ### Data Flow
 
 1. **Miner** writes a Python agent and submits via `term wizard` CLI
-2. **Server** (`term-server`) receives the submission, validates code, compiles to PyInstaller binary
-3. **Server** assigns the agent to 3 **Validators** via WebSocket
-4. **Validators** download the binary and dispatch evaluation batches to **term-executor** workers via **Basilica** for SWE-Forge evaluation
-5. **term-executor** workers run agents against SWE-Forge tasks and return results through Basilica
-6. **Server** aggregates scores, calculates weights, and submits to the Bittensor chain
-
-### Two Operational Modes
-
-- **Server mode** (`term-server`): Requires `DATABASE_URL` (PostgreSQL). Handles submissions, compilation, validator assignment, scoring, weight setting.
-- **Validator mode**: No `DATABASE_URL`. Connects via WebSocket, downloads binaries, dispatches SWE-Forge evaluations to term-executor workers via Basilica, submits results.
+2. **Validators** receive agent submissions, dispatch evaluation batches to **term-executor** workers via **Basilica** for SWE-Forge evaluation
+3. **term-executor** workers run agents against SWE-Forge tasks and return results through Basilica
+4. **WASM module** (`wasm/`) scores task results deterministically, optionally invoking an LLM judge
+5. Consensus scores determine miner weights and TAO emissions on the Bittensor chain
 
 ## Tech Stack
 
@@ -61,16 +51,14 @@ term-challenge/
 |-------|-----------|
 | Language | Rust 1.90+ (edition 2021) |
 | Async Runtime | Tokio (full features) |
-| HTTP Framework | Axum 0.7 |
 | CLI Framework | Clap 4.5 (derive) |
 | Database (server) | PostgreSQL via `tokio-postgres` + `deadpool-postgres` |
 | Database (validator) | SQLite via `rusqlite` (bundled) |
-| Docker | Bollard 0.18 |
 | Crypto | `sp-core` (sr25519), `schnorrkel`, `x25519-dalek`, `chacha20poly1305` |
 | Serialization | serde + serde_json + serde_yaml + toml |
-| Agent Language | Python 3.10+ (agents run inside Docker) |
+| Agent Language | Python 3.10+ |
 | Agent SDK | `term_sdk` (Python) / litellm (SDK 3.0) |
-| Container Runtime | Docker with optional secure-container-runtime |
+| WASM Evaluation | `platform-challenge-sdk-wasm` (no_std) |
 
 ## Build & Test Commands
 
@@ -103,9 +91,6 @@ cargo clippy --all-targets --workspace -- -W clippy::all \
 # Run the CLI
 cargo run --bin term -- --help
 
-# Run the server
-cargo run --bin term-server -- --help
-
 # Install Python SDK (for agent development)
 pip install -e sdk/python  # if sdk/python exists
 pip install git+https://github.com/PlatformNetwork/term-challenge.git#subdirectory=sdk/python
@@ -128,7 +113,7 @@ To install hooks: `bash .githooks/install.sh` or `git config core.hooksPath .git
 
 2. **All async code must use Tokio.** The entire crate uses `tokio` with full features. Do NOT introduce alternative async runtimes (async-std, smol). All `#[tokio::main]` and `#[tokio::test]` annotations must remain consistent.
 
-3. **SWE-Forge evaluations run on term-executor workers.** Agents are evaluated by term-executor workers coordinated through Basilica. The `src/swe_forge/` module handles communication with these workers. Docker containers on executor nodes provide the security boundary with memory limits, CPU limits, and network restrictions.
+3. **SWE-Forge evaluations run on term-executor workers.** Agents are evaluated by term-executor workers coordinated through Basilica. The `src/swe_forge/` module handles communication with these workers.
 
 4. **Cryptographic signatures use sr25519 (Substrate/Bittensor standard).** Authentication uses `sp-core` and `schnorrkel` for sr25519 signing/verification. SS58 encoding uses prefix 42. Do NOT switch to ed25519 or secp256k1 — the Bittensor chain requires sr25519.
 
@@ -136,7 +121,7 @@ To install hooks: `bash .githooks/install.sh` or `git config core.hooksPath .git
 
 6. **Clippy must pass with the project's specific allow-list.** CI runs clippy with `-W clippy::all -D warnings` plus these allowed lints: `too_many_arguments`, `type_complexity`, `large_enum_variant`, `should_implement_trait`. Do not add new global allows without justification.
 
-7. **Error handling uses `anyhow` for binaries and `thiserror` for library code.** Binary crates (`bin/server/`, `bin/term/`) return `anyhow::Result`. Library modules in `src/` define typed errors with `thiserror::Error` derive. Do not use `unwrap()` or `expect()` in library code paths that handle user input or network data.
+7. **Error handling uses `anyhow` for binaries and `thiserror` for library code.** Binary crates (`bin/term/`) return `anyhow::Result`. Library modules in `src/` define typed errors with `thiserror::Error` derive. Do not use `unwrap()` or `expect()` in library code paths that handle user input or network data.
 
 8. **Conventional commits are required.** The project uses `release-please` for automated releases. All commits must follow the conventional commits format (`feat:`, `fix:`, `chore:`, `docs:`, `perf:`, `refactor:`, `ci:`, `test:`). Breaking changes use `feat!:` or `fix!:` or a `BREAKING CHANGE:` footer.
 
@@ -149,7 +134,6 @@ To install hooks: `bash .githooks/install.sh` or `git config core.hooksPath .git
 - Use `serde` derive macros for all serializable types
 - Follow the existing module structure: add new modules under the appropriate thematic directory in `src/`
 - Use `clap` derive macros for any new CLI arguments
-- Handle Docker errors gracefully — validators must continue operating if a single container fails
 - Use `parking_lot::Mutex`/`RwLock` over `std::sync::Mutex` (the project already uses `parking_lot`)
 - Keep re-exports in `src/lib.rs` updated when adding public types
 
