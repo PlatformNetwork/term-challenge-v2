@@ -24,6 +24,7 @@ fn task(
     }
 }
 
+/// Returns the built-in set of terminal evaluation tasks.
 pub fn builtin_tasks() -> Vec<TaskDefinition> {
     vec![
         task(

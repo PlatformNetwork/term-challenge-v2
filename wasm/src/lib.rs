@@ -1,3 +1,10 @@
+//! Terminal Benchmark Challenge — WASM evaluation module.
+//!
+//! This crate implements the challenge evaluation logic as a `no_std` WASM
+//! module. It deserialises submissions and challenge parameters via `bincode`,
+//! scores each task result, optionally invokes an LLM judge over the host HTTP
+//! bridge, and produces an aggregate score.
+
 #![no_std]
 
 extern crate alloc;
@@ -15,12 +22,21 @@ use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput};
 use crate::scoring::{calculate_aggregate, format_summary, to_weight};
 use crate::types::{ChallengeParams, LlmJudgeRequest, LlmJudgeResponse, Submission, TaskResult};
 
+/// Maximum allowed size for a serialised submission (16 MiB).
 const MAX_SUBMISSION_SIZE: u64 = 16 * 1024 * 1024;
+/// Maximum allowed size for serialised challenge parameters (4 MiB).
 const MAX_PARAMS_SIZE: u64 = 4 * 1024 * 1024;
+/// Maximum allowed size for a serialised LLM judge response (1 MiB).
 const MAX_LLM_RESPONSE_SIZE: u64 = 1024 * 1024;
+/// Maximum number of tasks a single submission may contain.
 const MAX_TASKS: usize = 256;
+/// Maximum byte length for `agent_output` or `test_output` fields (1 MiB).
 const MAX_OUTPUT_FIELD_SIZE: usize = 1024 * 1024;
+/// Multiplier applied to the 0.0–1.0 weight to produce an integer score
+/// (basis-point precision: 1.0 → 10 000).
+const SCORE_SCALE_FACTOR: f64 = 10_000.0;
 
+/// Bincode options for deserialising submissions with a size limit.
 fn bincode_options_submission() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_SUBMISSION_SIZE)
@@ -28,6 +44,7 @@ fn bincode_options_submission() -> impl Options {
         .allow_trailing_bytes()
 }
 
+/// Bincode options for deserialising challenge parameters with a size limit.
 fn bincode_options_params() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_PARAMS_SIZE)
@@ -35,6 +52,7 @@ fn bincode_options_params() -> impl Options {
         .allow_trailing_bytes()
 }
 
+/// Bincode options for deserialising LLM judge responses with a size limit.
 fn bincode_options_llm() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_LLM_RESPONSE_SIZE)
@@ -42,6 +60,10 @@ fn bincode_options_llm() -> impl Options {
         .allow_trailing_bytes()
 }
 
+/// Validates a single task result for well-formedness.
+///
+/// Returns `false` if the task ID is empty, the score is non-finite or out of
+/// range, or either output field exceeds [`MAX_OUTPUT_FIELD_SIZE`].
 fn validate_task_result(result: &TaskResult) -> bool {
     if result.task_id.is_empty() {
         return false;
@@ -58,6 +80,7 @@ fn validate_task_result(result: &TaskResult) -> bool {
     true
 }
 
+/// WASM challenge implementation for the Terminal Benchmark.
 pub struct TermChallengeWasm;
 
 impl Default for TermChallengeWasm {
@@ -67,10 +90,15 @@ impl Default for TermChallengeWasm {
 }
 
 impl TermChallengeWasm {
+    /// Creates a new [`TermChallengeWasm`] instance.
     pub const fn new() -> Self {
         Self
     }
 
+    /// Attempts to call the LLM judge endpoint for a task result.
+    ///
+    /// Returns `None` on any error (serialisation, HTTP, or invalid response),
+    /// allowing the caller to fall back to the original score.
     fn try_llm_judge(url: &str, result: &TaskResult, instruction: &str) -> Option<f64> {
         if !url.starts_with("https://") {
             return None;
@@ -171,7 +199,7 @@ impl Challenge for TermChallengeWasm {
 
         let aggregate = calculate_aggregate(&params.tasks, &results);
         let weight = to_weight(&aggregate);
-        let score = (weight * 10_000.0) as i64;
+        let score = (weight * SCORE_SCALE_FACTOR) as i64;
         let message = format_summary(&aggregate);
 
         EvaluationOutput::success(score, &message)
