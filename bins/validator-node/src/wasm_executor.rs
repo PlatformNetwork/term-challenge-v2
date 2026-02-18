@@ -116,7 +116,6 @@ pub struct WasmChallengeExecutor {
     module_cache: RwLock<HashMap<String, Arc<WasmModule>>>,
 }
 
-#[allow(dead_code)]
 impl WasmChallengeExecutor {
     pub fn new(config: WasmExecutorConfig) -> Result<Self> {
         let runtime_config = RuntimeConfig {
@@ -291,6 +290,7 @@ impl WasmChallengeExecutor {
         Ok((output, metrics))
     }
 
+    #[allow(dead_code)]
     pub fn execute_validation(
         &self,
         module_path: &str,
@@ -421,6 +421,7 @@ impl WasmChallengeExecutor {
         Ok(offset as i32)
     }
 
+    #[allow(dead_code)]
     pub fn execute_get_tasks(
         &self,
         module_path: &str,
@@ -512,6 +513,7 @@ impl WasmChallengeExecutor {
         Ok((result_data, metrics))
     }
 
+    #[allow(dead_code)]
     pub fn execute_configure(
         &self,
         module_path: &str,
@@ -589,6 +591,7 @@ impl WasmChallengeExecutor {
         Ok((result, metrics))
     }
 
+    #[allow(dead_code)]
     pub fn execute_get_routes(
         &self,
         module_path: &str,
@@ -680,6 +683,7 @@ impl WasmChallengeExecutor {
         Ok((result_data, metrics))
     }
 
+    #[allow(dead_code)]
     pub fn execute_handle_route(
         &self,
         module_path: &str,
@@ -832,6 +836,7 @@ impl WasmChallengeExecutor {
         }
     }
 
+    #[allow(dead_code)]
     pub fn clear_cache(&self) {
         let mut cache = self.module_cache.write();
         let count = cache.len();
@@ -839,6 +844,7 @@ impl WasmChallengeExecutor {
         info!(cleared = count, "WASM module cache cleared");
     }
 
+    #[allow(dead_code)]
     pub fn cached_module_count(&self) -> usize {
         self.module_cache.read().len()
     }

@@ -488,6 +488,7 @@ async fn main() -> Result<()> {
                     &state_manager,
                     &storage,
                     &wasm_module_dir,
+                    &wasm_executor,
                 ).await;
             }
 
@@ -701,6 +702,7 @@ async fn handle_network_event(
     state_manager: &Arc<StateManager>,
     storage: &Arc<LocalStorage>,
     wasm_module_dir: &Path,
+    wasm_executor: &Option<Arc<WasmChallengeExecutor>>,
 ) {
     match event {
         NetworkEvent::Message { source, message } => match message {
@@ -1187,11 +1189,97 @@ async fn handle_network_event(
                         }
                         platform_core::SudoAction::RemoveChallenge { ref challenge_id } => {
                             info!(challenge_id = %challenge_id, "Sudo: removing challenge");
+                            let cid = *challenge_id;
+                            let removed =
+                                state_manager.apply(|state| state.remove_challenge_from_sudo(&cid));
+                            if removed {
+                                let challenge_id_str = challenge_id.to_string();
+                                let module_filename = format!("{}.wasm", challenge_id_str);
+                                if let Some(ref executor) = wasm_executor {
+                                    executor.invalidate_cache(&module_filename);
+                                }
+                                info!(
+                                    challenge_id = %challenge_id,
+                                    "Challenge deactivated in state"
+                                );
+                            } else {
+                                warn!(
+                                    challenge_id = %challenge_id,
+                                    "Challenge not found for removal"
+                                );
+                            }
                         }
                         platform_core::SudoAction::EditChallenge {
-                            ref challenge_id, ..
+                            ref challenge_id,
+                            ref name,
+                            description: _,
+                            ref wasm_code,
+                            config: _,
+                            ref weight,
                         } => {
                             info!(challenge_id = %challenge_id, "Sudo: editing challenge");
+                            let challenge_id_str = challenge_id.to_string();
+                            let mut code_updated = false;
+                            if let Some(ref code) = wasm_code {
+                                if code.len() > MAX_WASM_MODULE_SIZE {
+                                    warn!(
+                                        challenge_id = %challenge_id,
+                                        wasm_bytes = code.len(),
+                                        max_bytes = MAX_WASM_MODULE_SIZE,
+                                        "Rejected EditChallenge WASM update: exceeds maximum allowed size"
+                                    );
+                                } else {
+                                    let module_path =
+                                        wasm_module_dir.join(format!("{}.wasm", challenge_id_str));
+                                    if let Err(e) = tokio::fs::write(&module_path, code).await {
+                                        error!(
+                                            challenge_id = %challenge_id,
+                                            error = %e,
+                                            "Failed to write updated WASM module to filesystem"
+                                        );
+                                    } else {
+                                        info!(
+                                            challenge_id = %challenge_id,
+                                            path = %module_path.display(),
+                                            bytes = code.len(),
+                                            "Updated WASM module written to filesystem"
+                                        );
+                                        code_updated = true;
+                                    }
+                                    let wasm_key =
+                                        StorageKey::new("wasm_modules", &challenge_id_str);
+                                    if let Err(e) = storage.put_json(wasm_key, code).await {
+                                        warn!(
+                                            challenge_id = %challenge_id,
+                                            error = %e,
+                                            "Failed to store updated WASM module in distributed storage"
+                                        );
+                                    }
+                                }
+                            }
+                            if code_updated {
+                                let module_filename = format!("{}.wasm", challenge_id_str);
+                                if let Some(ref executor) = wasm_executor {
+                                    executor.invalidate_cache(&module_filename);
+                                }
+                            }
+                            let cid = *challenge_id;
+                            let edit_name = name.clone();
+                            let edit_weight = *weight;
+                            let edited = state_manager.apply(|state| {
+                                state.edit_challenge_from_sudo(&cid, edit_name, edit_weight)
+                            });
+                            if edited {
+                                info!(
+                                    challenge_id = %challenge_id,
+                                    "Challenge updated in state"
+                                );
+                            } else {
+                                warn!(
+                                    challenge_id = %challenge_id,
+                                    "Challenge not found for editing"
+                                );
+                            }
                         }
                         platform_core::SudoAction::StopNetwork { ref reason } => {
                             let safe_reason = sanitize_for_log(reason);
