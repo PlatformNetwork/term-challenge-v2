@@ -64,7 +64,7 @@ pub enum P2PMessage {
     AgentLogProposal(AgentLogProposalMessage),
 
     /// Sudo action from subnet owner
-    SudoAction(SudoActionMessage),
+    SudoAction(Box<SudoActionMessage>),
 }
 
 impl P2PMessage {

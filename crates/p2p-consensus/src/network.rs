@@ -55,6 +55,7 @@ pub struct NetworkBehaviour {
 
 /// Events from the network layer
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum NetworkEvent {
     /// Received a P2P message
     Message { source: PeerId, message: P2PMessage },
@@ -72,6 +73,7 @@ pub enum NetworkEvent {
 
 /// Commands for controlling the P2P network
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum P2PCommand {
     /// Broadcast message to all peers
     Broadcast(P2PMessage),

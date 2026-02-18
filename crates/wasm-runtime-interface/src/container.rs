@@ -66,16 +66,10 @@ pub enum ContainerExecError {
 /// Container execution policy.
 ///
 /// All container execution is disabled in WASM-only mode.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContainerPolicy {
     /// Whether container execution is enabled (always false in WASM-only mode).
     pub enabled: bool,
-}
-
-impl Default for ContainerPolicy {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
 }
 
 /// Container execution request (stub for backward compatibility).
