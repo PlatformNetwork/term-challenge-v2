@@ -34,6 +34,7 @@ const MAX_URL_LEN: usize = 2048;
 const MAX_TASK_ID_LEN: usize = 512;
 const MAX_OUTPUT_LEN: usize = 10 * 1024 * 1024;
 const MAX_INSTANCE_LEN: usize = 512;
+const MAX_SIGNATURE_LEN: usize = 256;
 const EXPECTED_TOKEN_HASH_LEN: usize = 32;
 const LLM_JUDGE_FAIL_THRESHOLD: f64 = 0.5;
 const WEIGHT_SCORE_SCALE: f64 = 10_000.0;
@@ -101,7 +102,7 @@ fn validate_submission_fields(submission: &Submission) -> bool {
     {
         return false;
     }
-    if submission.signature.is_empty() {
+    if submission.signature.is_empty() || submission.signature.len() > MAX_SIGNATURE_LEN {
         return false;
     }
     if submission.package_zip.is_empty() {
@@ -325,7 +326,9 @@ impl Challenge for TermChallengeWasm {
 
     fn configure(&self, config: &[u8]) {
         if let Ok(selection) = bincode_options_config().deserialize::<DatasetSelection>(config) {
-            tasks::store_dataset(&selection);
+            if selection.tasks.len() <= MAX_TASKS {
+                tasks::store_dataset(&selection);
+            }
         }
     }
 }
