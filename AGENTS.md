@@ -1,177 +1,204 @@
-# AGENTS.md — Term Challenge
+# Agent Development Guide
 
-## Project Purpose
+This document explains how agents (miners) interact with the Platform network.
 
-Term Challenge is a WASM evaluation module for AI agents on the Bittensor network via platform-v2. Miners submit Python agent packages (as zip files) that solve SWE-bench tasks. The WASM module runs inside platform-v2 validators to validate submissions, evaluate task results, and compute scores. A companion native CLI (`term-cli`) provides a TUI for monitoring leaderboards, evaluation progress, and network health.
+---
 
-## Architecture Overview
+## Important: Challenge-Specific Logic
 
-```
-term-challenge/
-├── Cargo.toml          # workspace with members = ["wasm", "cli"]
-├── wasm/
-│   ├── Cargo.toml      # cdylib, depends on platform-challenge-sdk-wasm
-│   └── src/
-│       ├── lib.rs              # Challenge impl + register_challenge!
-│       ├── types.rs            # Submission, TaskDefinition, AgentLogs, etc.
-│       ├── scoring.rs          # Aggregate scoring, decay, weight calculation
-│       ├── tasks.rs            # Active dataset storage (SWE-bench tasks)
-│       ├── dataset.rs          # Dataset selection, consensus, and random index generation
-│       ├── routes.rs           # Challenge route definitions and handlers for RPC
-│       ├── agent_storage.rs    # Agent code, log, and evaluation status storage
-│       ├── ast_validation.rs   # Python AST whitelist validation (imports, builtins, patterns)
-│       ├── llm_review.rs       # LLM-based code review, reviewer selection, aggregation
-│       ├── submission.rs       # Named submission registry and version tracking
-│       └── timeout_handler.rs  # Review assignment timeout tracking and replacement
-├── cli/
-│   ├── Cargo.toml      # native binary, ratatui TUI
-│   └── src/
-│       ├── main.rs     # Entry point, event loop
-│       ├── app.rs      # Application state
-│       ├── ui.rs       # Ratatui UI rendering
-│       └── rpc.rs      # JSON-RPC 2.0 client
-├── docs/
-│   ├── architecture.md
-│   ├── miner/
-│   │   ├── how-to-mine.md
-│   │   └── submission.md
-│   └── validator/
-│       └── setup.md
-├── .github/
-│   └── workflows/
-│       ├── ci.yml          # Build, clippy, test, WASM build, release on tags
-│       └── release.yml     # release-please + artifact publishing
-├── AGENTS.md
-├── README.md
-├── LICENSE
-├── CHANGELOG.md
-└── .githooks/
+**Platform is a fully decentralized P2P network for distributed evaluation.** It does not contain challenge-specific agent logic.
+
+Each challenge defines:
+- Task definitions and evaluation criteria
+- Submission formats and requirements
+- Scoring algorithms
+
+Challenge crates are maintained in their own repositories and import `platform-challenge-sdk-wasm` as a git dependency. See the `challenges/` directory for instructions on adding a new challenge.
+
+---
+
+## What is Platform?
+
+Platform is a **fully decentralized P2P infrastructure** that:
+
+1. **Propagates submissions** from miners across the validator network via gossipsub
+2. **Orchestrates evaluation** across distributed validators using DHT coordination
+3. **Aggregates scores** using stake-weighted consensus (P2P)
+4. **Submits weights** to Bittensor at epoch boundaries
+
+```mermaid
+flowchart LR
+    Miners[Miners] -->|Submissions| P2P[(libp2p Mesh)]
+    P2P --> Validators[Validator Nodes]
+    Validators --> Runtime[WASM Challenge Runtime]
+    Validators -->|Weights| Bittensor[Bittensor Chain]
 ```
 
-### Data Flow
+---
 
-1. **Miner** submits a zip package with agent code and task results
-2. **RPC** receives submission, verifies signature, relays to validators
-3. **Validators** run WASM `validate()` — checks signature, epoch rate limit, Basilica metadata, package size
-4. **50% validator approval** → submission stored in blockchain
-5. **Validators** run WASM `evaluate()`:
-   a. **AST validation** — checks Python code against import whitelist, forbidden builtins, and dangerous patterns
-   b. **LLM review** — optional LLM-based security review via `host_http_post()` (if enabled)
-   c. **Task scoring** — scores task results, optionally applies LLM judge per task
-   d. **Aggregate & decay** — computes pass rate, applies epoch-based decay
-6. **Agent code & logs** stored on-chain for auditability (code ≤ 1MB, logs ≤ 256KB)
-7. **Log consensus** — validators propose logs, >50% hash agreement required
-8. **Consensus** aggregates scores, applies decay, submits weights to Bittensor
+## Agent Lifecycle
 
-### Key Concepts
+### 1. Development
 
-- **WASM-only**: All challenge logic runs as a `wasm32-unknown-unknown` module loaded by platform-v2
-- **Host functions**: WASM interacts with the outside world via `host_http_post()`, `host_storage_get()`, `host_storage_set()`, `host_consensus_get_epoch()`, `host_consensus_get_submission_count()`, `host_random_seed()`, `host_get_timestamp()`
-- **SWE-bench datasets**: Tasks are selected from HuggingFace CortexLM/swe-bench via P2P consensus
-- **Epoch rate limiting**: 1 submission per 3 epochs per miner
-- **Top agent decay**: 60-epoch grace period, then exponential decay with 20-epoch half-life
+Develop your agent following the challenge-specific requirements. Challenge crates implement the `Challenge` trait from `platform-challenge-sdk-wasm`:
 
-## Agent Code Storage
+```rust
+// Example: my-challenge/src/lib.rs
+use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput};
 
-Agent submissions are stored on-chain for auditability and retrieval. The `agent_storage` module manages three storage categories:
+pub struct MyChallenge;
 
-| Storage Key Format | Content | Max Size |
-|---|---|---|
-| `agent_code:<hotkey>:<epoch>` | Raw zip package bytes | 1 MB (1,048,576 bytes) |
-| `agent_hash:<hotkey>:<epoch>` | Hash of the agent package | — |
-| `agent_logs:<hotkey>:<epoch>` | Serialized `AgentLogs` struct | 256 KB (262,144 bytes) |
+impl Challenge for MyChallenge {
+    fn name(&self) -> &'static str { "my-challenge" }
+    fn version(&self) -> &'static str { "0.1.0" }
+    fn evaluate(&self, input: EvaluationInput) -> EvaluationOutput { /* ... */ }
+    fn validate(&self, input: EvaluationInput) -> bool { /* ... */ }
+}
 
-- **Package size limit**: Submissions with `package_zip` exceeding 1 MB are rejected at the storage layer.
-- **Log size limit**: Serialized logs exceeding 256 KB are rejected. Individual task output previews are truncated to 4 KB (4,096 bytes) before storage.
-- **Key format**: Keys are constructed as `<prefix><hotkey_bytes>:<epoch_le_bytes>` using little-endian encoding for the epoch.
+platform_challenge_sdk_wasm::register_challenge!(MyChallenge, MyChallenge::new());
+```
 
-## CLI
+**Check the challenge documentation** for the correct submission format and evaluation criteria.
 
-The `term-cli` crate is a **native binary** (NOT `no_std`) that provides a terminal user interface for monitoring the term-challenge network.
+### 2. Submission
 
-### Design
+Submit your agent's output to the P2P network. The submission is:
+- Broadcast to validators via libp2p gossipsub
+- Validated by the challenge WASM module
+- Distributed across the validator network for evaluation
 
-- **Framework**: Built with [ratatui](https://ratatui.rs/) for TUI rendering
-- **Transport**: Connects to validators via JSON-RPC 2.0 over HTTP
-- **Target**: Standard `x86_64` / `aarch64` native targets (not WASM)
+### 3. Evaluation
 
-### Available Tabs
+Validators independently evaluate your submission:
+- Each validator runs the challenge-specific WASM module in a sandboxed runtime
+- Your submission executes deterministically
+- Scores are computed based on challenge criteria
 
-| Tab | Description |
-|---|---|
-| Leaderboard | Current scores, ranks, and miner hotkeys |
-| Evaluation | Live evaluation progress for pending submissions |
-| Submission | Recent submission history and status |
-| Network | Validator count, epoch info, system health |
+### 4. Scoring
 
-### Keyboard Shortcuts
+Validators aggregate scores across the P2P network:
+- Stake-weighted averaging via DHT coordination
+- Outlier detection (removes anomalous validators)
+- Consensus achieved through gossipsub protocol
 
-| Key | Action |
-|---|---|
-| `Tab` / `Shift+Tab` | Switch between tabs |
-| `↑` / `↓` | Navigate rows |
-| `r` | Refresh data |
-| `q` | Quit |
+### 5. Rewards
 
-### RPC Methods Used
+At each epoch boundary (tempo synced from Bittensor), weights are submitted to the chain:
+- Higher scores = higher weights = more TAO rewards
+- Weights are normalized by sum (each weight divided by total)
 
-- `epoch_current` — Current epoch number, phase, and block height
-- `system_health` — Node health status
-- `validator_count` — Number of active validators
-- `challenge_list` — Auto-detect challenge ID when only one exists
-- `challenge_call` with paths:
-  - `/leaderboard` — Leaderboard data
-  - `/stats` — Total submissions and active miners
-  - `/decay` — Top agent decay status
-  - `/agent/:hotkey/journey` — Evaluation status journey
-  - `/agent/:hotkey/logs` — Evaluation logs for a miner
-- `evaluation_getProgress` — Evaluation progress for a submission
+---
 
-## Build Commands
+## P2P Network
+
+### How It Works
+
+Platform uses libp2p for fully decentralized communication:
+
+- **Gossipsub**: Submissions and scores are broadcast across the validator network
+- **DHT (Kademlia)**: Peer discovery and coordination without central servers
+- **Direct Connections**: Validators communicate directly with each other
+
+### Authentication
+
+All P2P messages are signed with the validator's Bittensor hotkey:
+- Uses `sr25519` signature scheme (Substrate/Bittensor compatible, via `sp_core`)
+- Includes timestamp to prevent replay attacks
+- Validators verify signatures before processing
+
+### Submitting via P2P
+
+Miners connect to the validator mesh to submit agent outputs. Submissions are propagated via gossipsub to all validators for evaluation.
+
+---
+
+## Common Questions
+
+### Where do I find the challenge SDK?
+
+The WASM challenge SDK is at `crates/challenge-sdk-wasm/`. The server-side SDK is at `crates/challenge-sdk/`. Challenge crates in `challenges/` use these to implement evaluation logic.
+
+### Why did my submission fail?
+
+Check the challenge module for:
+- Required submission format and fields
+- Resource limits (memory, CPU, time)
+- Validation rules in the `validate()` method
+
+### How are scores calculated?
+
+Each challenge defines its own scoring algorithm in its `evaluate()` method. Validators coordinate score aggregation via P2P consensus.
+
+### Can I test locally?
+
+Build and test challenge WASM modules locally:
 
 ```bash
-# Build CLI (native)
-cargo build --release -p term-cli
+# Build a challenge WASM artifact (example)
+cargo build --release --target wasm32-unknown-unknown -p my-challenge
 
-# Build WASM module
-cargo build --release --target wasm32-unknown-unknown -p term-challenge-wasm
-
-# Check (no target needed for workspace check)
-cargo check -p term-challenge-wasm
+# Run workspace tests
+cargo test
 ```
 
-## Git Hooks
+### What's the evaluation timeout?
 
-Git hooks live in `.githooks/` and are activated with `git config core.hooksPath .githooks`.
+Defined by each challenge and the WASM runtime policy. Check the challenge and runtime configuration for specific limits.
 
-| Hook | What it does |
-|------|-------------|
-| `pre-commit` | Runs `cargo fmt --all`, stages formatted files. Skippable with `SKIP_GIT_HOOKS=1`. |
-| `pre-push` | Full quality gate: format check → `cargo check` → `cargo clippy` → `cargo test`. Skippable with `SKIP_GIT_HOOKS=1` or `git push --no-verify`. |
+---
 
-## CRITICAL RULES
+## Architecture Summary
 
-1. **No `std` in WASM code.** The module compiles with `#![no_std]`. Use `alloc::` equivalents.
-2. **Cryptographic signatures use sr25519.** SS58 prefix 42. Do NOT switch schemes.
-3. **Conventional commits required.** The project uses `release-please`.
-4. **No `.unwrap()` or `.expect()` in library paths.** Use pattern matching or `unwrap_or_default()`.
-5. **Host functions are the ONLY external interface.** No direct HTTP, no filesystem, no std::net.
-6. **Do NOT add `#[allow(dead_code)]` broadly.** Fix unused code or remove it.
+```mermaid
+flowchart TB
+    Platform[Platform Repository] --> SDK[challenge-sdk]
+    Platform --> SDKW[challenge-sdk-wasm]
+    Platform --> Validator[validator-node]
+    Platform --> Runtime[wasm-runtime-interface]
+    Platform --> P2P[p2p-consensus]
+```
 
-> **Note:** The `cli/` crate is exempt from the `no_std` rule (rule 1) and the host-functions-only rule (rule 5) since it is a native binary that runs outside the WASM sandbox. Rules 2, 3, 4, and 6 still apply to CLI code.
+**Workspace crates** (from `Cargo.toml`):
+- `crates/core` — shared types, crypto (`sr25519`), constants
+- `crates/storage` — local storage layer
+- `crates/distributed-storage` — DHT-backed distributed storage
+- `crates/challenge-sdk` — server-side challenge trait
+- `crates/challenge-sdk-wasm` — WASM challenge trait (`no_std`)
+- `crates/challenge-registry` — challenge metadata registry
+- `crates/epoch` — epoch management synced with Bittensor tempo
+- `crates/bittensor-integration` — Bittensor chain interaction
+- `crates/subnet-manager` — subnet management
+- `crates/rpc-server` — RPC server for validator API
+- `crates/p2p-consensus` — libp2p gossipsub + DHT consensus
+- `crates/wasm-runtime-interface` — WASM runtime host interface
+- `bins/validator-node` — main validator binary
+- `bins/platform-cli` — CLI for downloading and managing challenge CLIs
+- `bins/utils` — CLI utilities
+- `bins/mock-subtensor` — mock Bittensor node for testing
+- `tests` — integration tests
 
-## DO / DO NOT
+**Note:** Platform is fully decentralized—there is no central server. All validators communicate directly via libp2p (gossipsub + DHT).
 
-### DO
-- Use `alloc::string::String`, `alloc::vec::Vec`, `alloc::collections::BTreeMap` (WASM code)
-- Use `serde` with `default-features = false, features = ["derive", "alloc"]` (WASM code)
-- Use `bincode` with `default-features = false` for serialization (WASM code)
-- Use host functions for all I/O: `host_storage_get/set`, `host_http_post`, `host_consensus_get_epoch`, `host_consensus_get_submission_count`, `host_random_seed`, `host_get_timestamp` (WASM code)
-- Keep the `register_challenge!` macro ABI contract intact
-- Use standard `std` library features in the `cli/` crate (it is a native binary)
+---
 
-### DO NOT
-- Do NOT use `std::`, `println!`, `std::collections::HashMap` in WASM code
-- Do NOT add heavy dependencies — the WASM module must stay minimal
-- Do NOT break the WASM ABI (evaluate, validate, get_name, get_version, get_tasks, configure, alloc, get_routes, handle_route)
-- Do NOT store sensitive data in plain text in blockchain storage
+## Getting Started
+
+1. **Choose a challenge** you want to participate in
+2. **Read the challenge documentation** for your chosen challenge
+3. **Understand the submission format** from the challenge's types and evaluation logic
+4. **Submit** through the P2P network
+5. **Monitor** your submission status and scores
+
+---
+
+## Links
+
+- [Bittensor Docs](https://docs.bittensor.com) - Network documentation
+- [Validator Guide](docs/operations/validator.md) - Running a validator
+- [Challenge Integration Guide](docs/challenge-integration.md) - Adding new challenges
+- [Architecture](docs/architecture.md) - System architecture
+
+Platform is fully decentralized—validators communicate directly via P2P without any central server.
+See the main README for deployment instructions.
+
+For challenge-specific questions, refer to the appropriate challenge crate or repository.

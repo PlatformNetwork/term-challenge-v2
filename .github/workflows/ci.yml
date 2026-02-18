@@ -2,10 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
-    tags: ['v*']
+    branches: [main, master, "worker/**"]
+    tags: ["v*"]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      run_nightly:
+        description: "Run optional nightly build/tests"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,45 +19,44 @@ env:
   RUST_BACKTRACE: short
   CARGO_NET_RETRY: 10
   RUSTUP_MAX_RETRIES: 10
-
-permissions:
-  contents: read
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # All Rust jobs run in parallel, sharing cache from previous runs
   build:
     name: Build
     runs-on: blacksmith-32vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y bash ripgrep
+      - name: Verify nightly config (stable dry-run)
+        run: scripts/verify-nightly-config.sh
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "term-ci"
+          shared-key: "platform-ci"
       - run: cargo build --release
 
   clippy:
     name: Clippy
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y bash ripgrep
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "term-ci"
+          shared-key: "platform-ci"
           save-if: false
-      - run: |
-          cargo clippy --all-targets --workspace -- -W clippy::all \
-            -A clippy::too_many_arguments \
-            -A clippy::type_complexity \
-            -A clippy::large_enum_variant \
-            -A clippy::should_implement_trait
+      - run: cargo clippy --all-targets --workspace -- -W clippy::all
 
   test:
     name: Test
@@ -59,65 +64,239 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y bash ripgrep
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "term-ci"
+          shared-key: "platform-ci"
           save-if: false
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo nextest run --workspace -E 'not (test(/live/) | test(/integration/) | test(/e2e/))'
 
-  wasm:
-    name: WASM Build
+  integration:
+    name: Integration
     runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: [build, clippy, test]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y bash ripgrep
+      - uses: taiki-e/install-action@v2
         with:
-          targets: wasm32-unknown-unknown
+          tool: cargo-nextest
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "term-ci"
+          shared-key: "platform-ci"
           save-if: false
+      - name: Ensure Docker available for integration tests
+        run: scripts/install-docker.sh
+      - name: Run integration tests
+        run: cargo nextest run --workspace -E 'test(/integration/)'
 
-      - name: Build WASM module
+  e2e:
+    name: E2E
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    needs: [build, clippy, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y bash ripgrep
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "platform-ci"
+          save-if: false
+      - name: Ensure Docker available for e2e tests
+        run: scripts/install-docker.sh
+      - name: Run e2e tests
+        run: cargo nextest run --workspace -E 'test(/e2e/)'
+
+  coverage:
+    name: Coverage
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    if: github.ref == 'refs/heads/main'
+    concurrency:
+      group: coverage-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "platform-ci"
+          save-if: false
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y bash curl jq
+      - name: Run tests with coverage
         run: |
-          cargo build --release --target wasm32-unknown-unknown \
-            -p term-challenge-wasm --no-default-features
-
-      - name: Verify WASM artifact
-        run: |
-          WASM_PATH="target/wasm32-unknown-unknown/release/term_challenge_wasm.wasm"
-          if [ ! -f "$WASM_PATH" ]; then
-            echo "ERROR: WASM artifact not found at $WASM_PATH"
-            exit 1
-          fi
-          SIZE=$(du -h "$WASM_PATH" | cut -f1)
-          echo "WASM artifact: $WASM_PATH ($SIZE)"
-
-      - name: Upload WASM artifact
+          cargo llvm-cov nextest --workspace --json --output-path coverage.json -E 'not (test(/live/) | test(/integration/) | test(/e2e/))'
+          cargo llvm-cov report --html --output-dir coverage-html
+      - name: Upload coverage HTML report
         uses: actions/upload-artifact@v4
         with:
-          name: term-challenge-wasm
-          path: target/wasm32-unknown-unknown/release/term_challenge_wasm.wasm
+          name: coverage-html
+          path: coverage-html/
+      - name: Publish coverage HTML to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./coverage-html
+          destination_dir: coverage-html
+          keep_files: true
+      - name: Generate and deploy coverage badge
+        run: |
+          COVERAGE=$(jq '.data[0].totals.lines.percent // 0 | round' coverage.json)
+          echo "Coverage: $COVERAGE%"
+          mkdir -p badges
+          if (( COVERAGE >= 80 )); then COLOR="brightgreen"
+          elif (( COVERAGE >= 60 )); then COLOR="green"
+          elif (( COVERAGE >= 40 )); then COLOR="yellow"
+          else COLOR="red"; fi
+          curl -s "https://img.shields.io/badge/coverage-${COVERAGE}%25-${COLOR}" > badges/coverage.svg
+      - name: Deploy coverage badge
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./badges
+          destination_dir: badges
+          keep_files: true
 
-  # Release only on tags, after all checks pass
+  docker:
+    name: Docker
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    needs: [build, clippy, test]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure Docker available
+        run: scripts/install-docker.sh
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y bash ripgrep
+      - uses: useblacksmith/setup-docker-builder@v1
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: useblacksmith/build-push-action@v2
+        with:
+          context: .
+          build-args: |
+            RUSTUP_TOOLCHAIN=stable
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
   release:
     name: Release
     runs-on: blacksmith-32vcpu-ubuntu-2404
-    needs: [build, clippy, test, wasm]
+    needs: [build, clippy, test, docker]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          name: term-challenge-wasm
-          path: release/
+          shared-key: "platform-ci"
+          save-if: false
+      - run: cargo build --release
       - run: |
-          tar -czvf term-challenge-wasm-${{ github.ref_name }}.tar.gz -C release .
+          mkdir -p release
+          cp target/release/validator-node release/
+          cp target/release/csudo release/ 2>/dev/null || true
+          tar -czvf platform-${{ github.ref_name }}-linux-x86_64.tar.gz -C release .
       - uses: softprops/action-gh-release@v2
         with:
-          files: term-challenge-wasm-${{ github.ref_name }}.tar.gz
+          files: platform-${{ github.ref_name }}-linux-x86_64.tar.gz
           generate_release_notes: true
+
+  nightly:
+    name: Nightly Build & Test
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_nightly == 'true'
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+      PLATFORM_RUST_NIGHTLY: "1"
+      PLATFORM_NIGHTLY_RUSTFLAGS: "-Z threads=0"
+      PLATFORM_FAST_LINKER_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install nightly dependencies
+        run: sudo apt-get update && sudo apt-get install -y bash ripgrep mold
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Verify nightly config (nightly dry-run)
+        run: scripts/verify-nightly-config.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "platform-ci-nightly"
+          save-if: false
+      - name: Nightly build
+        run: cargo build --release
+      - name: Nightly tests
+        run: cargo nextest run --workspace -E 'not (test(/live/) | test(/integration/) | test(/e2e/))'
+
+  docker-nightly:
+    name: Docker Nightly Build
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_nightly == 'true'
+    needs: [nightly]
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+      PLATFORM_RUST_NIGHTLY: "1"
+      PLATFORM_NIGHTLY_RUSTFLAGS: "-Z threads=0"
+      PLATFORM_FAST_LINKER_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure Docker available
+        run: scripts/install-docker.sh
+      - uses: useblacksmith/setup-docker-builder@v1
+      - uses: useblacksmith/build-push-action@v2
+        with:
+          context: .
+          push: false
+          build-args: |
+            RUSTUP_TOOLCHAIN=nightly
+            PLATFORM_NIGHTLY_RUSTFLAGS=-Z threads=0
+            PLATFORM_FAST_LINKER_RUSTFLAGS=-C link-arg=-fuse-ld=mold
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install nightly dependencies
+        run: sudo apt-get update && sudo apt-get install -y bash ripgrep mold
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Nightly build
+        run: cargo build --release
+      - name: Nightly tests
+        run: cargo nextest run --workspace -E 'not (test(/live/) | test(/integration/) | test(/e2e/))'
