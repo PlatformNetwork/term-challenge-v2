@@ -10,11 +10,11 @@ Term Challenge is a WASM evaluation module for AI agents on the Bittensor networ
 term-challenge/
 ├── Cargo.toml          # workspace with members = ["wasm"]
 ├── wasm/
-│   ├── Cargo.toml      # cdylib, depends on platform-challenge-sdk-wasm
+│   ├── Cargo.toml      # cdylib + rlib, depends on platform-challenge-sdk-wasm
 │   └── src/
 │       ├── lib.rs       # Challenge impl + register_challenge!
-│       ├── types.rs     # Submission, TaskDefinition, DecayParams, etc.
-│       ├── scoring.rs   # Aggregate scoring, decay, weight calculation
+│       ├── types.rs     # Submission, TaskDefinition, ChallengeParams, etc.
+│       ├── scoring.rs   # Aggregate scoring and weight calculation
 │       └── tasks.rs     # Active dataset storage (SWE-bench tasks)
 ├── AGENTS.md
 ├── README.md
@@ -27,10 +27,10 @@ term-challenge/
 
 1. **Miner** submits a zip package with agent code and task results
 2. **RPC** receives submission, verifies signature, relays to validators
-3. **Validators** run WASM `validate()` — checks signature, epoch rate limit, Basilica metadata
+3. **Validators** run WASM `validate()` — checks field validity, epoch rate limit, task count
 4. **50% validator approval** → submission stored in blockchain
 5. **Validators** run WASM `evaluate()` — scores task results, applies LLM judge
-6. **Consensus** aggregates scores, applies decay, submits weights to Bittensor
+6. **Consensus** aggregates scores and submits weights to Bittensor
 
 ### Key Concepts
 
@@ -38,7 +38,6 @@ term-challenge/
 - **Host functions**: WASM interacts with the outside world via `host_http_post()`, `host_storage_get()`, `host_storage_set()`, `host_consensus_get_epoch()`, etc.
 - **SWE-bench datasets**: Tasks are selected from HuggingFace CortexLM/swe-bench via P2P consensus
 - **Epoch rate limiting**: 1 submission per 3 epochs per miner
-- **Top agent decay**: 72h grace period, then 50% daily decay to 0 weight
 
 ## Build Commands
 
@@ -57,7 +56,7 @@ Git hooks live in `.githooks/` and are activated with `git config core.hooksPath
 | Hook | What it does |
 |------|-------------|
 | `pre-commit` | Runs `cargo fmt --all`, stages formatted files. Skippable with `SKIP_GIT_HOOKS=1`. |
-| `pre-push` | Full quality gate: format check → `cargo check` → `cargo clippy`. Skippable with `SKIP_GIT_HOOKS=1` or `git push --no-verify`. |
+| `pre-push` | Full quality gate: format check → `cargo check` → `cargo clippy` → `cargo test` (skips live/integration). Skippable with `SKIP_GIT_HOOKS=1` or `git push --no-verify`. |
 
 ## CRITICAL RULES
 
@@ -80,5 +79,5 @@ Git hooks live in `.githooks/` and are activated with `git config core.hooksPath
 ### DO NOT
 - Do NOT use `std::`, `println!`, `std::collections::HashMap`
 - Do NOT add heavy dependencies — the WASM module must stay minimal
-- Do NOT break the WASM ABI (evaluate, validate, get_name, get_version, get_tasks, configure, alloc)
+- Do NOT break the WASM ABI (evaluate, validate, name, version, tasks, configure)
 - Do NOT store sensitive data in plain text in blockchain storage
