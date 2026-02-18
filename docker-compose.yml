@@ -57,7 +57,7 @@ services:
   # Watchtower - Auto-update platform container only
   # ==========================================================================
   watchtower:
-    image: nickfedor/watchtower@sha256:053e7ecba848b77eb5b966d236c2f4f2e1155e05007c9ef52418b4b7e255484b
+    image: containrrr/watchtower:latest
     container_name: platform-watchtower
     restart: unless-stopped
     

@@ -334,10 +334,9 @@ pub struct ValidatedStorage<S: DistributedStore> {
 
 impl<S: DistributedStore + 'static> ValidatedStorage<S> {
     pub fn new(store: S, config: ValidatedStorageConfig, local_hotkey: Hotkey) -> Self {
-        info!(
+        debug!(
             challenge_id = %config.challenge_id,
             quorum_size = config.quorum_size,
-            hotkey = local_hotkey.to_hex(),
             "Created validated storage"
         );
 
@@ -425,9 +424,18 @@ impl<S: DistributedStore + 'static> ValidatedStorage<S> {
             ));
         }
 
+        if proposal.signature.is_empty() {
+            warn!(
+                proposal_id = proposal.proposal_id_hex(),
+                "Received storage write proposal without signature"
+            );
+            return Err(ValidatedStorageError::InvalidSignature(
+                "proposal signature is empty".to_string(),
+            ));
+        }
+
         debug!(
             proposal_id = proposal.proposal_id_hex(),
-            proposer = proposal.proposer.to_hex(),
             "Received storage write proposal"
         );
 
@@ -483,6 +491,16 @@ impl<S: DistributedStore + 'static> ValidatedStorage<S> {
         &self,
         vote: StorageWriteVote,
     ) -> Result<Option<ConsensusResult>, ValidatedStorageError> {
+        if vote.signature.is_empty() {
+            warn!(
+                proposal_id = hex::encode(vote.proposal_id),
+                "Received storage write vote without signature"
+            );
+            return Err(ValidatedStorageError::InvalidSignature(
+                "vote signature is empty".to_string(),
+            ));
+        }
+
         let proposal_id = vote.proposal_id;
 
         {
@@ -846,7 +864,9 @@ mod tests {
             .expect("Check should succeed");
         assert!(result.is_none());
 
-        let vote2 = StorageWriteVote::new(proposal.proposal_id, create_test_hotkey(2), true, None);
+        let mut vote2 =
+            StorageWriteVote::new(proposal.proposal_id, create_test_hotkey(2), true, None);
+        vote2.signature = vec![0u8; 64];
         let result = validated
             .receive_vote(vote2)
             .await
@@ -876,7 +896,9 @@ mod tests {
             .await
             .expect("Vote should succeed");
 
-        let vote2 = StorageWriteVote::new(proposal.proposal_id, create_test_hotkey(2), true, None);
+        let mut vote2 =
+            StorageWriteVote::new(proposal.proposal_id, create_test_hotkey(2), true, None);
+        vote2.signature = vec![0u8; 64];
         validated
             .receive_vote(vote2)
             .await
@@ -935,12 +957,13 @@ mod tests {
         let hotkey = create_test_hotkey(1);
         let validated = ValidatedStorage::new(storage, config, hotkey);
 
-        let proposal = StorageWriteProposal::new(
+        let mut proposal = StorageWriteProposal::new(
             "challenge-1",
             create_test_hotkey(2),
             b"external-key",
             b"external-value",
         );
+        proposal.signature = vec![0u8; 64];
 
         validated
             .receive_proposal(proposal.clone())
@@ -953,6 +976,52 @@ mod tests {
             .expect("Proposal should exist");
 
         assert_eq!(stored.key, b"external-key");
+    }
+
+    #[tokio::test]
+    async fn test_receive_proposal_missing_signature() {
+        let storage = LocalStorageBuilder::new("test-node")
+            .in_memory()
+            .build()
+            .expect("Failed to create storage");
+
+        let config = ValidatedStorageConfig::new("challenge-1", 2);
+        let hotkey = create_test_hotkey(1);
+        let validated = ValidatedStorage::new(storage, config, hotkey);
+
+        let proposal = StorageWriteProposal::new(
+            "challenge-1",
+            create_test_hotkey(2),
+            b"external-key",
+            b"external-value",
+        );
+
+        let result = validated.receive_proposal(proposal).await;
+        assert!(matches!(
+            result,
+            Err(ValidatedStorageError::InvalidSignature(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_receive_vote_missing_signature() {
+        let storage = LocalStorageBuilder::new("test-node")
+            .in_memory()
+            .build()
+            .expect("Failed to create storage");
+
+        let config = ValidatedStorageConfig::new("challenge-1", 2);
+        let hotkey = create_test_hotkey(1);
+        let validated = ValidatedStorage::new(storage, config, hotkey);
+
+        let proposal = validated.propose_write(b"test-key", b"test-value").await;
+
+        let vote = StorageWriteVote::new(proposal.proposal_id, create_test_hotkey(2), true, None);
+        let result = validated.receive_vote(vote).await;
+        assert!(matches!(
+            result,
+            Err(ValidatedStorageError::InvalidSignature(_))
+        ));
     }
 
     #[tokio::test]
@@ -991,13 +1060,15 @@ mod tests {
         let proposal = validated.propose_write(b"test-key", b"test-value").await;
 
         let voter = create_test_hotkey(2);
-        let vote1 = StorageWriteVote::new(proposal.proposal_id, voter.clone(), true, None);
+        let mut vote1 = StorageWriteVote::new(proposal.proposal_id, voter.clone(), true, None);
+        vote1.signature = vec![0u8; 64];
         validated
             .receive_vote(vote1)
             .await
             .expect("First vote should succeed");
 
-        let vote2 = StorageWriteVote::new(proposal.proposal_id, voter, false, None);
+        let mut vote2 = StorageWriteVote::new(proposal.proposal_id, voter, false, None);
+        vote2.signature = vec![0u8; 64];
         let result = validated.receive_vote(vote2).await;
 
         assert!(matches!(

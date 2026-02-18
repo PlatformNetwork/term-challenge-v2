@@ -43,6 +43,9 @@ const STATE_STORAGE_KEY: &str = "chain_state";
 const MAX_LOG_FIELD_LEN: usize = 256;
 const JOB_TIMEOUT_MS: i64 = 300_000;
 
+/// Maximum allowed WASM module size in bytes (10 MB)
+const MAX_WASM_MODULE_SIZE: usize = 10 * 1024 * 1024;
+
 /// Sanitize a user-provided string for safe logging.
 ///
 /// Replaces control characters (newlines, tabs, ANSI escapes) with spaces
@@ -235,12 +238,15 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     info!("Starting decentralized validator");
-    info!("SudoOwner: {}", SUDO_KEY_SS58);
+    debug!("SudoOwner: {}", SUDO_KEY_SS58);
 
     // Load keypair
     let keypair = load_keypair(&args)?;
     let validator_hotkey = keypair.ss58_address();
-    info!("Validator hotkey: {}", validator_hotkey);
+    info!(
+        "Validator hotkey: {}...",
+        &validator_hotkey[..8.min(validator_hotkey.len())]
+    );
 
     // Create data directory
     std::fs::create_dir_all(&args.data_dir)?;
@@ -949,6 +955,16 @@ async fn handle_network_event(
                     "Received data response"
                 );
                 if resp.data_type == "wasm_module" && !resp.data.is_empty() {
+                    if resp.data.len() > MAX_WASM_MODULE_SIZE {
+                        warn!(
+                            request_id = %resp.request_id,
+                            challenge_id = %resp.challenge_id,
+                            data_bytes = resp.data.len(),
+                            max_bytes = MAX_WASM_MODULE_SIZE,
+                            "Rejected WASM module from data response: exceeds maximum allowed size"
+                        );
+                        return;
+                    }
                     let challenge_id_str = resp.challenge_id.to_string();
                     let module_path = wasm_module_dir.join(format!("{}.wasm", challenge_id_str));
                     match tokio::fs::write(&module_path, &resp.data).await {
@@ -1114,6 +1130,14 @@ async fn handle_network_event(
                             config: _,
                             weight,
                         } => {
+                            if wasm_code.len() > MAX_WASM_MODULE_SIZE {
+                                warn!(
+                                    wasm_bytes = wasm_code.len(),
+                                    max_bytes = MAX_WASM_MODULE_SIZE,
+                                    "Rejected AddChallenge: WASM module exceeds maximum allowed size"
+                                );
+                                return;
+                            }
                             let challenge_id = ChallengeId::new();
                             info!(
                                 challenge_id = %challenge_id,
