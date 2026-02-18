@@ -884,9 +884,16 @@ impl PgStorage {
         use sha2::{Digest, Sha256};
 
         // Use SERVER_SECRET env var if set, otherwise derive from DATABASE_URL
-        let secret = std::env::var("SERVER_SECRET")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| "default-insecure-key-change-in-production".to_string());
+        let secret = match std::env::var("SERVER_SECRET") {
+            Ok(s) => s,
+            Err(_) => match std::env::var("DATABASE_URL") {
+                Ok(s) => s,
+                Err(_) => {
+                    warn!("Neither SERVER_SECRET nor DATABASE_URL is set — using insecure fallback encryption key. Set SERVER_SECRET in production!");
+                    "default-insecure-key-change-in-production".to_string()
+                }
+            },
+        };
 
         let mut hasher = Sha256::new();
         hasher.update(b"term-challenge-api-key-encryption:");

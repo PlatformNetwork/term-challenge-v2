@@ -15,7 +15,7 @@ pub struct AggregateScore {
 
 impl AggregateScore {
     pub fn total_tasks(&self) -> u32 {
-        self.tasks_passed + self.tasks_failed
+        self.tasks_passed.saturating_add(self.tasks_failed)
     }
 }
 

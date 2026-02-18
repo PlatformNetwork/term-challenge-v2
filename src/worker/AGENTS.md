@@ -10,7 +10,6 @@ Background workers that run as long-lived tasks in the server process. Handle co
 |------|---------|
 | `compile.rs` | Compilation worker — compiles Python agents to PyInstaller binaries in Docker |
 | `queue.rs` | `AgentQueue` — manages evaluation queue with priority and concurrency control |
-| `validator.rs` | `ValidatorWorker` — runs on validator nodes, executes assigned evaluations |
 | `plagiarism.rs` | Plagiarism detection — compares agent code using AST analysis (`rustpython-parser`) |
 | `llm_review.rs` | `LlmReviewWorker` — automated LLM-based code review for rule compliance |
 | `timeout_monitor.rs` | `TimeoutRetryMonitor` — monitors stuck evaluations and retries them |

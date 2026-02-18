@@ -8,11 +8,48 @@ mod types;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use bincode::Options;
 use platform_challenge_sdk_wasm::host_functions::host_http_post;
 use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput};
 
 use crate::scoring::{calculate_aggregate, format_summary, to_weight};
 use crate::types::{ChallengeParams, LlmJudgeRequest, LlmJudgeResponse, Submission, TaskResult};
+
+const MAX_SUBMISSION_SIZE: u64 = 16 * 1024 * 1024;
+const MAX_PARAMS_SIZE: u64 = 4 * 1024 * 1024;
+const MAX_LLM_RESPONSE_SIZE: u64 = 1024 * 1024;
+const MAX_TASKS: usize = 256;
+
+fn bincode_options_submission() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_limit(MAX_SUBMISSION_SIZE)
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+}
+
+fn bincode_options_params() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_limit(MAX_PARAMS_SIZE)
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+}
+
+fn bincode_options_llm() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_limit(MAX_LLM_RESPONSE_SIZE)
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+}
+
+fn validate_task_result(result: &TaskResult) -> bool {
+    if result.task_id.is_empty() {
+        return false;
+    }
+    if !result.score.is_finite() || !(0.0..=1.0).contains(&result.score) {
+        return false;
+    }
+    true
+}
 
 pub struct TermChallengeWasm;
 
@@ -46,10 +83,15 @@ impl TermChallengeWasm {
             Err(_) => return None,
         };
 
-        let judge_resp: LlmJudgeResponse = match bincode::deserialize(&response_bytes) {
+        let judge_resp: LlmJudgeResponse = match bincode_options_llm().deserialize(&response_bytes)
+        {
             Ok(r) => r,
             Err(_) => return None,
         };
+
+        if !judge_resp.score.is_finite() {
+            return None;
+        }
 
         Some(judge_resp.score.clamp(0.0, 1.0))
     }
@@ -65,12 +107,13 @@ impl Challenge for TermChallengeWasm {
     }
 
     fn evaluate(&self, input: EvaluationInput) -> EvaluationOutput {
-        let submission: Submission = match bincode::deserialize(&input.agent_data) {
-            Ok(s) => s,
-            Err(_) => return EvaluationOutput::failure("failed to deserialize submission"),
-        };
+        let submission: Submission =
+            match bincode_options_submission().deserialize(&input.agent_data) {
+                Ok(s) => s,
+                Err(_) => return EvaluationOutput::failure("failed to deserialize submission"),
+            };
 
-        let params: ChallengeParams = match bincode::deserialize(&input.params) {
+        let params: ChallengeParams = match bincode_options_params().deserialize(&input.params) {
             Ok(p) => p,
             Err(_) => return EvaluationOutput::failure("failed to deserialize challenge params"),
         };
@@ -79,8 +122,20 @@ impl Challenge for TermChallengeWasm {
             return EvaluationOutput::failure("submission contains no task results");
         }
 
+        if submission.task_results.len() > MAX_TASKS {
+            return EvaluationOutput::failure("submission exceeds maximum task count");
+        }
+
         if submission.task_results.len() != params.tasks.len() {
             return EvaluationOutput::failure("task result count does not match task definitions");
+        }
+
+        for result in &submission.task_results {
+            if !validate_task_result(result) {
+                return EvaluationOutput::failure(
+                    "invalid task result: bad score or empty task_id",
+                );
+            }
         }
 
         let mut results: Vec<TaskResult> = submission.task_results;
@@ -108,12 +163,13 @@ impl Challenge for TermChallengeWasm {
     }
 
     fn validate(&self, input: EvaluationInput) -> bool {
-        let submission: Submission = match bincode::deserialize(&input.agent_data) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
+        let submission: Submission =
+            match bincode_options_submission().deserialize(&input.agent_data) {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
 
-        let params: ChallengeParams = match bincode::deserialize(&input.params) {
+        let params: ChallengeParams = match bincode_options_params().deserialize(&input.params) {
             Ok(p) => p,
             Err(_) => return false,
         };
@@ -126,15 +182,16 @@ impl Challenge for TermChallengeWasm {
             return false;
         }
 
+        if submission.task_results.len() > MAX_TASKS {
+            return false;
+        }
+
         if submission.task_results.len() != params.tasks.len() {
             return false;
         }
 
         for result in &submission.task_results {
-            if result.task_id.is_empty() {
-                return false;
-            }
-            if !(0.0..=1.0).contains(&result.score) {
+            if !validate_task_result(result) {
                 return false;
             }
         }

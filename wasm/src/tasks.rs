@@ -106,7 +106,7 @@ pub fn builtin_tasks() -> Vec<TaskDefinition> {
             "docker-compose",
             "Write Docker Compose",
             "Write a docker-compose.yml at /app/docker-compose.yml that defines two services: \
-             'web' using nginx:latest on port 80 and 'db' using postgres:15 with POSTGRES_PASSWORD=secret.",
+             'web' using nginx:latest on port 80 and 'db' using postgres:15 with POSTGRES_PASSWORD set via environment variable.",
             Difficulty::Hard,
             180,
             "ubuntu:22.04",
@@ -123,26 +123,4 @@ pub fn builtin_tasks() -> Vec<TaskDefinition> {
             "#!/bin/bash\ntest -f /app/rules.sh && grep -q 'iptables' /app/rules.sh && grep -q '10.0.0.0' /app/rules.sh",
         ),
     ]
-}
-
-#[allow(dead_code)]
-pub fn select_tasks(seed: u64, count: usize) -> Vec<TaskDefinition> {
-    let all = builtin_tasks();
-    if count >= all.len() {
-        return all;
-    }
-    let mut indices: Vec<usize> = (0..all.len()).collect();
-    let mut rng = seed;
-    for i in (1..indices.len()).rev() {
-        rng = rng
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let j = (rng >> 33) as usize % (i + 1);
-        indices.swap(i, j);
-    }
-    indices
-        .into_iter()
-        .take(count)
-        .map(|i| all[i].clone())
-        .collect()
 }
