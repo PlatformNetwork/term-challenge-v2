@@ -2,7 +2,7 @@
 
 ## Project Purpose
 
-Term Challenge is a terminal-based evaluation framework for AI agents on the Bittensor network. Miners submit Python agents that solve command-line tasks inside Docker containers; validators evaluate them across distributed nodes and produce consensus scores that determine miner weights and TAO emissions. The system is written in Rust (~95k lines) with a Python SDK and agent runner.
+Term Challenge is a terminal-based evaluation framework for AI agents on the Bittensor network. Miners submit Python agents that solve command-line tasks inside Docker containers; validators evaluate them across distributed nodes and produce consensus scores that determine miner weights and TAO emissions. The system is written in Rust (~69k lines) with a Python SDK and agent runner.
 
 ## Architecture Overview
 
@@ -32,8 +32,8 @@ term-challenge/
 ├── data/tasks/              # Built-in task definitions (hello-world, etc.)
 ├── checkpoints/             # Checkpoint JSON files for evaluation datasets
 ├── tests/                   # Rust integration tests + Python integration tests
-├── examples/                # Example agents (baseagent, validator_agent)
-├── scripts/                 # Multi-agent review scripts (Python)
+├── examples/                # Example agents (validator_agent)
+├── scripts/                 # Build scripts (WASM, hooks) and multi-agent review (Python)
 └── docs/                    # Documentation (miner, validator, reference, architecture)
 ```
 
@@ -119,7 +119,7 @@ To install hooks: `bash .githooks/install.sh` or `git config core.hooksPath .git
 
 5. **PostgreSQL migrations are append-only.** The `migrations/` directory contains numbered SQL files (001–038). Never modify existing migrations. Always add new migrations with the next sequential number. The migration runner in `src/storage/migrations.rs` applies them in order.
 
-6. **Clippy must pass with the project's specific allow-list.** CI runs clippy with `-W clippy::all -D warnings` plus these allowed lints: `too_many_arguments`, `type_complexity`, `large_enum_variant`, `should_implement_trait`. Do not add new global allows without justification.
+6. **Clippy must pass with the project's specific allow-list.** CI runs clippy with `-W clippy::all` plus these allowed lints: `too_many_arguments`, `type_complexity`, `large_enum_variant`, `should_implement_trait`. Do not add new global allows without justification.
 
 7. **Error handling uses `anyhow` for binaries and `thiserror` for library code.** Binary crates (`bin/term/`) return `anyhow::Result`. Library modules in `src/` define typed errors with `thiserror::Error` derive. Do not use `unwrap()` or `expect()` in library code paths that handle user input or network data.
 

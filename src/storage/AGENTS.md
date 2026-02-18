@@ -17,15 +17,16 @@ Provides data persistence for both server mode (PostgreSQL) and validator mode (
 
 ## PostgreSQL Schema
 
-Migrations are in `/migrations/` (001–037). Key tables:
+Migrations are in `/migrations/` (001–038). Key tables:
 - `submissions` — agent submissions with status tracking
 - `evaluations` — evaluation results per agent per validator
 - `task_logs` — per-task execution logs
 - `validators` — validator registration and readiness
 - `llm_usage` — LLM API cost tracking
+- `swe_forge_evaluations` — SWE-Forge evaluation results from term-executor workers
 
 ## Rules
 
 - **Migrations are append-only.** Never modify existing migration files.
-- New migrations use the next sequential number: `038_description.sql`.
+- New migrations use the next sequential number: `039_description.sql`.
 - Use `tokio-postgres` for async queries (not `diesel` or `sqlx`).
