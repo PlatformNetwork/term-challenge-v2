@@ -34,8 +34,6 @@ pub struct TaskResult {
 pub struct ChallengeParams {
     pub tasks: Vec<TaskDefinition>,
     pub llm_judge_url: Option<String>,
-    pub decay_params: Option<DecayParams>,
-    pub active_dataset: Option<Vec<TaskDefinition>>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -67,7 +65,7 @@ impl core::fmt::Debug for Submission {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct DifficultyStats {
     pub total: u32,
     pub passed: u32,
@@ -85,13 +83,6 @@ pub struct LlmJudgeRequest {
 pub struct LlmJudgeResponse {
     pub score: f64,
     pub reasoning: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DecayParams {
-    pub grace_period_hours: u64,
-    pub half_life_hours: u64,
-    pub min_multiplier: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
