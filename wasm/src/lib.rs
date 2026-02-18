@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+mod dataset;
+mod routes;
 mod scoring;
 mod tasks;
 mod types;
@@ -9,16 +11,21 @@ mod types;
 use alloc::string::String;
 use alloc::vec::Vec;
 use bincode::Options;
-use platform_challenge_sdk_wasm::host_functions::host_http_post;
+use platform_challenge_sdk_wasm::host_functions::{
+    host_consensus_get_epoch, host_http_post, host_storage_get, host_storage_set,
+};
 use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput};
 
 use crate::scoring::{calculate_aggregate, format_summary, to_weight};
-use crate::types::{ChallengeParams, LlmJudgeRequest, LlmJudgeResponse, Submission, TaskResult};
+use crate::types::{
+    ChallengeParams, DatasetSelection, LlmJudgeRequest, LlmJudgeResponse, Submission, TaskResult,
+};
 
-const MAX_SUBMISSION_SIZE: u64 = 16 * 1024 * 1024;
+const MAX_SUBMISSION_SIZE: u64 = 64 * 1024 * 1024;
 const MAX_PARAMS_SIZE: u64 = 4 * 1024 * 1024;
 const MAX_LLM_RESPONSE_SIZE: u64 = 1024 * 1024;
 const MAX_TASKS: usize = 256;
+const EPOCH_RATE_LIMIT: u64 = 3;
 
 fn bincode_options_submission() -> impl Options {
     bincode::DefaultOptions::new()
@@ -49,6 +56,28 @@ fn validate_task_result(result: &TaskResult) -> bool {
         return false;
     }
     true
+}
+
+fn last_submission_key(miner_hotkey: &str) -> Vec<u8> {
+    let mut key = Vec::from(b"last_submission:" as &[u8]);
+    key.extend_from_slice(miner_hotkey.as_bytes());
+    key
+}
+
+fn get_last_submission_epoch(miner_hotkey: &str) -> Option<u64> {
+    let key = last_submission_key(miner_hotkey);
+    let data = host_storage_get(&key).ok()?;
+    if data.len() < 8 {
+        return None;
+    }
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&data[..8]);
+    Some(u64::from_le_bytes(buf))
+}
+
+fn set_last_submission_epoch(miner_hotkey: &str, epoch: u64) {
+    let key = last_submission_key(miner_hotkey);
+    let _ = host_storage_set(&key, &epoch.to_le_bytes());
 }
 
 pub struct TermChallengeWasm;
@@ -83,11 +112,11 @@ impl TermChallengeWasm {
             Err(_) => return None,
         };
 
-        let judge_resp: LlmJudgeResponse = match bincode_options_llm().deserialize(&response_bytes)
-        {
-            Ok(r) => r,
-            Err(_) => return None,
-        };
+        let judge_resp: LlmJudgeResponse =
+            match bincode_options_llm().deserialize(&response_bytes) {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
 
         if !judge_resp.score.is_finite() {
             return None;
@@ -103,7 +132,7 @@ impl Challenge for TermChallengeWasm {
     }
 
     fn version(&self) -> &'static str {
-        "3.0.0"
+        "4.0.0"
     }
 
     fn evaluate(&self, input: EvaluationInput) -> EvaluationOutput {
@@ -159,6 +188,8 @@ impl Challenge for TermChallengeWasm {
         let score = (weight * 10_000.0) as i64;
         let message = format_summary(&aggregate);
 
+        set_last_submission_epoch(&submission.miner_hotkey, submission.epoch);
+
         EvaluationOutput::success(score, &message)
     }
 
@@ -176,6 +207,31 @@ impl Challenge for TermChallengeWasm {
 
         if submission.agent_hash.is_empty() || submission.miner_hotkey.is_empty() {
             return false;
+        }
+
+        if submission.signature.is_empty() {
+            return false;
+        }
+
+        if submission.package_zip.is_empty() {
+            return false;
+        }
+
+        if submission.basilica_instance.is_empty()
+            || submission.executor_url.is_empty()
+            || submission.executor_token.is_empty()
+        {
+            return false;
+        }
+
+        let current_epoch = host_consensus_get_epoch();
+        if current_epoch >= 0 {
+            if let Some(last_epoch) = get_last_submission_epoch(&submission.miner_hotkey) {
+                let current = current_epoch as u64;
+                if current < last_epoch.saturating_add(EPOCH_RATE_LIMIT) {
+                    return false;
+                }
+            }
         }
 
         if submission.task_results.is_empty() {
@@ -200,8 +256,17 @@ impl Challenge for TermChallengeWasm {
     }
 
     fn tasks(&self) -> Vec<u8> {
-        let task_defs = tasks::builtin_tasks();
-        bincode::serialize(&task_defs).unwrap_or_default()
+        let dataset = tasks::get_active_dataset();
+        match dataset {
+            Some(task_defs) => bincode::serialize(&task_defs).unwrap_or_default(),
+            None => Vec::new(),
+        }
+    }
+
+    fn configure(&self, config: &[u8]) {
+        if let Ok(selection) = bincode::deserialize::<DatasetSelection>(config) {
+            tasks::store_dataset(&selection);
+        }
     }
 }
 
