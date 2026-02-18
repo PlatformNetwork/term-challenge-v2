@@ -19,6 +19,7 @@ const MAX_SUBMISSION_SIZE: u64 = 16 * 1024 * 1024;
 const MAX_PARAMS_SIZE: u64 = 4 * 1024 * 1024;
 const MAX_LLM_RESPONSE_SIZE: u64 = 1024 * 1024;
 const MAX_TASKS: usize = 256;
+const MAX_OUTPUT_FIELD_SIZE: usize = 1024 * 1024;
 
 fn bincode_options_submission() -> impl Options {
     bincode::DefaultOptions::new()
@@ -48,6 +49,12 @@ fn validate_task_result(result: &TaskResult) -> bool {
     if !result.score.is_finite() || !(0.0..=1.0).contains(&result.score) {
         return false;
     }
+    if result.agent_output.len() > MAX_OUTPUT_FIELD_SIZE {
+        return false;
+    }
+    if result.test_output.len() > MAX_OUTPUT_FIELD_SIZE {
+        return false;
+    }
     true
 }
 
@@ -65,6 +72,10 @@ impl TermChallengeWasm {
     }
 
     fn try_llm_judge(url: &str, result: &TaskResult, instruction: &str) -> Option<f64> {
+        if !url.starts_with("https://") {
+            return None;
+        }
+
         let request = LlmJudgeRequest {
             task_id: result.task_id.clone(),
             instruction: String::from(instruction),
@@ -117,6 +128,10 @@ impl Challenge for TermChallengeWasm {
             Ok(p) => p,
             Err(_) => return EvaluationOutput::failure("failed to deserialize challenge params"),
         };
+
+        if submission.agent_hash.is_empty() || submission.miner_hotkey.is_empty() {
+            return EvaluationOutput::failure("missing agent_hash or miner_hotkey");
+        }
 
         if submission.task_results.is_empty() {
             return EvaluationOutput::failure("submission contains no task results");
