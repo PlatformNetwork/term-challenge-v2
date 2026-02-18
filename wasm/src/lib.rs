@@ -30,6 +30,7 @@ use crate::types::{
 const MAX_SUBMISSION_SIZE: u64 = 64 * 1024 * 1024;
 const MAX_PARAMS_SIZE: u64 = 4 * 1024 * 1024;
 const MAX_LLM_RESPONSE_SIZE: u64 = 1024 * 1024;
+const MAX_ROUTE_REQUEST_SIZE: u64 = 1024 * 1024;
 const MAX_TASKS: usize = 256;
 const EPOCH_RATE_LIMIT: u64 = 3;
 
@@ -50,6 +51,13 @@ fn bincode_options_params() -> impl Options {
 fn bincode_options_llm() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_LLM_RESPONSE_SIZE)
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+}
+
+fn bincode_options_route_request() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_limit(MAX_ROUTE_REQUEST_SIZE)
         .with_fixint_encoding()
         .allow_trailing_bytes()
 }
@@ -151,10 +159,11 @@ impl TermChallengeWasm {
     }
 
     pub fn handle_route(&self, request_data: &[u8]) -> Vec<u8> {
-        let request: WasmRouteRequest = match bincode::deserialize(request_data) {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
+        let request: WasmRouteRequest =
+            match bincode_options_route_request().deserialize(request_data) {
+                Ok(r) => r,
+                Err(_) => return Vec::new(),
+            };
         routes::handle_route_request(&request)
     }
 }
@@ -413,3 +422,38 @@ impl Challenge for TermChallengeWasm {
 }
 
 platform_challenge_sdk_wasm::register_challenge!(TermChallengeWasm, TermChallengeWasm::new());
+
+#[no_mangle]
+pub extern "C" fn get_routes() -> i64 {
+    let challenge = TermChallengeWasm::new();
+    let output = challenge.routes();
+    if output.is_empty() {
+        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
+    }
+    let ptr = platform_challenge_sdk_wasm::alloc_impl::sdk_alloc(output.len());
+    if ptr.is_null() {
+        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(output.as_ptr(), ptr, output.len());
+    }
+    platform_challenge_sdk_wasm::pack_ptr_len(ptr as i32, output.len() as i32)
+}
+
+#[no_mangle]
+pub extern "C" fn handle_route(req_ptr: i32, req_len: i32) -> i64 {
+    let slice = unsafe { core::slice::from_raw_parts(req_ptr as *const u8, req_len as usize) };
+    let challenge = TermChallengeWasm::new();
+    let output = challenge.handle_route(slice);
+    if output.is_empty() {
+        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
+    }
+    let ptr = platform_challenge_sdk_wasm::alloc_impl::sdk_alloc(output.len());
+    if ptr.is_null() {
+        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(output.as_ptr(), ptr, output.len());
+    }
+    platform_challenge_sdk_wasm::pack_ptr_len(ptr as i32, output.len() as i32)
+}

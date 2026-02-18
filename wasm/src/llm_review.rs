@@ -135,13 +135,177 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
     Some(String::from(&rest[..end]))
 }
 
+const REDACTED_MARKER: &str = "[REDACTED]";
+const MIN_TOKEN_LEN: usize = 12;
+const MIN_QUOTED_SECRET_LEN: usize = 16;
+const SECRET_CONTEXT_WINDOW: usize = 80;
+
 fn redact_api_keys(code: &str) -> String {
-    let mut result = String::from(code);
-    if result.len() > MAX_LLM_CODE_SIZE {
-        result.truncate(MAX_LLM_CODE_SIZE);
+    let src = if code.len() > MAX_LLM_CODE_SIZE {
+        let boundary = find_char_boundary(code, MAX_LLM_CODE_SIZE);
+        &code[..boundary]
+    } else {
+        code
+    };
+
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut result = String::with_capacity(len);
+    let mut i = 0;
+
+    while i < len {
+        if let Some(end) = try_match_known_prefix(bytes, i) {
+            result.push_str(REDACTED_MARKER);
+            i = end;
+            continue;
+        }
+
+        if let Some(end) = try_match_quoted_secret(bytes, i) {
+            result.push_str(REDACTED_MARKER);
+            i = end;
+            continue;
+        }
+
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+
+    if code.len() > MAX_LLM_CODE_SIZE {
         result.push_str("\n... [truncated]");
     }
     result
+}
+
+fn find_char_boundary(s: &str, max: usize) -> usize {
+    if max >= s.len() {
+        return s.len();
+    }
+    let mut boundary = max;
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
+fn try_match_known_prefix(bytes: &[u8], start: usize) -> Option<usize> {
+    const PREFIXES: &[&[u8]] = &[
+        b"sk-",
+        b"sk_live_",
+        b"sk_test_",
+        b"pk_live_",
+        b"pk_test_",
+        b"AKIA",
+        b"ghp_",
+        b"gho_",
+        b"github_pat_",
+        b"glpat-",
+        b"xoxb-",
+        b"xoxp-",
+        b"xapp-",
+    ];
+
+    for prefix in PREFIXES {
+        let plen = prefix.len();
+        if start + plen > bytes.len() {
+            continue;
+        }
+        if &bytes[start..start + plen] == *prefix {
+            let token_end = scan_token_end(bytes, start + plen);
+            if token_end - start >= MIN_TOKEN_LEN {
+                return Some(token_end);
+            }
+        }
+    }
+    None
+}
+
+fn try_match_quoted_secret(bytes: &[u8], start: usize) -> Option<usize> {
+    let quote = bytes[start];
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+
+    if !is_preceded_by_secret_keyword(bytes, start) {
+        return None;
+    }
+
+    let content_start = start + 1;
+    let mut end = content_start;
+    while end < bytes.len() && bytes[end] != quote && bytes[end] != b'\n' {
+        end += 1;
+    }
+
+    let content_len = end - content_start;
+    if content_len < MIN_QUOTED_SECRET_LEN {
+        return None;
+    }
+
+    let all_token = bytes[content_start..end]
+        .iter()
+        .all(|&b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.');
+    if !all_token {
+        return None;
+    }
+
+    if end < bytes.len() && bytes[end] == quote {
+        end += 1;
+    }
+    Some(end)
+}
+
+fn is_preceded_by_secret_keyword(bytes: &[u8], quote_pos: usize) -> bool {
+    let search_start = quote_pos.saturating_sub(SECRET_CONTEXT_WINDOW);
+
+    let line_start = match bytes[search_start..quote_pos]
+        .iter()
+        .rposition(|&b| b == b'\n')
+    {
+        Some(pos) => search_start + pos + 1,
+        None => search_start,
+    };
+
+    let before = &bytes[line_start..quote_pos];
+    let mut lower_buf = alloc::vec::Vec::with_capacity(before.len());
+    for &b in before {
+        lower_buf.push(b.to_ascii_lowercase());
+    }
+    let lower_str = core::str::from_utf8(&lower_buf).unwrap_or("");
+
+    const SECRET_KEYWORDS: &[&str] = &[
+        "api_key",
+        "apikey",
+        "api-key",
+        "secret",
+        "token",
+        "password",
+        "passwd",
+        "credential",
+        "auth_key",
+        "access_key",
+        "private_key",
+        "openai_api",
+        "anthropic_api",
+    ];
+
+    for keyword in SECRET_KEYWORDS {
+        if lower_str.contains(keyword) {
+            return true;
+        }
+    }
+    false
+}
+
+fn scan_token_end(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    while i < bytes.len()
+        && (bytes[i].is_ascii_alphanumeric()
+            || bytes[i] == b'-'
+            || bytes[i] == b'_'
+            || bytes[i] == b'.')
+    {
+        i += 1;
+    }
+    i
 }
 
 pub fn store_review_result(submission_id: &str, result: &LlmReviewResult) -> bool {
