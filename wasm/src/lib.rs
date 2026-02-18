@@ -19,8 +19,8 @@ use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput};
 
 use crate::scoring::{calculate_aggregate, format_summary, to_weight};
 use crate::types::{
-    AgentLogEntry, AgentLogs, ChallengeParams, DatasetSelection, LlmJudgeRequest,
-    LlmJudgeResponse, Submission, TaskResult,
+    AgentLogEntry, AgentLogs, ChallengeParams, DatasetSelection, LlmJudgeRequest, LlmJudgeResponse,
+    Submission, TaskResult,
 };
 
 const MAX_SUBMISSION_SIZE: u64 = 64 * 1024 * 1024;
@@ -114,11 +114,11 @@ impl TermChallengeWasm {
             Err(_) => return None,
         };
 
-        let judge_resp: LlmJudgeResponse =
-            match bincode_options_llm().deserialize(&response_bytes) {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
+        let judge_resp: LlmJudgeResponse = match bincode_options_llm().deserialize(&response_bytes)
+        {
+            Ok(r) => r,
+            Err(_) => return None,
+        };
 
         if !judge_resp.score.is_finite() {
             return None;
