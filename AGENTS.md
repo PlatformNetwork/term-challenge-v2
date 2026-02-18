@@ -12,13 +12,17 @@ term-challenge/
 ├── wasm/
 │   ├── Cargo.toml      # cdylib, depends on platform-challenge-sdk-wasm
 │   └── src/
-│       ├── lib.rs           # Challenge impl + register_challenge!
-│       ├── types.rs         # Submission, TaskDefinition, AgentLogs, etc.
-│       ├── scoring.rs       # Aggregate scoring, decay, weight calculation
-│       ├── tasks.rs         # Active dataset storage (SWE-bench tasks)
-│       ├── dataset.rs       # Dataset selection and consensus logic
-│       ├── routes.rs        # Challenge route definitions for RPC
-│       └── agent_storage.rs # Agent code & log storage functions
+│       ├── lib.rs              # Challenge impl + register_challenge!
+│       ├── types.rs            # Submission, TaskDefinition, AgentLogs, etc.
+│       ├── scoring.rs          # Aggregate scoring, decay, weight calculation
+│       ├── tasks.rs            # Active dataset storage (SWE-bench tasks)
+│       ├── dataset.rs          # Dataset selection, consensus, and random index generation
+│       ├── routes.rs           # Challenge route definitions and handlers for RPC
+│       ├── agent_storage.rs    # Agent code, log, and evaluation status storage
+│       ├── ast_validation.rs   # Python AST whitelist validation (imports, builtins, patterns)
+│       ├── llm_review.rs       # LLM-based code review, reviewer selection, aggregation
+│       ├── submission.rs       # Named submission registry and version tracking
+│       └── timeout_handler.rs  # Review assignment timeout tracking and replacement
 ├── cli/
 │   ├── Cargo.toml      # native binary, ratatui TUI
 │   └── src/
@@ -26,6 +30,17 @@ term-challenge/
 │       ├── app.rs      # Application state
 │       ├── ui.rs       # Ratatui UI rendering
 │       └── rpc.rs      # JSON-RPC 2.0 client
+├── docs/
+│   ├── architecture.md
+│   ├── miner/
+│   │   ├── how-to-mine.md
+│   │   └── submission.md
+│   └── validator/
+│       └── setup.md
+├── .github/
+│   └── workflows/
+│       ├── ci.yml          # Build, clippy, test, WASM build, release on tags
+│       └── release.yml     # release-please + artifact publishing
 ├── AGENTS.md
 ├── README.md
 ├── LICENSE
@@ -37,9 +52,13 @@ term-challenge/
 
 1. **Miner** submits a zip package with agent code and task results
 2. **RPC** receives submission, verifies signature, relays to validators
-3. **Validators** run WASM `validate()` — checks signature, epoch rate limit, Basilica metadata
+3. **Validators** run WASM `validate()` — checks signature, epoch rate limit, Basilica metadata, package size
 4. **50% validator approval** → submission stored in blockchain
-5. **Validators** run WASM `evaluate()` — scores task results, applies LLM judge
+5. **Validators** run WASM `evaluate()`:
+   a. **AST validation** — checks Python code against import whitelist, forbidden builtins, and dangerous patterns
+   b. **LLM review** — optional LLM-based security review via `host_http_post()` (if enabled)
+   c. **Task scoring** — scores task results, optionally applies LLM judge per task
+   d. **Aggregate & decay** — computes pass rate, applies epoch-based decay
 6. **Agent code & logs** stored on-chain for auditability (code ≤ 1MB, logs ≤ 256KB)
 7. **Log consensus** — validators propose logs, >50% hash agreement required
 8. **Consensus** aggregates scores, applies decay, submits weights to Bittensor
@@ -47,10 +66,10 @@ term-challenge/
 ### Key Concepts
 
 - **WASM-only**: All challenge logic runs as a `wasm32-unknown-unknown` module loaded by platform-v2
-- **Host functions**: WASM interacts with the outside world via `host_http_post()`, `host_storage_get()`, `host_storage_set()`, `host_consensus_get_epoch()`, etc.
+- **Host functions**: WASM interacts with the outside world via `host_http_post()`, `host_storage_get()`, `host_storage_set()`, `host_consensus_get_epoch()`, `host_consensus_get_submission_count()`, `host_random_seed()`, `host_get_timestamp()`
 - **SWE-bench datasets**: Tasks are selected from HuggingFace CortexLM/swe-bench via P2P consensus
 - **Epoch rate limiting**: 1 submission per 3 epochs per miner
-- **Top agent decay**: 72h grace period, then 50% daily decay to 0 weight
+- **Top agent decay**: 60-epoch grace period, then exponential decay with 20-epoch half-life
 
 ## Agent Code Storage
 
@@ -90,18 +109,23 @@ The `term-cli` crate is a **native binary** (NOT `no_std`) that provides a termi
 | Key | Action |
 |---|---|
 | `Tab` / `Shift+Tab` | Switch between tabs |
-| `↑` / `↓` / `j` / `k` | Navigate rows |
+| `↑` / `↓` | Navigate rows |
 | `r` | Refresh data |
-| `q` / `Esc` | Quit |
+| `q` | Quit |
 
 ### RPC Methods Used
 
-- `epoch_current` — Current epoch number
-- `challenge_call /leaderboard` — Leaderboard data
-- `evaluation_getProgress` — Evaluation progress for a submission
-- `agent_getLogs` — Validated evaluation logs
+- `epoch_current` — Current epoch number, phase, and block height
 - `system_health` — Node health status
 - `validator_count` — Number of active validators
+- `challenge_list` — Auto-detect challenge ID when only one exists
+- `challenge_call` with paths:
+  - `/leaderboard` — Leaderboard data
+  - `/stats` — Total submissions and active miners
+  - `/decay` — Top agent decay status
+  - `/agent/:hotkey/journey` — Evaluation status journey
+  - `/agent/:hotkey/logs` — Evaluation logs for a miner
+- `evaluation_getProgress` — Evaluation progress for a submission
 
 ## Build Commands
 
@@ -123,7 +147,7 @@ Git hooks live in `.githooks/` and are activated with `git config core.hooksPath
 | Hook | What it does |
 |------|-------------|
 | `pre-commit` | Runs `cargo fmt --all`, stages formatted files. Skippable with `SKIP_GIT_HOOKS=1`. |
-| `pre-push` | Full quality gate: format check → `cargo check` → `cargo clippy`. Skippable with `SKIP_GIT_HOOKS=1` or `git push --no-verify`. |
+| `pre-push` | Full quality gate: format check → `cargo check` → `cargo clippy` → `cargo test`. Skippable with `SKIP_GIT_HOOKS=1` or `git push --no-verify`. |
 
 ## CRITICAL RULES
 
@@ -142,12 +166,12 @@ Git hooks live in `.githooks/` and are activated with `git config core.hooksPath
 - Use `alloc::string::String`, `alloc::vec::Vec`, `alloc::collections::BTreeMap` (WASM code)
 - Use `serde` with `default-features = false, features = ["derive", "alloc"]` (WASM code)
 - Use `bincode` with `default-features = false` for serialization (WASM code)
-- Use host functions for all I/O: `host_storage_get/set`, `host_http_post`, `host_consensus_get_epoch` (WASM code)
+- Use host functions for all I/O: `host_storage_get/set`, `host_http_post`, `host_consensus_get_epoch`, `host_consensus_get_submission_count`, `host_random_seed`, `host_get_timestamp` (WASM code)
 - Keep the `register_challenge!` macro ABI contract intact
 - Use standard `std` library features in the `cli/` crate (it is a native binary)
 
 ### DO NOT
 - Do NOT use `std::`, `println!`, `std::collections::HashMap` in WASM code
 - Do NOT add heavy dependencies — the WASM module must stay minimal
-- Do NOT break the WASM ABI (evaluate, validate, get_name, get_version, get_tasks, configure, alloc)
+- Do NOT break the WASM ABI (evaluate, validate, get_name, get_version, get_tasks, configure, alloc, get_routes, handle_route)
 - Do NOT store sensitive data in plain text in blockchain storage
