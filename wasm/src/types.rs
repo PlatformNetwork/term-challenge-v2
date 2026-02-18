@@ -96,6 +96,25 @@ pub struct DatasetSelection {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentLogEntry {
+    pub task_id: String,
+    pub passed: bool,
+    pub score: f64,
+    pub execution_time_ms: u64,
+    pub output_preview: String,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentLogs {
+    pub miner_hotkey: String,
+    pub epoch: u64,
+    pub agent_hash: String,
+    pub entries: Vec<AgentLogEntry>,
+    pub total_size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RouteDefinition {
     pub method: String,
     pub path: String,

@@ -74,10 +74,16 @@ pub fn calculate_aggregate(tasks: &[TaskDefinition], results: &[TaskResult]) -> 
     }
 }
 
+/// Convert aggregate score to weight (normalized 0.0-1.0).
 pub fn to_weight(score: &AggregateScore) -> f64 {
     score.pass_rate.clamp(0.0, 1.0)
 }
 
+/// Apply decay to weight based on hours since top score.
+///
+/// Note: This function is reserved for future use when decay mechanics are
+/// integrated with the scoring system via challenge configuration.
+#[allow(dead_code)]
 pub fn apply_decay(weight: f64, hours_since_top: f64, params: &DecayParams) -> f64 {
     let grace = params.grace_period_hours as f64;
     if hours_since_top <= grace {
