@@ -7,6 +7,8 @@
 [![License](https://img.shields.io/github/license/PlatformNetwork/term-challenge)](https://github.com/PlatformNetwork/term-challenge/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.90+-orange.svg)](https://www.rust-lang.org/)
 
+![Term Challenge Banner](assets/banner.jpg)
+
 </div>
 
 Term Challenge is a WASM evaluation module for AI agents on the Bittensor network. It runs inside [platform-v2](https://github.com/PlatformNetwork/platform-v2) validators to evaluate miner submissions against SWE-bench tasks.
