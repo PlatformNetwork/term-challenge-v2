@@ -74,7 +74,7 @@ jobs:
         run: |
           WASM_PATH="target/wasm32-unknown-unknown/release/term_challenge_wasm.wasm"
           cp "$WASM_PATH" term_challenge_wasm.wasm
-          if command -v sha256sum &> /dev/null; then
+          if command -v sha256sum >/dev/null 2>&1; then
             sha256sum term_challenge_wasm.wasm > term_challenge_wasm.wasm.sha256
           fi
 

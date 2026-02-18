@@ -35,6 +35,8 @@ const MAX_OUTPUT_FIELD_SIZE: usize = 1024 * 1024;
 /// Multiplier applied to the 0.0–1.0 weight to produce an integer score
 /// (basis-point precision: 1.0 → 10 000).
 const SCORE_SCALE_FACTOR: f64 = 10_000.0;
+/// Minimum LLM judge score required for a task to remain marked as passed.
+const LLM_PASS_THRESHOLD: f64 = 0.5;
 
 /// Bincode options for deserialising submissions with a size limit.
 fn bincode_options_submission() -> impl Options {
@@ -78,6 +80,47 @@ fn validate_task_result(result: &TaskResult) -> bool {
         return false;
     }
     true
+}
+
+/// Deserialises and validates a submission and its challenge parameters.
+///
+/// Shared by both [`TermChallengeWasm::evaluate`] and
+/// [`TermChallengeWasm::validate`] to avoid duplicating deserialisation and
+/// validation logic.
+fn deserialize_and_validate(
+    input: &EvaluationInput,
+) -> Result<(Submission, ChallengeParams), &'static str> {
+    let submission: Submission = bincode_options_submission()
+        .deserialize(&input.agent_data)
+        .map_err(|_| "failed to deserialize submission")?;
+
+    let params: ChallengeParams = bincode_options_params()
+        .deserialize(&input.params)
+        .map_err(|_| "failed to deserialize challenge params")?;
+
+    if submission.agent_hash.is_empty() || submission.miner_hotkey.is_empty() {
+        return Err("missing agent_hash or miner_hotkey");
+    }
+
+    if submission.task_results.is_empty() {
+        return Err("submission contains no task results");
+    }
+
+    if submission.task_results.len() > MAX_TASKS {
+        return Err("submission exceeds maximum task count");
+    }
+
+    if submission.task_results.len() != params.tasks.len() {
+        return Err("task result count does not match task definitions");
+    }
+
+    for result in &submission.task_results {
+        if !validate_task_result(result) {
+            return Err("invalid task result: bad score or empty task_id");
+        }
+    }
+
+    Ok((submission, params))
 }
 
 /// WASM challenge implementation for the Terminal Benchmark.
@@ -146,40 +189,10 @@ impl Challenge for TermChallengeWasm {
     }
 
     fn evaluate(&self, input: EvaluationInput) -> EvaluationOutput {
-        let submission: Submission =
-            match bincode_options_submission().deserialize(&input.agent_data) {
-                Ok(s) => s,
-                Err(_) => return EvaluationOutput::failure("failed to deserialize submission"),
-            };
-
-        let params: ChallengeParams = match bincode_options_params().deserialize(&input.params) {
-            Ok(p) => p,
-            Err(_) => return EvaluationOutput::failure("failed to deserialize challenge params"),
+        let (submission, params) = match deserialize_and_validate(&input) {
+            Ok(pair) => pair,
+            Err(msg) => return EvaluationOutput::failure(msg),
         };
-
-        if submission.agent_hash.is_empty() || submission.miner_hotkey.is_empty() {
-            return EvaluationOutput::failure("missing agent_hash or miner_hotkey");
-        }
-
-        if submission.task_results.is_empty() {
-            return EvaluationOutput::failure("submission contains no task results");
-        }
-
-        if submission.task_results.len() > MAX_TASKS {
-            return EvaluationOutput::failure("submission exceeds maximum task count");
-        }
-
-        if submission.task_results.len() != params.tasks.len() {
-            return EvaluationOutput::failure("task result count does not match task definitions");
-        }
-
-        for result in &submission.task_results {
-            if !validate_task_result(result) {
-                return EvaluationOutput::failure(
-                    "invalid task result: bad score or empty task_id",
-                );
-            }
-        }
 
         let mut results: Vec<TaskResult> = submission.task_results;
 
@@ -190,7 +203,7 @@ impl Challenge for TermChallengeWasm {
                 }
                 if let Some(llm_score) = Self::try_llm_judge(url, result, &task.name) {
                     result.score = llm_score;
-                    if llm_score < 0.5 {
+                    if llm_score < LLM_PASS_THRESHOLD {
                         result.passed = false;
                     }
                 }
@@ -206,40 +219,7 @@ impl Challenge for TermChallengeWasm {
     }
 
     fn validate(&self, input: EvaluationInput) -> bool {
-        let submission: Submission =
-            match bincode_options_submission().deserialize(&input.agent_data) {
-                Ok(s) => s,
-                Err(_) => return false,
-            };
-
-        let params: ChallengeParams = match bincode_options_params().deserialize(&input.params) {
-            Ok(p) => p,
-            Err(_) => return false,
-        };
-
-        if submission.agent_hash.is_empty() || submission.miner_hotkey.is_empty() {
-            return false;
-        }
-
-        if submission.task_results.is_empty() {
-            return false;
-        }
-
-        if submission.task_results.len() > MAX_TASKS {
-            return false;
-        }
-
-        if submission.task_results.len() != params.tasks.len() {
-            return false;
-        }
-
-        for result in &submission.task_results {
-            if !validate_task_result(result) {
-                return false;
-            }
-        }
-
-        true
+        deserialize_and_validate(&input).is_ok()
     }
 
     fn tasks(&self) -> Vec<u8> {

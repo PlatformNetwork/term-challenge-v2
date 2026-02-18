@@ -3,6 +3,9 @@ use core::fmt::Write as _;
 
 use crate::types::{Difficulty, DifficultyStats, TaskDefinition, TaskResult};
 
+/// Multiplier to convert a 0.0–1.0 rate into a percentage for display.
+const PERCENT_MULTIPLIER: f64 = 100.0;
+
 /// Aggregated scoring statistics across all tasks in a submission.
 pub struct AggregateScore {
     pub tasks_passed: u32,
@@ -59,7 +62,7 @@ pub fn calculate_aggregate(tasks: &[TaskDefinition], results: &[TaskResult]) -> 
         }
     }
 
-    let total = passed + failed;
+    let total = passed.saturating_add(failed);
     let pass_rate = if total > 0 {
         passed as f64 / total as f64
     } else {
@@ -90,7 +93,7 @@ pub fn format_summary(score: &AggregateScore) -> String {
         "passed={}/{} rate={:.2}%",
         score.tasks_passed,
         score.total_tasks(),
-        score.pass_rate * 100.0,
+        score.pass_rate * PERCENT_MULTIPLIER,
     );
     if score.easy_stats.total > 0 {
         let _ = write!(

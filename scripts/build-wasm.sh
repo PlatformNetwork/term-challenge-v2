@@ -26,7 +26,7 @@ SIZE=$(du -h "$WASM_PATH" | cut -f1)
 echo "WASM built successfully: $WASM_PATH ($SIZE)"
 
 # Strip debug info if wasm-strip is available
-if command -v wasm-strip &> /dev/null; then
+if command -v wasm-strip >/dev/null 2>&1; then
     echo "Stripping WASM with wasm-strip..."
     wasm-strip "$WASM_PATH"
     STRIP_SIZE=$(du -h "$WASM_PATH" | cut -f1)
@@ -34,7 +34,7 @@ if command -v wasm-strip &> /dev/null; then
 fi
 
 # Optimize with wasm-opt if available
-if command -v wasm-opt &> /dev/null; then
+if command -v wasm-opt >/dev/null 2>&1; then
     echo "Optimizing WASM with wasm-opt..."
     wasm-opt -Oz -o "${WASM_PATH%.wasm}_optimized.wasm" "$WASM_PATH"
     OPT_SIZE=$(du -h "${WASM_PATH%.wasm}_optimized.wasm" | cut -f1)
@@ -42,9 +42,9 @@ if command -v wasm-opt &> /dev/null; then
 fi
 
 # Compute and print SHA256 hash
-if command -v sha256sum &> /dev/null; then
+if command -v sha256sum >/dev/null 2>&1; then
     HASH=$(sha256sum "$WASM_PATH" | cut -d' ' -f1)
-elif command -v shasum &> /dev/null; then
+elif command -v shasum >/dev/null 2>&1; then
     HASH=$(shasum -a 256 "$WASM_PATH" | cut -d' ' -f1)
 else
     HASH="(sha256sum not available)"
