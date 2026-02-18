@@ -50,16 +50,3 @@ fn append_dataset_history(selection: &DatasetSelection) -> bool {
     };
     host_storage_set(DATASET_HISTORY_KEY, &data).is_ok()
 }
-
-pub fn get_dataset_history() -> Vec<DatasetSelection> {
-    host_storage_get(DATASET_HISTORY_KEY)
-        .ok()
-        .and_then(|d| {
-            if d.is_empty() {
-                None
-            } else {
-                bincode::deserialize(&d).ok()
-            }
-        })
-        .unwrap_or_default()
-}
