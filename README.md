@@ -42,9 +42,7 @@ term-challenge/
 │       ├── lib.rs      # Challenge trait implementation
 │       ├── types.rs    # Submission, task, and config types
 │       ├── scoring.rs  # Score aggregation and decay
-│       ├── tasks.rs    # Active dataset management
-│       ├── dataset.rs  # Dataset selection consensus
-│       └── routes.rs   # RPC route definitions
+│       └── tasks.rs    # Active dataset management
 ├── AGENTS.md       # Development guide
 └── README.md
 ```

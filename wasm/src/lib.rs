@@ -33,33 +33,31 @@ const MAX_TASK_ID_LEN: usize = 512;
 const MAX_OUTPUT_LEN: usize = 10 * 1024 * 1024;
 const MAX_INSTANCE_LEN: usize = 512;
 const EXPECTED_TOKEN_HASH_LEN: usize = 32;
+const LLM_JUDGE_FAIL_THRESHOLD: f64 = 0.5;
+const WEIGHT_SCORE_SCALE: f64 = 10_000.0;
 
 fn bincode_options_submission() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_SUBMISSION_SIZE)
         .with_fixint_encoding()
-        .allow_trailing_bytes()
 }
 
 fn bincode_options_params() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_PARAMS_SIZE)
         .with_fixint_encoding()
-        .allow_trailing_bytes()
 }
 
 fn bincode_options_llm() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_LLM_RESPONSE_SIZE)
         .with_fixint_encoding()
-        .allow_trailing_bytes()
 }
 
 fn bincode_options_config() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_CONFIG_SIZE)
         .with_fixint_encoding()
-        .allow_trailing_bytes()
 }
 
 fn validate_task_result(result: &TaskResult) -> bool {
@@ -224,7 +222,7 @@ impl Challenge for TermChallengeWasm {
                 }
                 if let Some(llm_score) = Self::try_llm_judge(url, result, &task.name) {
                     result.score = llm_score;
-                    if llm_score < 0.5 {
+                    if llm_score < LLM_JUDGE_FAIL_THRESHOLD {
                         result.passed = false;
                     }
                 }
@@ -233,7 +231,7 @@ impl Challenge for TermChallengeWasm {
 
         let aggregate = calculate_aggregate(&params.tasks, &results);
         let weight = to_weight(&aggregate);
-        let score = (weight * 10_000.0) as i64;
+        let score = (weight * WEIGHT_SCORE_SCALE) as i64;
         let message = format_summary(&aggregate);
 
         let current_epoch = host_consensus_get_epoch();

@@ -15,9 +15,7 @@ term-challenge/
 │       ├── lib.rs       # Challenge impl + register_challenge!
 │       ├── types.rs     # Submission, TaskDefinition, DecayParams, etc.
 │       ├── scoring.rs   # Aggregate scoring, decay, weight calculation
-│       ├── tasks.rs     # Active dataset storage (SWE-bench tasks)
-│       ├── dataset.rs   # Dataset selection and consensus logic
-│       └── routes.rs    # Challenge route definitions for RPC
+│       └── tasks.rs     # Active dataset storage (SWE-bench tasks)
 ├── AGENTS.md
 ├── README.md
 ├── LICENSE

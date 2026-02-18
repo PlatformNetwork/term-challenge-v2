@@ -8,19 +8,18 @@ const ACTIVE_DATASET_KEY: &[u8] = b"active_dataset";
 const DATASET_HISTORY_KEY: &[u8] = b"dataset_history";
 const MAX_DATASET_SIZE: u64 = 4 * 1024 * 1024;
 const MAX_HISTORY_SIZE: u64 = 16 * 1024 * 1024;
+const MAX_DATASET_HISTORY: usize = 100;
 
 fn bincode_options_dataset() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_DATASET_SIZE)
         .with_fixint_encoding()
-        .allow_trailing_bytes()
 }
 
 fn bincode_options_history() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_HISTORY_SIZE)
         .with_fixint_encoding()
-        .allow_trailing_bytes()
 }
 
 pub fn get_active_dataset() -> Option<Vec<TaskDefinition>> {
@@ -28,7 +27,8 @@ pub fn get_active_dataset() -> Option<Vec<TaskDefinition>> {
     if data.is_empty() {
         return None;
     }
-    bincode_options_dataset().deserialize(&data).ok()
+    let selection: DatasetSelection = bincode_options_dataset().deserialize(&data).ok()?;
+    Some(selection.tasks)
 }
 
 pub fn store_dataset(selection: &DatasetSelection) -> bool {
@@ -57,8 +57,8 @@ fn append_dataset_history(selection: &DatasetSelection) -> bool {
 
     history.push(selection.clone());
 
-    if history.len() > 100 {
-        history.drain(0..history.len() - 100);
+    if history.len() > MAX_DATASET_HISTORY {
+        history.drain(0..history.len() - MAX_DATASET_HISTORY);
     }
 
     let data = match bincode_options_history().serialize(&history) {
