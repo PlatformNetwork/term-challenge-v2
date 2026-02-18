@@ -94,10 +94,3 @@ pub struct DatasetSelection {
     pub selected_at_epoch: u64,
     pub dataset_hash: String,
 }
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RouteDefinition {
-    pub method: String,
-    pub path: String,
-    pub description: String,
-}

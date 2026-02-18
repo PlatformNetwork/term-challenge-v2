@@ -32,7 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "term-ci"
-      - run: cargo build --release
+      - run: cargo check --workspace
 
   clippy:
     name: Clippy
@@ -116,8 +116,13 @@ jobs:
           name: term-challenge-wasm
           path: release/
       - run: |
-          tar -czvf term-challenge-wasm-${{ github.ref_name }}.tar.gz -C release .
+          cd release
+          sha256sum term_challenge_wasm.wasm > term_challenge_wasm.wasm.sha256
+          tar -czvf ../term-challenge-${{ github.ref_name }}-wasm.tar.gz .
       - uses: softprops/action-gh-release@v2
         with:
-          files: term-challenge-wasm-${{ github.ref_name }}.tar.gz
+          files: |
+            term-challenge-${{ github.ref_name }}-wasm.tar.gz
+            release/term_challenge_wasm.wasm
+            release/term_challenge_wasm.wasm.sha256
           generate_release_notes: true

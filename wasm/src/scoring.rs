@@ -1,7 +1,7 @@
 use alloc::string::String;
 use core::fmt::Write as _;
 
-use crate::types::{DecayParams, Difficulty, DifficultyStats, TaskDefinition, TaskResult};
+use crate::types::{Difficulty, DifficultyStats, TaskDefinition, TaskResult};
 
 pub struct AggregateScore {
     pub tasks_passed: u32,
@@ -76,23 +76,6 @@ pub fn calculate_aggregate(tasks: &[TaskDefinition], results: &[TaskResult]) -> 
 
 pub fn to_weight(score: &AggregateScore) -> f64 {
     score.pass_rate.clamp(0.0, 1.0)
-}
-
-pub fn apply_decay(weight: f64, hours_since_top: f64, params: &DecayParams) -> f64 {
-    let grace = params.grace_period_hours as f64;
-    if hours_since_top <= grace {
-        return weight;
-    }
-
-    let elapsed = hours_since_top - grace;
-    let half_life = params.half_life_hours as f64;
-    if half_life <= 0.0 {
-        return params.min_multiplier;
-    }
-
-    let multiplier = 0.5f64.powf(elapsed / half_life);
-    let clamped = multiplier.max(params.min_multiplier);
-    weight * clamped
 }
 
 pub fn format_summary(score: &AggregateScore) -> String {

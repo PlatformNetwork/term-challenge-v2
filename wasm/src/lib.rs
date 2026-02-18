@@ -2,8 +2,6 @@
 
 extern crate alloc;
 
-mod dataset;
-mod routes;
 mod scoring;
 mod tasks;
 mod types;
