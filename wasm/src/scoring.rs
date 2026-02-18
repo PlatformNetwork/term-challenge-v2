@@ -41,9 +41,9 @@ pub fn calculate_aggregate(tasks: &[TaskDefinition], results: &[TaskResult]) -> 
 
     for (task, result) in tasks.iter().zip(results.iter()) {
         if result.passed {
-            passed += 1;
+            passed = passed.saturating_add(1);
         } else {
-            failed += 1;
+            failed = failed.saturating_add(1);
         }
 
         total_execution_time_ms = total_execution_time_ms.saturating_add(result.execution_time_ms);
@@ -53,9 +53,9 @@ pub fn calculate_aggregate(tasks: &[TaskDefinition], results: &[TaskResult]) -> 
             Difficulty::Medium => &mut medium,
             Difficulty::Hard => &mut hard,
         };
-        stats.total += 1;
+        stats.total = stats.total.saturating_add(1);
         if result.passed {
-            stats.passed += 1;
+            stats.passed = stats.passed.saturating_add(1);
         }
     }
 
