@@ -3,17 +3,14 @@
   "release-type": "simple",
   "include-component-in-tag": false,
   "include-v-in-tag": true,
-  "sequential-calls": true,
   "packages": {
     ".": {
-      "package-name": "term-challenge",
+      "package-name": "platform",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "extra-files": []
+      "bump-patch-for-minor-pre-major": true
     }
   },
-  "commit-search-depth": 50,
   "changelog-sections": [
     {"type": "feat", "section": "Features"},
     {"type": "fix", "section": "Bug Fixes"},
