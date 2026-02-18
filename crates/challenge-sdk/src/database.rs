@@ -163,8 +163,10 @@ impl ChallengeDatabase {
             std::collections::HashMap::new();
 
         for result in self.get_all_results()? {
-            let existing = latest.get(&result.agent_hash);
-            if existing.is_none() || existing.unwrap().timestamp < result.timestamp {
+            let dominated = latest
+                .get(&result.agent_hash)
+                .map_or(true, |existing| existing.timestamp < result.timestamp);
+            if dominated {
                 latest.insert(result.agent_hash.clone(), result);
             }
         }

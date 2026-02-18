@@ -147,6 +147,10 @@ async fn main() -> Result<()> {
     ws_server.run(config.bind).await
 }
 
+const BLOCKS_PER_EPOCH: u64 = 100;
+const COMMIT_WINDOW_BLOCK: u64 = 75;
+const REVEAL_WINDOW_BLOCK: u64 = 88;
+
 /// Block production background task
 async fn block_production_task(state: Arc<AppState>, tempo: u64) {
     let mut ticker = interval(Duration::from_secs(tempo));
@@ -182,12 +186,11 @@ async fn block_production_task(state: Arc<AppState>, tempo: u64) {
         let _ = state.broadcast_tx.send(notification);
 
         // Check epoch boundary for commit-reveal
-        let blocks_per_epoch = 100u64;
-        let block_in_epoch = block_number % blocks_per_epoch;
+        let block_in_epoch = block_number % BLOCKS_PER_EPOCH;
 
-        if block_in_epoch == 75 {
+        if block_in_epoch == COMMIT_WINDOW_BLOCK {
             info!("=== COMMIT WINDOW OPEN (epoch boundary) ===");
-        } else if block_in_epoch == 88 {
+        } else if block_in_epoch == REVEAL_WINDOW_BLOCK {
             info!("=== REVEAL WINDOW OPEN ===");
         }
     }

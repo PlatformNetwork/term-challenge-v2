@@ -246,7 +246,9 @@ impl UpdateManager {
                     .join("challenges")
                     .join(&config.id)
                     .join("code.wasm");
-                std::fs::create_dir_all(wasm_path.parent().unwrap())?;
+                if let Some(parent) = wasm_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
                 std::fs::write(&wasm_path, wasm_bytes)?;
 
                 info!("Challenge WASM updated: {}", config.id);

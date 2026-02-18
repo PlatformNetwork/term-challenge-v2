@@ -634,14 +634,22 @@ async fn custom_route_handler<C: ServerChallenge + 'static>(
 
     // Build a minimal ChallengeContext (no database in fallback handler)
     // In production, the ChallengeContext would be populated by the validator node
+    let db = match ChallengeDatabase::open(std::env::temp_dir(), crate::types::ChallengeId::new()) {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::error!("Failed to open temporary challenge database: {}", e);
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({
+                    "error": "internal_error",
+                    "message": "Failed to initialize challenge context"
+                })),
+            );
+        }
+    };
+
     let ctx = ChallengeContext {
-        db: Arc::new(
-            ChallengeDatabase::open(std::env::temp_dir(), crate::types::ChallengeId::new())
-                .unwrap_or_else(|_| {
-                    ChallengeDatabase::open(std::env::temp_dir(), crate::types::ChallengeId::new())
-                        .expect("Failed to open temporary challenge database")
-                }),
-        ),
+        db: Arc::new(db),
         challenge_id: state.challenge.challenge_id().to_string(),
         epoch: 0,
         block_height: 0,

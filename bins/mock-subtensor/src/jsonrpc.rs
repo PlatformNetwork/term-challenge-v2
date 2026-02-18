@@ -274,10 +274,16 @@ impl RpcHandler {
             chain.best_number()
         };
 
-        let block = chain
+        let block = match chain
             .get_block(block_number)
+            .or_else(|| chain.get_block(0))
             .cloned()
-            .unwrap_or_else(|| chain.get_block(0).cloned().unwrap());
+        {
+            Some(b) => b,
+            None => {
+                return JsonRpcResponse::error(id, INTERNAL_ERROR, "No blocks available");
+            }
+        };
 
         JsonRpcResponse::result(
             id,
@@ -415,13 +421,10 @@ impl RpcHandler {
     // ==================== State Namespace ====================
 
     fn state_get_storage(&self, id: Value, params: Value) -> JsonRpcResponse {
-        let key = params.get(0).and_then(|k| k.as_str());
-
-        if key.is_none() {
-            return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing storage key");
-        }
-
-        let key = key.unwrap();
+        let key = match params.get(0).and_then(|k| k.as_str()) {
+            Some(k) => k,
+            None => return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing storage key"),
+        };
         let _chain = self.state.chain.read();
         let metagraph = self.state.metagraph.read();
 
@@ -544,14 +547,12 @@ impl RpcHandler {
     }
 
     fn state_query_storage_at(&self, id: Value, params: Value) -> JsonRpcResponse {
-        let keys = params.get(0).and_then(|k| k.as_array());
-
-        if keys.is_none() {
-            return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing keys array");
-        }
+        let keys = match params.get(0).and_then(|k| k.as_array()) {
+            Some(k) => k,
+            None => return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing keys array"),
+        };
 
         let results: Vec<Value> = keys
-            .unwrap()
             .iter()
             .map(|k| {
                 json!({
@@ -568,13 +569,10 @@ impl RpcHandler {
     // ==================== Author Namespace ====================
 
     fn author_submit_extrinsic(&self, id: Value, params: Value) -> JsonRpcResponse {
-        let extrinsic_data = params.get(0).and_then(|e| e.as_str());
-
-        if extrinsic_data.is_none() {
-            return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing extrinsic data");
-        }
-
-        let extrinsic_hex = extrinsic_data.unwrap();
+        let extrinsic_hex = match params.get(0).and_then(|e| e.as_str()) {
+            Some(e) => e,
+            None => return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing extrinsic data"),
+        };
         let mut chain = self.state.chain.write();
 
         // Parse extrinsic (simplified)
@@ -702,40 +700,38 @@ impl RpcHandler {
     }
 
     fn subtensor_commit_weights(&self, id: Value, params: Value) -> JsonRpcResponse {
-        // Parse parameters
         let netuid = params.get(0).and_then(|n| n.as_u64()).unwrap_or(0) as u16;
         let uids = params.get(1).and_then(|u| u.as_array());
         let commitment_hash = params.get(2).and_then(|c| c.as_str());
-        let hotkey = params.get(3).and_then(|h| h.as_str());
 
-        if hotkey.is_none() {
-            return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing hotkey");
-        }
+        let hotkey = match params.get(3).and_then(|h| h.as_str()) {
+            Some(h) => h,
+            None => return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing hotkey"),
+        };
 
         let mut metagraph = self.state.metagraph.write();
         let chain = self.state.chain.read();
 
-        // Verify hotkey is registered
-        if metagraph.get_validator_by_hotkey(hotkey.unwrap()).is_none() {
+        if metagraph.get_validator_by_hotkey(hotkey).is_none() {
             return JsonRpcResponse::error(
                 id,
                 INVALID_PARAMS,
-                format!("Hotkey {} not registered", hotkey.unwrap()),
+                format!("Hotkey {} not registered", hotkey),
             );
         }
 
-        // Create commitment
+        let empty_vec = vec![];
         let uids: Vec<u16> = uids
-            .unwrap_or(&vec![])
+            .unwrap_or(&empty_vec)
             .iter()
             .filter_map(|v| v.as_u64().map(|u| u as u16))
             .collect();
 
         let commitment = WeightCommitment::new(
-            hotkey.unwrap().to_string(),
+            hotkey.to_string(),
             netuid,
             uids.clone(),
-            vec![65535; uids.len()], // Mock weights
+            vec![65535; uids.len()],
             commitment_hash.unwrap_or("").to_string(),
             chain.best_number(),
         );
@@ -747,34 +743,35 @@ impl RpcHandler {
     }
 
     fn subtensor_reveal_weights(&self, id: Value, params: Value) -> JsonRpcResponse {
-        // Parse parameters
         let _netuid = params.get(0).and_then(|n| n.as_u64()).unwrap_or(0) as u16;
         let uids = params.get(1).and_then(|u| u.as_array());
         let weights = params.get(2).and_then(|w| w.as_array());
         let salt = params.get(3).and_then(|s| s.as_str());
-        let hotkey = params.get(4).and_then(|h| h.as_str());
 
-        if hotkey.is_none() {
-            return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing hotkey");
-        }
+        let hotkey = match params.get(4).and_then(|h| h.as_str()) {
+            Some(h) => h,
+            None => return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing hotkey"),
+        };
 
         let mut metagraph = self.state.metagraph.write();
         let chain = self.state.chain.read();
 
+        let empty_uids = vec![];
         let uids: Vec<u16> = uids
-            .unwrap_or(&vec![])
+            .unwrap_or(&empty_uids)
             .iter()
             .filter_map(|v| v.as_u64().map(|u| u as u16))
             .collect();
 
+        let empty_weights = vec![];
         let weights: Vec<u16> = weights
-            .unwrap_or(&vec![])
+            .unwrap_or(&empty_weights)
             .iter()
             .filter_map(|v| v.as_u64().map(|u| u as u16))
             .collect();
 
         match metagraph.reveal_weights(
-            hotkey.unwrap(),
+            hotkey,
             uids,
             weights,
             salt.unwrap_or("").to_string(),

@@ -127,7 +127,7 @@ impl ChallengeWeightCollector {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(DEFAULT_CHALLENGE_TIMEOUT_SECS + 5))
             .build()
-            .expect("Failed to create HTTP client");
+            .unwrap_or_default();
 
         Self {
             client,

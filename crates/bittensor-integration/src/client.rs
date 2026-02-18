@@ -85,7 +85,10 @@ impl SubtensorClient {
         let client = self.client()?;
         let metagraph = sync_metagraph(client, self.config.netuid).await?;
         self.metagraph = Some(metagraph);
-        Ok(self.metagraph.as_ref().unwrap())
+        Ok(self
+            .metagraph
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("metagraph unexpectedly empty after sync"))?)
     }
 
     /// Get cached metagraph (sync first if needed)

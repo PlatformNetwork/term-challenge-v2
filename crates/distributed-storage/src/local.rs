@@ -877,16 +877,16 @@ impl DistributedStore for LocalStorage {
         let results: Vec<_> = results.into_iter().take(limit).collect();
 
         // Build cursor for next page
-        let next_cursor = if has_more && !results.is_empty() {
-            let (last_key, _, last_block) = results.last().expect("results not empty");
-            Some(QueryCursor::from_last_item(
-                namespace,
-                *last_block,
-                last_key,
-            ))
-        } else {
-            None
-        };
+        let next_cursor =
+            if let Some((last_key, _, last_block)) = has_more.then(|| results.last()).flatten() {
+                Some(QueryCursor::from_last_item(
+                    namespace,
+                    *last_block,
+                    last_key,
+                ))
+            } else {
+                None
+            };
 
         let items: Vec<(StorageKey, StoredValue)> =
             results.into_iter().map(|(k, v, _)| (k, v)).collect();

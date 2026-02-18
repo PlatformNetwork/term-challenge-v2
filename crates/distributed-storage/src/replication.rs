@@ -181,7 +181,7 @@ impl ConflictResolver {
         }
 
         if values.len() == 1 {
-            return Some(values.into_iter().next().unwrap());
+            return values.into_iter().next();
         }
 
         match self.strategy {

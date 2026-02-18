@@ -39,7 +39,7 @@ pub struct RpcConfig {
 impl Default for RpcConfig {
     fn default() -> Self {
         Self {
-            addr: "0.0.0.0:8080".parse().unwrap(),
+            addr: SocketAddr::from(([0, 0, 0, 0], 8080)),
             netuid: 1,
             name: "Mini-Chain".to_string(),
             min_stake: 1_000_000_000_000, // 1000 TAO
