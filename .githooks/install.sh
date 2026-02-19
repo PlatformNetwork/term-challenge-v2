@@ -1,28 +1,23 @@
 #!/bin/bash
-# Install git hooks for this repository
-# Run this after cloning: ./githooks/install.sh
-
-set -e
+# Install git hooks for term-challenge
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-HOOKS_DIR="$REPO_ROOT/.git/hooks"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-echo "Installing git hooks..."
+echo "Installing git hooks for term-challenge..."
 
-# Copy hooks
-cp "$SCRIPT_DIR/pre-commit" "$HOOKS_DIR/pre-commit"
-cp "$SCRIPT_DIR/pre-push" "$HOOKS_DIR/pre-push"
+# Configure git to use our hooks directory
+git -C "$REPO_DIR" config core.hooksPath .githooks
 
-# Make executable
-chmod +x "$HOOKS_DIR/pre-commit"
-chmod +x "$HOOKS_DIR/pre-push"
+# Make hooks executable
+chmod +x "$SCRIPT_DIR/pre-push"
 
-echo "Git hooks installed successfully!"
+echo "✅ Git hooks installed!"
 echo ""
-echo "Hooks enabled:"
-echo "  - pre-commit: Auto-format code"
-echo "  - pre-push: Run all CI checks (format, clippy, tests)"
+echo "The following checks will run before each push:"
+echo "  1. cargo fmt --check"
+echo "  2. cargo check"
+echo "  3. cargo clippy"
+echo "  4. cargo test"
 echo ""
-echo "To skip hooks temporarily (not recommended):"
-echo "  git push --no-verify"
+echo "To bypass hooks (not recommended): git push --no-verify"

@@ -1,177 +1,309 @@
 <div align="center">
 
-# ρlατfοrm
+# τεrm chαllεηgε
 
-**Distributed validator network for decentralized AI evaluation on Bittensor**
+**Terminal Benchmark Challenge — WASM Evaluation Module for Platform-v2**
 
-[![CI](https://github.com/PlatformNetwork/platform/actions/workflows/ci.yml/badge.svg)](https://github.com/PlatformNetwork/platform/actions/workflows/ci.yml)
-[![Coverage](https://platformnetwork.github.io/platform/badges/coverage.svg)](https://github.com/PlatformNetwork/platform/actions)
-[![License](https://img.shields.io/github/license/PlatformNetwork/platform)](https://github.com/PlatformNetwork/platform/blob/main/LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/PlatformNetwork/platform)](https://github.com/PlatformNetwork/platform/stargazers)
+[![License](https://img.shields.io/github/license/PlatformNetwork/term-challenge)](https://github.com/PlatformNetwork/term-challenge/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.90+-orange.svg)](https://www.rust-lang.org/)
 
-![Platform Banner](assets/banner.jpg)
-
-![Alt](https://repobeats.axiom.co/api/embed/4b44b7f7c97e0591af537309baea88689aefe810.svg "Repobeats analytics image")
+![Term Challenge Banner](assets/banner.jpg)
 
 </div>
 
----
-
-## Overview
-
-Platform is a **WASM-first, peer-to-peer validator network** for deterministic evaluation of miner submissions on Bittensor. Validators execute challenge logic in a hardened WASM runtime, reach stake-weighted consensus over libp2p, and submit finalized weights to the chain. **Docker is reserved for local and CI test harnesses only.**
-
-**Core principles**
-- Decentralized libp2p mesh (gossipsub + DHT) with no centralized relays.
-- Stake-weighted PBFT-style consensus for challenge state and weight aggregation.
-- Deterministic WASM execution with strict runtime policy and auditability.
-- Explicit separation of production runtime (WASM) and test-only containers (Docker).
+Term Challenge is a WASM evaluation module for AI agents on the Bittensor network. It runs inside [platform-v2](https://github.com/PlatformNetwork/platform-v2) validators to evaluate miner submissions against SWE-bench tasks. Miners submit Python agent packages that autonomously solve software engineering issues, and the network scores them through a multi-stage review pipeline including LLM-based code review and AST structural validation.
 
 ---
 
-## Documentation Index
-
-- [Architecture](docs/architecture.md)
-- [Security Model](docs/security.md)
-- [Challenges](docs/challenges.md)
-- [Challenge Integration Guide](docs/challenge-integration.md)
-- [Validator Guide](docs/validator.md)
-- [Validator Operations](docs/operations/validator.md)
-
----
-
-## Network Architecture
+## System Architecture
 
 ```mermaid
 flowchart LR
-    Owner[Sudo Owner] -->|Signed challenge actions| Mesh[(libp2p Mesh)]
-    Mesh --> DHT[(DHT: submissions + consensus state)]
-    Mesh --> V1[Validator 1]
-    Mesh --> V2[Validator 2]
-    Mesh --> VN[Validator N]
-    V1 -->|Evaluations + votes| Mesh
-    V2 -->|Evaluations + votes| Mesh
-    VN -->|Evaluations + votes| Mesh
-    V1 -->|Final weights| BT[Bittensor Chain]
-    V2 -->|Final weights| BT
-    VN -->|Final weights| BT
+    Miner[Miner] -->|Submit Agent ZIP| RPC[Validator RPC]
+    RPC --> Validators[Validator Network]
+    Validators --> WASM[term-challenge WASM]
+    WASM --> Storage[(Blockchain Storage)]
+    Validators --> Executor[term-executor]
+    Executor -->|Task Results| Validators
+    Validators -->|Scores + Weights| BT[Bittensor Chain]
+    CLI[term-cli TUI] -->|JSON-RPC| RPC
+    CLI -->|Display| Monitor[Leaderboard / Progress / Logs]
 ```
 
 ---
 
-## Consensus & Weight Submission
+## Evaluation Pipeline
 
 ```mermaid
 sequenceDiagram
-    participant L as Leader
-    participant V1 as Validator 1
-    participant V2 as Validator 2
-    participant Vn as Validator N
+    participant M as Miner
+    participant V as Validators
+    participant LLM as LLM Reviewers (×3)
+    participant AST as AST Reviewers (×3)
+    participant W as WASM Module
+    participant E as term-executor
     participant BT as Bittensor
 
-    L->>V1: Proposal(action, height)
-    L->>V2: Proposal(action, height)
-    L->>Vn: Proposal(action, height)
-    V1-->>L: Vote(approve/reject)
-    V2-->>L: Vote(approve/reject)
-    Vn-->>L: Vote(approve/reject)
-    L-->>V1: Commit(>=2f+1 approvals)
-    L-->>V2: Commit(>=2f+1 approvals)
-    L-->>Vn: Commit(>=2f+1 approvals)
-    V1->>BT: Submit weights
-    V2->>BT: Submit weights
-    Vn->>BT: Submit weights
+    M->>V: Submit agent zip + metadata
+    V->>W: validate(submission)
+    W-->>V: Approved (>50% consensus)
+    V->>LLM: Assign LLM code review
+    V->>AST: Assign AST structural review
+    LLM-->>V: LLM review scores
+    AST-->>V: AST review scores
+    V->>E: Execute agent on SWE-bench tasks
+    E-->>V: Task results + scores
+    V->>W: evaluate(results)
+    W-->>V: Aggregate score + weight
+    V->>V: Store agent code & logs
+    V->>V: Log consensus (>50% hash agreement)
+    V->>BT: Submit weights at epoch boundary
 ```
 
 ---
 
-## Runtime Policy (WASM-First)
-
-```mermaid
-flowchart LR
-    Validator[Validator Node] --> Runtime[WASM Runtime]
-    Runtime --> Policy[Runtime Policy]
-    Runtime --> HostFns[Whitelisted Host Functions]
-    Runtime --> Audit[Audit Logs]
-    Policy --> Runtime
-    HostFns --> Runtime
-    Runtime -->|Deterministic outputs| Validator
-```
-
----
-
-## WASM Route Handling
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant RPC as RPC Server
-    participant WE as WASM Executor
-    participant WM as WASM Module
-
-    Client->>RPC: challenge_call(id, method, path)
-    RPC->>WE: execute_handle_route(request)
-    WE->>WM: handle_route(serialized_request)
-    WM-->>WE: serialized_response
-    WE-->>RPC: WasmRouteResponse
-    RPC-->>Client: JSON-RPC result
-```
-
----
-
-## Review Assignment Flow
-
-```mermaid
-flowchart LR
-    Submit[Submission] --> Select[Validator Selection]
-    Select --> LLM[3 LLM Reviewers]
-    Select --> AST[3 AST Reviewers]
-    LLM --> |Review Results| Aggregate[Result Aggregation]
-    AST --> |Review Results| Aggregate
-    Aggregate --> Score[Final Score]
-    LLM -.-> |Timeout| Replace1[Replacement Validator]
-    AST -.-> |Timeout| Replace2[Replacement Validator]
-```
-
----
-
-## Subnet Owner Resolution
+## Validator Assignment
 
 ```mermaid
 flowchart TB
-    Sync[Metagraph Sync] --> Parse[Parse Neurons]
-    Parse --> UID0{UID 0 Found?}
-    UID0 -->|Yes| Update[Update ChainState.sudo_key]
-    UID0 -->|No| Keep[Keep Existing]
-    Update --> Owner[Subnet Owner = UID 0 Hotkey]
+    Sub[New Submission] --> Seed[Deterministic Seed from submission_id]
+    Seed --> Select[Select 6 Validators]
+    Select --> LLM[3 LLM Reviewers]
+    Select --> AST[3 AST Reviewers]
+    LLM --> LR1[LLM Reviewer 1]
+    LLM --> LR2[LLM Reviewer 2]
+    LLM --> LR3[LLM Reviewer 3]
+    AST --> AR1[AST Reviewer 1]
+    AST --> AR2[AST Reviewer 2]
+    AST --> AR3[AST Reviewer 3]
+    LR1 & LR2 & LR3 -->|Timeout?| TD1{Responded?}
+    AR1 & AR2 & AR3 -->|Timeout?| TD2{Responded?}
+    TD1 -->|No| Rep1[Replacement Validator]
+    TD1 -->|Yes| Agg[Result Aggregation]
+    TD2 -->|No| Rep2[Replacement Validator]
+    TD2 -->|Yes| Agg
+    Rep1 --> Agg
+    Rep2 --> Agg
+    Agg --> Score[Final Score]
 ```
 
 ---
 
-## Quick Start (Validator)
+## Submission Flow
+
+```mermaid
+flowchart LR
+    Register[Register Name] -->|First-register-owns| Name[Submission Name]
+    Name --> Version[Auto-increment Version]
+    Version --> Pack[Package Agent ZIP ≤ 1MB]
+    Pack --> Sign[Sign with sr25519]
+    Sign --> Submit[Submit via RPC]
+    Submit --> RateCheck{Epoch Rate Limit OK?}
+    RateCheck -->|No: < 3 epochs since last| Reject[Rejected]
+    RateCheck -->|Yes| Validate[WASM validate]
+    Validate --> Consensus{>50% Validator Approval?}
+    Consensus -->|No| Reject
+    Consensus -->|Yes| Evaluate[Evaluation Pipeline]
+    Evaluate --> Store[Store Code + Hash + Logs]
+```
+
+---
+
+## Decay Mechanism
+
+```mermaid
+flowchart LR
+    Top[Top Score Achieved] --> Grace[72h Grace Period]
+    Grace -->|Within grace| Full[100% Weight Retained]
+    Grace -->|After grace| Decay[Exponential Decay Begins]
+    Decay --> Half[50% per 24h half-life]
+    Half --> Min[Decay to 0.0 min multiplier]
+    Min --> Burn[Weight Burns to UID 0]
+```
+
+---
+
+## CLI Data Flow
+
+```mermaid
+flowchart TB
+    CLI[term-cli] -->|epoch_current| RPC[Validator RPC]
+    CLI -->|challenge_call /leaderboard| RPC
+    CLI -->|evaluation_getProgress| RPC
+    CLI -->|agent_getLogs| RPC
+    CLI -->|system_health| RPC
+    CLI -->|validator_count| RPC
+    RPC --> State[Chain State]
+    State --> LB[Leaderboard Data]
+    State --> Eval[Evaluation Progress]
+    State --> Logs[Validated Logs]
+```
+
+---
+
+## Agent Log Consensus
+
+```mermaid
+flowchart LR
+    V1[Validator 1] -->|Log Proposal| P2P[(P2P Network)]
+    V2[Validator 2] -->|Log Proposal| P2P
+    V3[Validator 3] -->|Log Proposal| P2P
+    P2P --> Consensus{Hash Match >50%?}
+    Consensus -->|Yes| Store[Validated Logs]
+    Consensus -->|No| Reject[Rejected]
+```
+
+---
+
+## Agent Code Storage
+
+```mermaid
+flowchart TB
+    Submit[Agent Submission] --> Validate{package_zip ≤ 1MB?}
+    Validate -->|Yes| Store[Blockchain Storage]
+    Validate -->|No| Reject[Rejected]
+    Store --> Code[agent_code:hotkey:epoch]
+    Store --> Hash[agent_hash:hotkey:epoch]
+    Store --> Logs[agent_logs:hotkey:epoch ≤ 256KB]
+```
+
+---
+
+## Route Architecture
+
+```mermaid
+flowchart LR
+    Client[Client] -->|JSON-RPC| RPC[RPC Server]
+    RPC -->|challenge_call| WE[WASM Executor]
+    WE -->|handle_route request| WM[WASM Module]
+    WM --> Router{Route Match}
+    Router --> LB[/leaderboard]
+    Router --> Subs[/submissions]
+    Router --> DS[/dataset]
+    Router --> Stats[/stats]
+    Router --> Agent[/agent/:hotkey/code]
+    LB & Subs & DS & Stats & Agent --> Storage[(Storage)]
+    Storage --> Response[Serialized Response]
+    Response --> WE
+    WE --> RPC
+    RPC --> Client
+```
+
+---
+
+## Features
+
+- **WASM Module**: Compiles to `wasm32-unknown-unknown`, loaded by platform-v2 validators
+- **SWE-bench Evaluation**: Tasks selected from HuggingFace CortexLM/swe-bench datasets
+- **LLM Code Review**: 3 validators perform LLM-based code review via host functions
+- **AST Structural Validation**: 3 validators perform AST-based structural analysis
+- **Submission Versioning**: Auto-incrementing versions with full history tracking
+- **Timeout Handling**: Unresponsive reviewers are replaced with alternate validators
+- **Route Handlers**: WASM-native route handling for leaderboard, submissions, dataset, and agent data
+- **Epoch Rate Limiting**: 1 submission per 3 epochs per miner
+- **Top Agent Decay**: 72h grace period, 50% daily decay to 0 weight
+- **P2P Dataset Consensus**: Validators collectively select 50 evaluation tasks
+- **Zip Package Submissions**: Agents submitted as zip packages (no compilation step)
+- **Agent Code Storage**: Submitted agent packages (≤ 1MB) stored on-chain with hash verification
+- **Log Consensus**: Evaluation logs validated across validators with >50% hash agreement
+- **CLI (term-cli)**: Native TUI for monitoring leaderboards, evaluation progress, submissions, and network health
+
+---
+
+## Building
 
 ```bash
-git clone https://github.com/PlatformNetwork/platform.git
-cd platform
-cp .env.example .env
-# Edit .env: add your VALIDATOR_SECRET_KEY (BIP39 mnemonic)
-mkdir -p data
-cargo build --release --bin validator-node
-./target/release/validator-node --data-dir ./data --secret-key "${VALIDATOR_SECRET_KEY}"
-```
+# Build WASM module
+cargo build --release --target wasm32-unknown-unknown -p term-challenge-wasm
 
-See [Validator Operations](docs/operations/validator.md) for hardware, configuration, and monitoring.
+# The output .wasm file is at:
+# target/wasm32-unknown-unknown/release/term_challenge_wasm.wasm
+
+# Build CLI (native)
+cargo build --release -p term-cli
+```
 
 ---
 
-## Docker Policy
+## Architecture
 
-- **Production**: WASM runtime only.
-- **Testing**: Docker-backed harnesses only (e.g., `./scripts/test-comprehensive.sh`).
+This repository contains the WASM evaluation module and a native CLI for monitoring. All infrastructure (P2P networking, RPC server, blockchain storage, validator coordination) is provided by [platform-v2](https://github.com/PlatformNetwork/platform-v2).
+
+```
+term-challenge/
+├── wasm/                   # WASM evaluation module
+│   └── src/
+│       ├── lib.rs               # Challenge trait implementation (validate + evaluate)
+│       ├── types.rs             # Submission, task, config, route, and log types
+│       ├── scoring.rs           # Score aggregation, decay, and weight calculation
+│       ├── tasks.rs             # Active dataset management and history
+│       ├── dataset.rs           # Dataset selection and P2P consensus logic
+│       ├── routes.rs            # WASM route definitions for RPC (handle_route)
+│       └── agent_storage.rs     # Agent code, hash, and log storage functions
+├── cli/                    # Native TUI monitoring tool
+│   └── src/
+│       ├── main.rs         # Entry point, event loop
+│       ├── app.rs          # Application state
+│       ├── ui.rs           # Ratatui UI rendering
+│       └── rpc.rs          # JSON-RPC 2.0 client
+├── docs/
+│   ├── architecture.md     # System architecture and internals
+│   ├── miner/
+│   │   ├── how-to-mine.md  # Complete miner guide
+│   │   └── submission.md   # Submission format and review process
+│   └── validator/
+│       └── setup.md        # Validator setup and operations
+├── AGENTS.md               # Development guide
+└── README.md
+```
+
+---
+
+## How It Works
+
+1. Miners submit zip packages with agent code and SWE-bench task results
+2. Platform-v2 validators load this WASM module
+3. `validate()` checks signatures, epoch rate limits, package size, and Basilica metadata
+4. **6 review validators** are deterministically selected (3 LLM + 3 AST) to review the submission
+5. LLM reviewers score code quality; AST reviewers validate structural integrity
+6. Timed-out reviewers are automatically replaced with alternate validators
+7. `evaluate()` scores task results, applies LLM judge scoring, and computes aggregate weights
+8. Agent code and hash are stored on-chain for auditability (≤ 1MB per package)
+9. Evaluation logs are proposed and validated via P2P consensus (>50% hash agreement)
+10. Scores are aggregated via P2P consensus and submitted to Bittensor at epoch boundaries
+11. Top agents enter a decay cycle: 72h grace → 50% daily decay → weight burns to UID 0
+
+---
+
+## CLI Usage
+
+```bash
+# Install via platform CLI
+platform download term-challenge
+
+# Or build from source
+cargo build --release -p term-cli
+
+# Run the TUI
+term-cli --rpc-url http://chain.platform.network:9944
+
+# With miner hotkey filter
+term-cli --hotkey 5GrwvaEF... --tab leaderboard
+
+# Available tabs: leaderboard, evaluation, submission, network
+```
+
+---
+
+## Documentation
+
+- [Architecture Overview](docs/architecture.md) — System components, host functions, P2P messages, storage schema
+- [Miner Guide](docs/miner/how-to-mine.md) — How to build and submit agents
+- [Submission Guide](docs/miner/submission.md) — Naming, versioning, and review process
+- [Validator Setup](docs/validator/setup.md) — Hardware requirements, configuration, and operations
 
 ---
 
 ## License
 
-MIT
+Apache-2.0

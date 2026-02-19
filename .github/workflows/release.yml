@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [main, "worker/**"]
+    branches: [main]
 
 permissions:
   contents: write
@@ -11,7 +11,7 @@ permissions:
 jobs:
   release-please:
     name: Release Please
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -33,58 +33,55 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "platform-ci"
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y bash ripgrep
+          shared-key: "term-ci"
+
       - name: Build release binaries
         run: cargo build --release
 
       - name: Package binaries
         run: |
           mkdir -p release
-          cp target/release/validator-node release/
-          cp target/release/csudo release/ 2>/dev/null || true
-          tar -czvf platform-${{ needs.release-please.outputs.version }}-linux-x86_64.tar.gz -C release .
+          cp target/release/term release/ 2>/dev/null || true
+          tar -czvf term-challenge-${{ needs.release-please.outputs.version }}-linux-x86_64.tar.gz -C release .
 
       - name: Upload release artifacts
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
           files: |
-            platform-${{ needs.release-please.outputs.version }}-linux-x86_64.tar.gz
+            term-challenge-${{ needs.release-please.outputs.version }}-linux-x86_64.tar.gz
 
-  docker-release:
-    name: Docker Release
+  wasm-release:
+    name: WASM Release
     runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
-      - name: Ensure Docker available
-        run: scripts/install-docker.sh
-      - uses: useblacksmith/setup-docker-builder@v1
-      - uses: docker/login-action@v3
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "term-ci"
 
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.version }}
-            type=semver,pattern={{major}},value=${{ needs.release-please.outputs.version }}
-            type=raw,value=latest
+      - name: Build WASM module
+        run: |
+          cargo build --release --target wasm32-unknown-unknown \
+            -p term-challenge-wasm --no-default-features
 
-      - uses: useblacksmith/build-push-action@v2
+      - name: Prepare WASM artifact
+        run: |
+          WASM_PATH="target/wasm32-unknown-unknown/release/term_challenge_wasm.wasm"
+          cp "$WASM_PATH" term_challenge_wasm.wasm
+          if command -v sha256sum &> /dev/null; then
+            sha256sum term_challenge_wasm.wasm > term_challenge_wasm.wasm.sha256
+          fi
+
+      - name: Upload WASM to release
+        uses: softprops/action-gh-release@v2
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: |
+            term_challenge_wasm.wasm
+            term_challenge_wasm.wasm.sha256

@@ -1,25 +1,24 @@
 #!/bin/bash
-# Pre-commit hook: Format code and check for issues
-
 set -e
+
+# Skip hooks if SKIP_GIT_HOOKS=1
+if [ "${SKIP_GIT_HOOKS:-0}" = "1" ]; then
+    echo "Skipping pre-commit hooks (SKIP_GIT_HOOKS=1)"
+    exit 0
+fi
+
+# Source cargo environment
+if [ -f "$HOME/.cargo/env" ]; then
+    source "$HOME/.cargo/env"
+fi
 
 echo "Running pre-commit checks..."
 
 # Format code
-echo "Checking formatting..."
-if ! cargo fmt --all -- --check 2>/dev/null; then
-    echo "Formatting code..."
-    cargo fmt --all
-    
-    # Check if there were changes
-    if ! git diff --quiet; then
-        echo ""
-        echo "Code was auto-formatted. Please review and re-add the changes:"
-        git diff --stat
-        echo ""
-        echo "Run: git add -u && git commit"
-        exit 1
-    fi
-fi
+echo "Formatting code..."
+cargo fmt --all
+
+# Add formatted files back to staging
+git add -u
 
 echo "Pre-commit checks passed!"
