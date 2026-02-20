@@ -1,27 +1,10 @@
+pub mod chain;
+pub mod local;
 pub mod pg;
 pub mod postgres;
+pub mod traits;
 
-use thiserror::Error;
+pub use traits::{ChallengeStorage, Result, StorageError};
 
-#[derive(Debug, Error)]
-pub enum StorageError {
-    #[error("database error: {0}")]
-    Database(#[from] tokio_postgres::Error),
-
-    #[error("pool error: {0}")]
-    Pool(#[from] deadpool_postgres::PoolError),
-
-    #[error("serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-
-    #[error("invalid hotkey: {0}")]
-    InvalidHotkey(String),
-
-    #[error("not found: {0}")]
-    NotFound(String),
-
-    #[error("invalid challenge id: {0}")]
-    InvalidChallengeId(String),
-}
-
-pub type Result<T> = std::result::Result<T, StorageError>;
+pub use chain::ChainStorage;
+pub use local::LocalStorage;

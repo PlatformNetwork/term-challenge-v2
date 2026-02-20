@@ -174,5 +174,5 @@ pub async fn delete_validator(pool: &PgPool, hotkey: &Hotkey) -> Result<bool> {
 
 pub async fn hotkey_from_ss58(ss58: &str) -> Result<Hotkey> {
     Hotkey::from_ss58(ss58)
-        .ok_or_else(|| StorageError::InvalidHotkey(format!("invalid SS58 address: {}", ss58)))
+        .ok_or_else(|| StorageError::InvalidData(format!("invalid SS58 address: {}", ss58)))
 }

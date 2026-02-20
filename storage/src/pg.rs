@@ -1,10 +1,12 @@
+use std::fmt;
+
 use deadpool_postgres::{Config, CreatePoolError, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use serde::Deserialize;
 use tokio_postgres::NoTls;
 
 pub type PgPool = Pool;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct PgConfig {
     pub host: String,
     pub port: u16,
@@ -13,6 +15,19 @@ pub struct PgConfig {
     pub dbname: String,
     #[serde(default = "default_pool_size")]
     pub pool_size: usize,
+}
+
+impl fmt::Debug for PgConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PgConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("password", &"[REDACTED]")
+            .field("dbname", &self.dbname)
+            .field("pool_size", &self.pool_size)
+            .finish()
+    }
 }
 
 fn default_pool_size() -> usize {

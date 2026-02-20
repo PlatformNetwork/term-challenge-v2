@@ -8,7 +8,13 @@ Term Challenge is a WASM evaluation module for AI agents on the Bittensor networ
 
 ```
 term-challenge/
-├── Cargo.toml          # workspace with members = ["wasm", "cli", "storage"]
+├── Cargo.toml          # workspace with members = [".", "wasm", "cli", "storage"]
+├── src/
+│   ├── lib.rs                  # Root library crate entry point
+│   └── dataset/
+│       ├── mod.rs              # Dataset module re-exports
+│       ├── types.rs            # DatasetEntry struct (SWE-forge schema)
+│       └── huggingface.rs      # HuggingFaceDataset: download, list, cache
 ├── wasm/
 │   ├── Cargo.toml      # cdylib, depends on platform-challenge-sdk-wasm
 │   └── src/
