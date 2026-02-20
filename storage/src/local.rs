@@ -51,9 +51,10 @@ impl LocalStorage {
     }
 
     fn create_tables(&self) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS agents (
@@ -102,12 +103,13 @@ impl ChallengeStorage for LocalStorage {
     // ==================== Agents ====================
 
     fn save_agent(&self, agent: &AgentInfo) -> Result<()> {
-        let data = bincode::serialize(agent)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let data =
+            bincode::serialize(agent).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         conn.execute(
             "INSERT OR REPLACE INTO agents (hash, data) VALUES (?1, ?2)",
@@ -119,9 +121,10 @@ impl ChallengeStorage for LocalStorage {
     }
 
     fn get_agent(&self, hash: &str) -> Result<Option<AgentInfo>> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         let mut stmt = conn
             .prepare("SELECT data FROM agents WHERE hash = ?1")
@@ -146,9 +149,10 @@ impl ChallengeStorage for LocalStorage {
     }
 
     fn list_agents(&self) -> Result<Vec<AgentInfo>> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         let mut stmt = conn
             .prepare("SELECT data FROM agents")
@@ -171,13 +175,14 @@ impl ChallengeStorage for LocalStorage {
 
     fn save_result(&self, result: &EvaluationResult) -> Result<()> {
         let key = format!("{}:{}", result.agent_hash, result.job_id);
-        let data = bincode::serialize(result)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let data =
+            bincode::serialize(result).map_err(|e| StorageError::Serialization(e.to_string()))?;
         let timestamp = result.timestamp.to_rfc3339();
 
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         conn.execute(
             "INSERT OR REPLACE INTO results (key, agent_hash, data, timestamp) VALUES (?1, ?2, ?3, ?4)",
@@ -189,9 +194,10 @@ impl ChallengeStorage for LocalStorage {
     }
 
     fn get_results_for_agent(&self, agent_hash: &str) -> Result<Vec<EvaluationResult>> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         let mut stmt = conn
             .prepare("SELECT data FROM results WHERE agent_hash = ?1")
@@ -211,9 +217,10 @@ impl ChallengeStorage for LocalStorage {
     }
 
     fn get_all_results(&self) -> Result<Vec<EvaluationResult>> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         let mut stmt = conn
             .prepare("SELECT data FROM results")
@@ -233,9 +240,10 @@ impl ChallengeStorage for LocalStorage {
     }
 
     fn get_latest_results(&self) -> Result<Vec<EvaluationResult>> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         let mut stmt = conn
             .prepare(
@@ -264,12 +272,13 @@ impl ChallengeStorage for LocalStorage {
     // ==================== Weights ====================
 
     fn save_weights(&self, epoch: u64, weights: &[WeightAssignment]) -> Result<()> {
-        let data = bincode::serialize(weights)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let data =
+            bincode::serialize(weights).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         conn.execute(
             "INSERT OR REPLACE INTO weights (epoch, data) VALUES (?1, ?2)",
@@ -281,9 +290,10 @@ impl ChallengeStorage for LocalStorage {
     }
 
     fn get_weights(&self, epoch: u64) -> Result<Vec<WeightAssignment>> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         let mut stmt = conn
             .prepare("SELECT data FROM weights WHERE epoch = ?1")
@@ -310,12 +320,13 @@ impl ChallengeStorage for LocalStorage {
     // ==================== Key-Value Store ====================
 
     fn kv_set<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
-        let data = bincode::serialize(value)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let data =
+            bincode::serialize(value).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         conn.execute(
             "INSERT OR REPLACE INTO kv (key, data) VALUES (?1, ?2)",
@@ -327,9 +338,10 @@ impl ChallengeStorage for LocalStorage {
     }
 
     fn kv_get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         let mut stmt = conn
             .prepare("SELECT data FROM kv WHERE key = ?1")
@@ -354,9 +366,10 @@ impl ChallengeStorage for LocalStorage {
     }
 
     fn kv_delete(&self, key: &str) -> Result<bool> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         let rows = conn
             .execute("DELETE FROM kv WHERE key = ?1", params![key])
@@ -366,9 +379,10 @@ impl ChallengeStorage for LocalStorage {
     }
 
     fn kv_keys(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         let mut stmt = conn
             .prepare("SELECT key FROM kv")
@@ -389,9 +403,10 @@ impl ChallengeStorage for LocalStorage {
     // ==================== Metadata ====================
 
     fn set_meta(&self, key: &str, value: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
@@ -403,9 +418,10 @@ impl ChallengeStorage for LocalStorage {
     }
 
     fn get_meta(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         let mut stmt = conn
             .prepare("SELECT value FROM meta WHERE key = ?1")
@@ -434,9 +450,10 @@ impl ChallengeStorage for LocalStorage {
         let validator_hex = hex::encode(validator.as_bytes());
         let key = format!("{}:{}:{}", validator_hex, agent_hash, epoch);
 
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         conn.execute(
             "INSERT OR REPLACE INTO validator_scores (key, validator_hex, agent_hash, score, epoch) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -447,13 +464,11 @@ impl ChallengeStorage for LocalStorage {
         Ok(())
     }
 
-    fn get_validator_scores(
-        &self,
-        agent_hash: &str,
-    ) -> Result<Vec<(Hotkey, f64)>> {
-        let conn = self.conn.lock().map_err(|e| {
-            StorageError::Database(format!("Failed to acquire lock: {}", e))
-        })?;
+    fn get_validator_scores(&self, agent_hash: &str) -> Result<Vec<(Hotkey, f64)>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(format!("Failed to acquire lock: {}", e)))?;
 
         let mut stmt = conn
             .prepare("SELECT validator_hex, score FROM validator_scores WHERE agent_hash = ?1")
@@ -467,9 +482,7 @@ impl ChallengeStorage for LocalStorage {
             })
             .map_err(|e| StorageError::Database(e.to_string()))?
             .filter_map(|r| r.ok())
-            .filter_map(|(hex_str, score)| {
-                Hotkey::from_hex(&hex_str).map(|h| (h, score))
-            })
+            .filter_map(|(hex_str, score)| Hotkey::from_hex(&hex_str).map(|h| (h, score)))
             .collect();
 
         Ok(scores)

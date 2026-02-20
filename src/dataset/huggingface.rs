@@ -101,9 +101,9 @@ impl HuggingFaceDataset {
         }
 
         if let Some(parent) = dest.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .with_context(|| format!("failed to create cache directory '{}'", parent.display()))?;
+            tokio::fs::create_dir_all(parent).await.with_context(|| {
+                format!("failed to create cache directory '{}'", parent.display())
+            })?;
         }
 
         let url = format!(
@@ -184,11 +184,7 @@ impl HuggingFaceDataset {
         Ok(all_entries)
     }
 
-    async fn fetch_rows(
-        &self,
-        config: &str,
-        split: &str,
-    ) -> anyhow::Result<Vec<DatasetEntry>> {
+    async fn fetch_rows(&self, config: &str, split: &str) -> anyhow::Result<Vec<DatasetEntry>> {
         let url = format!(
             "{}?dataset={}&config={}&split={}&length=100",
             ROWS_API_BASE, self.repo_id, config, split
@@ -202,10 +198,7 @@ impl HuggingFaceDataset {
             .context("failed to fetch rows from datasets server")?;
 
         if !response.status().is_success() {
-            return Err(anyhow!(
-                "datasets server returned {}",
-                response.status()
-            ));
+            return Err(anyhow!("datasets server returned {}", response.status()));
         }
 
         let body: RowsResponse = response
