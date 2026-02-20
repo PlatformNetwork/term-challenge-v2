@@ -177,7 +177,7 @@ impl HuggingFaceDataset {
         let mut all_entries = Vec::new();
         for file in json_files {
             let path = self.download_file(file).await?;
-            let mut parsed = load_json_entries(&path)?;
+            let mut parsed = load_json_entries(&path).await?;
             all_entries.append(&mut parsed);
         }
 
@@ -217,8 +217,9 @@ impl HuggingFaceDataset {
     }
 }
 
-fn load_json_entries(path: &Path) -> anyhow::Result<Vec<DatasetEntry>> {
-    let content = std::fs::read_to_string(path)
+async fn load_json_entries(path: &Path) -> anyhow::Result<Vec<DatasetEntry>> {
+    let content = tokio::fs::read_to_string(path)
+        .await
         .with_context(|| format!("failed to read '{}'", path.display()))?;
 
     if let Ok(entries) = serde_json::from_str::<Vec<DatasetEntry>>(&content) {
