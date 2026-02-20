@@ -21,7 +21,9 @@ use platform_challenge_sdk_wasm::host_functions::{
 };
 use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput};
 
-use crate::scoring::{calculate_aggregate, format_summary, to_weight};
+use crate::scoring::{
+    calculate_aggregate, calculate_weights_from_leaderboard, format_summary, to_weight, Leaderboard,
+};
 use crate::types::{
     AgentLogEntry, AgentLogs, ChallengeParams, DatasetSelection, EvaluationStatus, LlmJudgeRequest,
     LlmJudgeResponse, Submission, TaskResult, WasmRouteRequest,
@@ -413,6 +415,27 @@ impl Challenge for TermChallengeWasm {
                 Err(_) => return Vec::new(),
             };
         routes::handle_route_request(&request)
+    }
+
+    fn get_weights(&self) -> Vec<u8> {
+        let entries: Vec<crate::types::LeaderboardEntry> = host_storage_get(b"leaderboard")
+            .ok()
+            .and_then(|d| {
+                if d.is_empty() {
+                    None
+                } else {
+                    bincode::deserialize(&d).ok()
+                }
+            })
+            .unwrap_or_default();
+
+        let mut leaderboard = Leaderboard::new();
+        for entry in &entries {
+            leaderboard.add_entry(entry.hotkey.clone(), entry.score, entry.pass_rate);
+        }
+
+        let weights = calculate_weights_from_leaderboard(&leaderboard);
+        bincode::serialize(&weights).unwrap_or_default()
     }
 }
 
