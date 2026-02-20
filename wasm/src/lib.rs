@@ -4,6 +4,8 @@ extern crate alloc;
 
 mod agent_storage;
 mod ast_validation;
+#[path = "core/mod.rs"]
+pub mod challenge_core;
 mod dataset;
 mod llm_review;
 mod routes;
