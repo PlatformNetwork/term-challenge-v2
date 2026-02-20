@@ -3266,7 +3266,7 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 [[package]]
 name = "platform-challenge-sdk"
 version = "0.1.0"
-source = "git+https://github.com/PlatformNetwork/platform-v2.git#8dd66cddffde4dce9e2dcdf90d8c0dd5341f04cf"
+source = "git+https://github.com/PlatformNetwork/platform-v2?branch=main#8dd66cddffde4dce9e2dcdf90d8c0dd5341f04cf"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3304,18 +3304,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "platform-challenge-sdk-wasm"
-version = "0.1.0"
-source = "git+https://github.com/PlatformNetwork/platform-v2.git#8dd66cddffde4dce9e2dcdf90d8c0dd5341f04cf"
-dependencies = [
- "bincode",
- "serde",
-]
-
-[[package]]
 name = "platform-core"
 version = "0.1.0"
-source = "git+https://github.com/PlatformNetwork/platform-v2.git#8dd66cddffde4dce9e2dcdf90d8c0dd5341f04cf"
+source = "git+https://github.com/PlatformNetwork/platform-v2?branch=main#8dd66cddffde4dce9e2dcdf90d8c0dd5341f04cf"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4863,10 +4854,12 @@ dependencies = [
 name = "term-challenge-server"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "bincode",
  "chrono",
+ "clap",
  "platform-challenge-sdk",
  "rand 0.8.5",
  "reqwest",
@@ -4874,6 +4867,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-subscriber 0.3.22",
  "uuid",
 ]
 
@@ -4900,7 +4894,7 @@ name = "term-challenge-wasm"
 version = "0.1.0"
 dependencies = [
  "bincode",
- "platform-challenge-sdk-wasm 0.1.0 (git+https://github.com/PlatformNetwork/platform-v2?branch=main)",
+ "platform-challenge-sdk-wasm",
  "serde",
 ]
 
@@ -4919,6 +4913,21 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.22",
+]
+
+[[package]]
+name = "term-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "platform-challenge-sdk",
+ "platform-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -5758,12 +5767,12 @@ dependencies = [
 [[package]]
 name = "wasm-runtime-interface"
 version = "0.1.0"
-source = "git+https://github.com/PlatformNetwork/platform-v2.git#8dd66cddffde4dce9e2dcdf90d8c0dd5341f04cf"
+source = "git+https://github.com/PlatformNetwork/platform-v2?branch=main#8dd66cddffde4dce9e2dcdf90d8c0dd5341f04cf"
 dependencies = [
  "bincode",
  "chrono",
  "ipnet",
- "platform-challenge-sdk-wasm 0.1.0 (git+https://github.com/PlatformNetwork/platform-v2.git)",
+ "platform-challenge-sdk-wasm",
  "reqwest",
  "serde",
  "serde_json",
@@ -6303,7 +6312,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

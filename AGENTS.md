@@ -44,9 +44,10 @@ term-challenge/
 │       ├── worker/mod.rs       # Worker job processing types
 │       └── bin/term-sudo.rs    # Admin CLI binary
 ├── server/
-│   ├── Cargo.toml      # lib, depends on platform-challenge-sdk (server mode)
+│   ├── Cargo.toml      # lib + bin, depends on platform-challenge-sdk (server mode)
 │   └── src/
 │       ├── lib.rs              # TerminalBenchChallenge implementing ServerChallenge trait
+│       ├── main.rs             # Binary entry point: CLI args, ChallengeServer::builder().run()
 │       ├── server.rs           # ChallengeServerState axum HTTP wrapper
 │       ├── types.rs            # Shared types (std port of wasm/src/types.rs)
 │       ├── scoring.rs          # Aggregate scoring, decay (uses ChallengeDatabase)
@@ -158,17 +159,17 @@ The `term-cli` crate is a **native binary** (NOT `no_std`) that provides a termi
 | `r` | Refresh data |
 | `q` | Quit |
 
-### RPC Methods Used
+### RPC Methods Used (platform-v2 protocol)
 
-- `epoch_current` — Current epoch number, phase, and block height
+- `epoch_current` — Current epoch info (`epochNumber`, `currentBlock`, `phase`, `blocksPerEpoch`, `blockInEpoch`, `progress`)
 - `system_health` — Node health status
 - `validator_count` — Number of active validators
-- `challenge_list` — Auto-detect challenge ID when only one exists
-- `challenge_call` with paths:
-  - `/leaderboard` — Leaderboard data
+- `challenge_list` — Auto-detect challenge ID (UUID) when only one exists; response format: `{ challenges: [{ id, name, ... }] }`
+- `challenge_call` with `challengeId` (UUID) param and paths:
+  - `/leaderboard` — Leaderboard data (includes f64 `weight` per miner)
   - `/stats` — Total submissions and active miners
   - `/decay` — Top agent decay status
-  - `/agent/:hotkey/journey` — Evaluation status journey
+  - `/agent/:hotkey/journey` — Evaluation status journey (hotkey is SS58 address)
   - `/agent/:hotkey/logs` — Evaluation logs for a miner
 - `evaluation_getProgress` — Evaluation progress for a submission
 

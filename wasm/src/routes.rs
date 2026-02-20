@@ -43,7 +43,7 @@ pub fn get_route_definitions() -> Vec<WasmRouteDefinition> {
             method: String::from("POST"),
             path: String::from("/submit"),
             description: String::from("Submission endpoint: receives zip package and metadata"),
-            requires_auth: false,
+            requires_auth: true,
         },
         WasmRouteDefinition {
             method: String::from("GET"),

@@ -8,7 +8,6 @@ use std::path::Path;
 use tracing::info;
 
 pub struct ChainStorage {
-    db: Db,
     challenge_id: ChallengeId,
     agents_tree: Tree,
     results_tree: Tree,
@@ -16,6 +15,9 @@ pub struct ChainStorage {
     kv_tree: Tree,
     meta_tree: Tree,
     validator_scores_tree: Tree,
+    /// Must be declared last so it is dropped after all `Tree` handles,
+    /// ensuring the sled lock is released only once every reference is gone.
+    db: Db,
 }
 
 impl ChainStorage {
@@ -550,18 +552,22 @@ mod tests {
         let challenge_id = ChallengeId::new();
 
         {
-            let db = ChainStorage::open(dir.path(), challenge_id).unwrap();
+            let storage = ChainStorage::open(dir.path(), challenge_id).unwrap();
 
             let agent = AgentInfo::new("persistent_agent".to_string());
-            db.save_agent(&agent).unwrap();
+            storage.save_agent(&agent).unwrap();
 
             let result =
                 EvaluationResult::new(uuid::Uuid::new_v4(), "persistent_agent".to_string(), 0.95);
-            db.save_result(&result).unwrap();
+            storage.save_result(&result).unwrap();
 
-            db.kv_set("persistent_key", &"persistent_value").unwrap();
-            db.set_meta("test_meta", "meta_value").unwrap();
-            db.flush().unwrap();
+            storage
+                .kv_set("persistent_key", &"persistent_value")
+                .unwrap();
+            storage.set_meta("test_meta", "meta_value").unwrap();
+            storage.flush().unwrap();
+            // Explicitly drop to release the sled lock before re-opening.
+            drop(storage);
         }
 
         {
