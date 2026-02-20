@@ -4898,6 +4898,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "term-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "platform-challenge-sdk",
+ "platform-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
