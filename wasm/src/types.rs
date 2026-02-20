@@ -295,21 +295,4 @@ impl Default for WhitelistConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LlmMessage {
-    pub role: String,
-    pub content: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LlmRequest {
-    pub model: String,
-    pub messages: Vec<LlmMessage>,
-    pub max_tokens: u32,
-    pub temperature: f64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LlmResponse {
-    pub content: String,
-}
+pub use platform_challenge_sdk_wasm::{LlmMessage, LlmRequest, LlmResponse};

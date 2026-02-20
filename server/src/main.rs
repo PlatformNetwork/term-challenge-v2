@@ -16,7 +16,10 @@ use serde_json::json;
 use tracing::info;
 
 #[derive(Parser)]
-#[command(name = "term-challenge-server", about = "Terminal Benchmark Challenge Server")]
+#[command(
+    name = "term-challenge-server",
+    about = "Terminal Benchmark Challenge Server"
+)]
 struct Cli {
     #[arg(long, env = "CHALLENGE_HOST", default_value = "0.0.0.0")]
     host: String,
@@ -167,7 +170,11 @@ impl TerminalBenchChallenge {
             })
             .collect();
 
-        entries.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        entries.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         for (i, entry) in entries.iter_mut().enumerate() {
             entry.rank = (i + 1) as u32;
         }
@@ -307,10 +314,7 @@ impl ServerChallenge for TerminalBenchChallenge {
         }
     }
 
-    async fn evaluate(
-        &self,
-        req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, ChallengeError> {
+    async fn evaluate(&self, req: EvaluationRequest) -> Result<EvaluationResponse, ChallengeError> {
         let submission: SubmissionData = serde_json::from_value(req.data.clone()).map_err(|e| {
             ChallengeError::Evaluation(format!("Failed to parse submission data: {}", e))
         })?;
@@ -341,18 +345,17 @@ impl ServerChallenge for TerminalBenchChallenge {
         }
 
         let total_tasks = submission.task_results.len() as f64;
-        let passed_tasks = submission
-            .task_results
-            .iter()
-            .filter(|r| r.passed)
-            .count() as f64;
+        let passed_tasks = submission.task_results.iter().filter(|r| r.passed).count() as f64;
         let pass_rate = passed_tasks / total_tasks;
 
         let avg_score: f64 =
             submission.task_results.iter().map(|r| r.score).sum::<f64>() / total_tasks;
 
-        let total_execution_time_ms: u64 =
-            submission.task_results.iter().map(|r| r.execution_time_ms).sum();
+        let total_execution_time_ms: u64 = submission
+            .task_results
+            .iter()
+            .map(|r| r.execution_time_ms)
+            .sum();
 
         let final_score = (pass_rate * 0.7 + avg_score * 0.3).clamp(0.0, 1.0);
 
@@ -392,10 +395,7 @@ impl ServerChallenge for TerminalBenchChallenge {
         ))
     }
 
-    async fn validate(
-        &self,
-        req: ValidationRequest,
-    ) -> Result<ValidationResponse, ChallengeError> {
+    async fn validate(&self, req: ValidationRequest) -> Result<ValidationResponse, ChallengeError> {
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
 
@@ -505,8 +505,8 @@ async fn main() -> Result<()> {
         Some(id) => ChallengeId::from_str(id)
             .ok_or_else(|| anyhow::anyhow!("Invalid challenge ID UUID: {}", id))?,
         None => {
-            let id = ChallengeId::from_str("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
-                .unwrap_or_default();
+            let id =
+                ChallengeId::from_str("a1b2c3d4-e5f6-7890-abcd-ef1234567890").unwrap_or_default();
             info!("No challenge ID provided, using default: {}", id);
             id
         }
