@@ -115,13 +115,6 @@ pub struct AgentLogs {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RouteDefinition {
-    pub method: String,
-    pub path: String,
-    pub description: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubmissionName {
     pub name: String,
     pub owner_hotkey: String,
@@ -302,30 +295,5 @@ impl Default for WhitelistConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LlmMessage {
-    pub role: String,
-    pub content: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LlmRequest {
-    pub model: String,
-    pub messages: Vec<LlmMessage>,
-    pub max_tokens: u32,
-    pub temperature: f64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LlmResponse {
-    pub content: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WasmRouteRequest {
-    pub method: String,
-    pub path: String,
-    pub body: Vec<u8>,
-    #[serde(default)]
-    pub auth_hotkey: Option<String>,
-}
+pub use platform_challenge_sdk_wasm::{LlmMessage, LlmRequest, LlmResponse};
+pub use platform_challenge_sdk_wasm::{WasmRouteDefinition, WasmRouteRequest};

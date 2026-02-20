@@ -7,7 +7,7 @@ use platform_challenge_sdk_wasm::host_functions::{
 };
 
 use crate::types::{
-    LeaderboardEntry, RouteDefinition, StatsResponse, TimeoutConfig, TopAgentState,
+    LeaderboardEntry, StatsResponse, TimeoutConfig, TopAgentState, WasmRouteDefinition,
     WasmRouteRequest, WhitelistConfig,
 };
 use crate::{
@@ -35,148 +35,175 @@ fn unauthorized_response() -> Vec<u8> {
     bincode::serialize(&false).unwrap_or_default()
 }
 
-pub fn get_route_definitions() -> Vec<RouteDefinition> {
+pub fn get_route_definitions() -> Vec<WasmRouteDefinition> {
     vec![
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/leaderboard"),
             description: String::from(
                 "Returns current leaderboard with scores, miner hotkeys, and ranks",
             ),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/submissions"),
             description: String::from("Returns pending submissions awaiting evaluation"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/submissions/:id"),
             description: String::from("Returns specific submission status"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/dataset"),
             description: String::from("Returns current active dataset of 50 SWE-bench tasks"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/dataset/history"),
             description: String::from("Returns historical dataset selections"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("POST"),
             path: String::from("/submit"),
             description: String::from("Submission endpoint: receives zip package and metadata"),
+            requires_auth: true,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/decay"),
             description: String::from("Returns current decay status for top agents"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/stats"),
             description: String::from("Challenge statistics: total submissions, active miners"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/agent/:hotkey/code"),
             description: String::from("Returns stored agent code package for a miner"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/agent/:hotkey/logs"),
             description: String::from("Returns evaluation logs for a miner"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/agent/:hotkey/journey"),
             description: String::from("Returns evaluation status journey for a miner"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/review/:id"),
             description: String::from("Returns LLM review result for a submission"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/ast/:id"),
             description: String::from("Returns AST validation result for a submission"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/submission/:name"),
             description: String::from("Returns submission info by name"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/config/timeout"),
             description: String::from("Returns current timeout configuration"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("POST"),
             path: String::from("/config/timeout"),
             description: String::from("Updates timeout configuration (requires auth)"),
+            requires_auth: true,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/config/whitelist"),
             description: String::from("Returns current AST whitelist configuration"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("POST"),
             path: String::from("/config/whitelist"),
             description: String::from("Updates AST whitelist configuration (requires auth)"),
+            requires_auth: true,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("POST"),
             path: String::from("/dataset/propose"),
             description: String::from("Propose task indices for dataset consensus (requires auth)"),
+            requires_auth: true,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("GET"),
             path: String::from("/dataset/consensus"),
             description: String::from("Check dataset consensus status"),
+            requires_auth: false,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("POST"),
             path: String::from("/review/select"),
             description: String::from("Select reviewers for a submission (requires auth)"),
+            requires_auth: true,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("POST"),
             path: String::from("/review/aggregate"),
             description: String::from("Aggregate multiple review results (requires auth)"),
+            requires_auth: true,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("POST"),
             path: String::from("/timeout/record"),
             description: String::from(
                 "Record a review assignment for timeout tracking (requires auth)",
             ),
+            requires_auth: true,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("POST"),
             path: String::from("/timeout/check"),
             description: String::from("Check if a review assignment has timed out (requires auth)"),
+            requires_auth: true,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("POST"),
             path: String::from("/dataset/random"),
             description: String::from("Generate random task indices (requires auth)"),
+            requires_auth: true,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("POST"),
             path: String::from("/timeout/replace"),
             description: String::from(
                 "Select a replacement validator for a timed-out review (requires auth)",
             ),
+            requires_auth: true,
         },
-        RouteDefinition {
+        WasmRouteDefinition {
             method: String::from("POST"),
             path: String::from("/timeout/mark"),
             description: String::from("Mark a review assignment as timed out (requires auth)"),
+            requires_auth: true,
         },
     ]
 }
