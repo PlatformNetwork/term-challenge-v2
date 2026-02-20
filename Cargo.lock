@@ -5003,6 +5003,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "term-challenge-lib"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "platform-challenge-sdk",
+ "platform-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "term-challenge-server"
 version = "0.1.0"
 dependencies = [
@@ -7218,3 +7229,8 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "w3f-bls"
+version = "0.1.3"
+source = "git+https://github.com/opentensor/bls?branch=fix-no-std#4ac443d11a6c9fdebe329d113702ad7387ba1688"

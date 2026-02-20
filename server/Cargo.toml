@@ -14,7 +14,7 @@ name = "term-challenge-server"
 path = "src/main.rs"
 
 [dependencies]
-platform-challenge-sdk = { git = "https://github.com/PlatformNetwork/platform-v2", branch = "main", features = ["http-server"] }
+platform-challenge-sdk = { workspace = true }
 
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1.40", features = ["full"] }
