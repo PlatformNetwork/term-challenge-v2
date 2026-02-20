@@ -152,20 +152,6 @@ impl TermChallengeWasm {
 
         Some(judge_resp.score.clamp(0.0, 1.0))
     }
-
-    pub fn routes(&self) -> Vec<u8> {
-        let defs = routes::get_route_definitions();
-        bincode::serialize(&defs).unwrap_or_default()
-    }
-
-    pub fn handle_route(&self, request_data: &[u8]) -> Vec<u8> {
-        let request: WasmRouteRequest =
-            match bincode_options_route_request().deserialize(request_data) {
-                Ok(r) => r,
-                Err(_) => return Vec::new(),
-            };
-        routes::handle_route_request(&request)
-    }
 }
 
 impl Challenge for TermChallengeWasm {
@@ -414,41 +400,61 @@ impl Challenge for TermChallengeWasm {
             tasks::store_dataset(&selection);
         }
     }
+
+    fn routes(&self) -> Vec<u8> {
+        let defs = routes::get_route_definitions();
+        bincode::serialize(&defs).unwrap_or_default()
+    }
+
+    fn handle_route(&self, request_data: &[u8]) -> Vec<u8> {
+        let request: WasmRouteRequest =
+            match bincode_options_route_request().deserialize(request_data) {
+                Ok(r) => r,
+                Err(_) => return Vec::new(),
+            };
+        routes::handle_route_request(&request)
+    }
+
+    fn get_weights(&self) -> Vec<u8> {
+        use platform_challenge_sdk_wasm::WeightEntry;
+
+        let mut weights: Vec<WeightEntry> = Vec::new();
+
+        let miners_data = host_storage_get(b"miners_list");
+        let miner_keys: Vec<Vec<u8>> = match miners_data {
+            Ok(data) if !data.is_empty() => bincode::deserialize(&data).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+
+        for (uid, miner_key) in miner_keys.iter().enumerate() {
+            let mut score_key = Vec::from(b"score:" as &[u8]);
+            score_key.extend_from_slice(miner_key);
+            if let Ok(data) = host_storage_get(&score_key) {
+                if data.len() >= 8 {
+                    let mut buf = [0u8; 8];
+                    buf.copy_from_slice(&data[..8]);
+                    let score = f64::from_le_bytes(buf);
+                    let weight = (score.clamp(0.0, 1.0) * u16::MAX as f64) as u16;
+                    if weight > 0 {
+                        weights.push(WeightEntry {
+                            uid: uid as u16,
+                            weight,
+                        });
+                    }
+                }
+            }
+        }
+
+        if weights.is_empty() {
+            return Vec::new();
+        }
+
+        bincode::serialize(&weights).unwrap_or_default()
+    }
+
+    fn validate_storage_write(&self, key: &[u8], _value: &[u8]) -> bool {
+        !key.is_empty()
+    }
 }
 
 platform_challenge_sdk_wasm::register_challenge!(TermChallengeWasm, TermChallengeWasm::new());
-
-#[no_mangle]
-pub extern "C" fn get_routes() -> i64 {
-    let challenge = TermChallengeWasm::new();
-    let output = challenge.routes();
-    if output.is_empty() {
-        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
-    }
-    let ptr = platform_challenge_sdk_wasm::alloc_impl::sdk_alloc(output.len());
-    if ptr.is_null() {
-        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
-    }
-    unsafe {
-        core::ptr::copy_nonoverlapping(output.as_ptr(), ptr, output.len());
-    }
-    platform_challenge_sdk_wasm::pack_ptr_len(ptr as i32, output.len() as i32)
-}
-
-#[no_mangle]
-pub extern "C" fn handle_route(req_ptr: i32, req_len: i32) -> i64 {
-    let slice = unsafe { core::slice::from_raw_parts(req_ptr as *const u8, req_len as usize) };
-    let challenge = TermChallengeWasm::new();
-    let output = challenge.handle_route(slice);
-    if output.is_empty() {
-        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
-    }
-    let ptr = platform_challenge_sdk_wasm::alloc_impl::sdk_alloc(output.len());
-    if ptr.is_null() {
-        return platform_challenge_sdk_wasm::pack_ptr_len(0, 0);
-    }
-    unsafe {
-        core::ptr::copy_nonoverlapping(output.as_ptr(), ptr, output.len());
-    }
-    platform_challenge_sdk_wasm::pack_ptr_len(ptr as i32, output.len() as i32)
-}

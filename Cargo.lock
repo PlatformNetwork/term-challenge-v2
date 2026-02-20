@@ -896,7 +896,6 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 [[package]]
 name = "platform-challenge-sdk-wasm"
 version = "0.1.0"
-source = "git+https://github.com/PlatformNetwork/platform-v2?branch=main#ae9b049a3abbaf9808aca38fdc8a782f813ce734"
 dependencies = [
  "bincode",
  "serde",
