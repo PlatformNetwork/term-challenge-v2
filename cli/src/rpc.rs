@@ -37,16 +37,27 @@ pub struct EpochInfo {
     pub epoch: u64,
     pub phase: String,
     pub block_height: u64,
+    pub blocks_per_epoch: u64,
+    pub block_in_epoch: u64,
+    pub progress: f64,
 }
 
 #[derive(Deserialize)]
 struct EpochInfoRaw {
-    #[serde(default)]
-    epoch: u64,
+    #[serde(default, alias = "epoch")]
+    #[serde(rename = "epochNumber")]
+    epoch_number: u64,
     #[serde(default)]
     phase: String,
+    #[serde(default, alias = "block_height")]
+    #[serde(rename = "currentBlock")]
+    current_block: u64,
+    #[serde(default, rename = "blocksPerEpoch")]
+    blocks_per_epoch: u64,
+    #[serde(default, rename = "blockInEpoch")]
+    block_in_epoch: u64,
     #[serde(default)]
-    block_height: u64,
+    progress: f64,
 }
 
 pub struct ChallengeInfo {
@@ -60,6 +71,12 @@ struct ChallengeInfoRaw {
 }
 
 #[derive(Deserialize)]
+struct ChallengeListResponse {
+    #[serde(default)]
+    challenges: Vec<ChallengeInfoRaw>,
+}
+
+#[derive(Deserialize)]
 struct LeaderboardRowRaw {
     #[serde(default)]
     rank: u32,
@@ -67,6 +84,8 @@ struct LeaderboardRowRaw {
     miner_hotkey: String,
     #[serde(default)]
     score: f64,
+    #[serde(default)]
+    weight: f64,
     #[serde(default)]
     pass_rate: f64,
     #[serde(default)]
@@ -143,18 +162,26 @@ impl RpcClient {
         challenge_id: &str,
     ) -> anyhow::Result<Vec<LeaderboardRow>> {
         let params = serde_json::json!({
-            "challenge_id": challenge_id,
+            "challengeId": challenge_id,
+            "method": "GET",
             "path": "/leaderboard"
         });
         let result = self.call("challenge_call", params).await?;
+
+        let body = result
+            .get("body")
+            .cloned()
+            .unwrap_or_else(|| result.clone());
+
         let raw: Vec<LeaderboardRowRaw> =
-            serde_json::from_value(result).context("Failed to parse leaderboard data")?;
+            serde_json::from_value(body).context("Failed to parse leaderboard data")?;
         Ok(raw
             .into_iter()
             .map(|r| LeaderboardRow {
                 rank: r.rank,
                 miner_hotkey: r.miner_hotkey,
                 score: r.score,
+                weight: r.weight,
                 pass_rate: r.pass_rate,
                 submissions: r.submissions,
                 last_submission: r.last_submission,
@@ -167,9 +194,12 @@ impl RpcClient {
         let raw: EpochInfoRaw =
             serde_json::from_value(result).context("Failed to parse epoch info")?;
         Ok(EpochInfo {
-            epoch: raw.epoch,
+            epoch: raw.epoch_number,
             phase: raw.phase,
-            block_height: raw.block_height,
+            block_height: raw.current_block,
+            blocks_per_epoch: raw.blocks_per_epoch,
+            block_in_epoch: raw.block_in_epoch,
+            progress: raw.progress,
         })
     }
 
@@ -191,8 +221,14 @@ impl RpcClient {
             "submission_id": submission_id
         });
         let result = self.call("evaluation_getProgress", params).await?;
+
+        let progress = result
+            .get("progress")
+            .cloned()
+            .unwrap_or_else(|| result.clone());
+
         let raw: Vec<EvalTaskRowRaw> =
-            serde_json::from_value(result).context("Failed to parse evaluation progress")?;
+            serde_json::from_value(progress).context("Failed to parse evaluation progress")?;
         Ok(raw
             .into_iter()
             .map(|r| EvalTaskRow {
@@ -207,9 +243,10 @@ impl RpcClient {
 
     pub async fn fetch_challenge_list(&self) -> anyhow::Result<Vec<ChallengeInfo>> {
         let result = self.call("challenge_list", serde_json::json!({})).await?;
-        let raw: Vec<ChallengeInfoRaw> =
+        let list: ChallengeListResponse =
             serde_json::from_value(result).context("Failed to parse challenge list")?;
-        Ok(raw
+        Ok(list
+            .challenges
             .into_iter()
             .map(|r| ChallengeInfo { id: r.id })
             .collect())

@@ -15,15 +15,15 @@ use crate::rpc::RpcClient;
 #[derive(Parser)]
 #[command(name = "term-cli", about = "Terminal Benchmark Challenge Monitor")]
 struct Cli {
-    /// RPC endpoint URL
-    #[arg(long, default_value = "http://chain.platform.network:9944")]
+    /// Platform-v2 RPC endpoint URL
+    #[arg(long, default_value = "http://localhost:9944")]
     rpc_url: String,
 
-    /// Your miner hotkey for filtered views
+    /// Your miner hotkey (SS58 address) for filtered views
     #[arg(long)]
     hotkey: Option<String>,
 
-    /// Challenge ID (auto-detected if single challenge)
+    /// Challenge ID as UUID (auto-detected if single challenge)
     #[arg(long)]
     challenge_id: Option<String>,
 
