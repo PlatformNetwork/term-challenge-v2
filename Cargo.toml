@@ -10,6 +10,15 @@ authors = ["Platform Network"]
 license = "Apache-2.0"
 repository = "https://github.com/PlatformNetwork/term-challenge"
 
+[workspace.dependencies]
+platform-challenge-sdk = { git = "https://github.com/PlatformNetwork/platform.git", features = ["http-server"] }
+platform-core = { git = "https://github.com/PlatformNetwork/platform.git" }
+sp-core = { version = "31.0", default-features = false, features = ["std"] }
+sled = "0.34"
+bincode = "1.3"
+aes-gcm = "0.10"
+parity-scale-codec = { version = "3.7.5", features = ["derive"] }
+
 [package]
 name = "term-challenge"
 version.workspace = true
