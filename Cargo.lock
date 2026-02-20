@@ -1400,6 +1400,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "term-challenge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "term-challenge-wasm"
 version = "0.1.0"
 dependencies = [
