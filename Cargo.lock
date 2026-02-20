@@ -4843,17 +4843,11 @@ dependencies = [
 name = "term-challenge-lib"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "chrono",
  "clap",
  "platform-challenge-sdk",
  "platform-core",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]

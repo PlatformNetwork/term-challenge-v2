@@ -8,7 +8,7 @@ pub mod util;
 pub mod validation;
 pub mod worker;
 
-pub use dataset::*;
+pub use dataset::DatasetEntry;
 
 pub use platform_challenge_sdk::ChallengeId;
 pub use platform_core::Hotkey;
