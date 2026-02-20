@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["wasm", "cli"]
+members = ["wasm", "cli", "lib"]
 default-members = ["wasm"]
 
 [workspace.package]
@@ -9,3 +9,6 @@ edition = "2021"
 authors = ["Platform Network"]
 license = "Apache-2.0"
 repository = "https://github.com/PlatformNetwork/term-challenge"
+
+[patch.crates-io]
+w3f-bls = { git = "https://github.com/opentensor/bls", branch = "fix-no-std" }

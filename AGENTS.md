@@ -8,7 +8,7 @@ Term Challenge is a WASM evaluation module for AI agents on the Bittensor networ
 
 ```
 term-challenge/
-├── Cargo.toml          # workspace with members = ["wasm", "cli"]
+├── Cargo.toml          # workspace with members = ["wasm", "cli", "lib"]
 ├── wasm/
 │   ├── Cargo.toml      # cdylib, depends on platform-challenge-sdk-wasm
 │   └── src/
@@ -23,6 +23,20 @@ term-challenge/
 │       ├── llm_review.rs       # LLM-based code review, reviewer selection, aggregation
 │       ├── submission.rs       # Named submission registry and version tracking
 │       └── timeout_handler.rs  # Review assignment timeout tracking and replacement
+├── lib/
+│   ├── Cargo.toml      # native library, depends on platform-core & platform-challenge-sdk
+│   └── src/
+│       ├── lib.rs              # Module declarations, re-exports dataset/ChallengeId/Hotkey
+│       ├── dataset.rs          # Validator-side dataset management types
+│       ├── synthetic/mod.rs    # Synthetic task generation
+│       ├── validation/mod.rs   # Validation result types
+│       ├── admin/mod.rs        # Admin action types
+│       ├── util/mod.rs         # Utility module
+│       ├── util/hotkey.rs      # Hotkey parsing helpers (wraps platform_core::Hotkey)
+│       ├── cache/mod.rs        # Score caching layer
+│       ├── chain/mod.rs        # Chain submission types
+│       ├── worker/mod.rs       # Worker job processing types
+│       └── bin/term-sudo.rs    # Admin CLI binary
 ├── cli/
 │   ├── Cargo.toml      # native binary, ratatui TUI
 │   └── src/
@@ -130,6 +144,9 @@ The `term-cli` crate is a **native binary** (NOT `no_std`) that provides a termi
 ## Build Commands
 
 ```bash
+# Build library (native)
+cargo build --release -p term-challenge-lib
+
 # Build CLI (native)
 cargo build --release -p term-cli
 
@@ -158,7 +175,7 @@ Git hooks live in `.githooks/` and are activated with `git config core.hooksPath
 5. **Host functions are the ONLY external interface.** No direct HTTP, no filesystem, no std::net.
 6. **Do NOT add `#[allow(dead_code)]` broadly.** Fix unused code or remove it.
 
-> **Note:** The `cli/` crate is exempt from the `no_std` rule (rule 1) and the host-functions-only rule (rule 5) since it is a native binary that runs outside the WASM sandbox. Rules 2, 3, 4, and 6 still apply to CLI code.
+> **Note:** The `cli/` and `lib/` crates are exempt from the `no_std` rule (rule 1) and the host-functions-only rule (rule 5) since they are native code that runs outside the WASM sandbox. Rules 2, 3, 4, and 6 still apply to CLI and lib code.
 
 ## DO / DO NOT
 
