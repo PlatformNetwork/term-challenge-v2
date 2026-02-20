@@ -7,7 +7,7 @@ license.workspace = true
 description = "Terminal Benchmark Challenge server — implements ServerChallenge trait with ChallengeDatabase storage"
 
 [dependencies]
-platform-challenge-sdk = { path = "/workspace/platform-v2/crates/challenge-sdk", features = ["http-server"] }
+platform-challenge-sdk = { workspace = true }
 
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1.40", features = ["full"] }

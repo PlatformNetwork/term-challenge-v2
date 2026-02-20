@@ -15,8 +15,8 @@ name = "term-sudo"
 path = "src/bin/term-sudo.rs"
 
 [dependencies]
-platform-core = { git = "https://github.com/PlatformNetwork/platform-v2", branch = "main" }
-platform-challenge-sdk = { git = "https://github.com/PlatformNetwork/platform-v2", branch = "main" }
+platform-core = { workspace = true }
+platform-challenge-sdk = { workspace = true }
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

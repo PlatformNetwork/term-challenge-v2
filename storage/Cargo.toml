@@ -7,8 +7,8 @@ license.workspace = true
 description = "Storage layer for Term Challenge using platform SDK types"
 
 [dependencies]
-platform-core = { git = "https://github.com/PlatformNetwork/platform-v2", branch = "main" }
-platform-challenge-sdk = { git = "https://github.com/PlatformNetwork/platform-v2", branch = "main" }
+platform-core = { workspace = true }
+platform-challenge-sdk = { workspace = true }
 
 sled = "0.34"
 rusqlite = { version = "0.31", features = ["bundled"] }
