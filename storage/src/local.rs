@@ -1,7 +1,7 @@
 use crate::traits::{ChallengeStorage, Result, StorageError};
 use platform_challenge_sdk::{AgentInfo, EvaluationResult, WeightAssignment};
 use platform_core::{ChallengeId, Hotkey};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
@@ -494,8 +494,6 @@ impl ChallengeStorage for LocalStorage {
         Ok(())
     }
 }
-
-use rusqlite::OptionalExtension;
 
 #[cfg(test)]
 mod tests {
