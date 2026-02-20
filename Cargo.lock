@@ -3266,7 +3266,6 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 [[package]]
 name = "platform-challenge-sdk"
 version = "0.1.0"
-source = "git+https://github.com/PlatformNetwork/platform-v2?branch=main#8dd66cddffde4dce9e2dcdf90d8c0dd5341f04cf"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3278,7 +3277,7 @@ dependencies = [
  "hex",
  "parity-scale-codec",
  "parking_lot 0.12.5",
- "platform-core",
+ "platform-core 0.1.0",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -3295,12 +3294,69 @@ dependencies = [
 ]
 
 [[package]]
+name = "platform-challenge-sdk"
+version = "0.1.0"
+source = "git+https://github.com/PlatformNetwork/platform-v2?branch=main#8dd66cddffde4dce9e2dcdf90d8c0dd5341f04cf"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "async-trait",
+ "bincode",
+ "chrono",
+ "futures",
+ "hex",
+ "parity-scale-codec",
+ "parking_lot 0.12.5",
+ "platform-core 0.1.0 (git+https://github.com/PlatformNetwork/platform-v2?branch=main)",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sled",
+ "sp-core 38.1.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "platform-challenge-sdk-wasm"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "serde",
+]
+
+[[package]]
 name = "platform-challenge-sdk-wasm"
 version = "0.1.0"
 source = "git+https://github.com/PlatformNetwork/platform-v2?branch=main#8dd66cddffde4dce9e2dcdf90d8c0dd5341f04cf"
 dependencies = [
  "bincode",
  "serde",
+]
+
+[[package]]
+name = "platform-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "bs58",
+ "chrono",
+ "hex",
+ "rand 0.8.5",
+ "schnorrkel",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sp-core 31.0.0",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
+ "wasm-runtime-interface 0.1.0",
 ]
 
 [[package]]
@@ -3322,7 +3378,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
- "wasm-runtime-interface",
+ "wasm-runtime-interface 0.1.0 (git+https://github.com/PlatformNetwork/platform-v2?branch=main)",
 ]
 
 [[package]]
@@ -4846,8 +4902,12 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "bincode",
+ "chrono",
  "clap",
- "platform-challenge-sdk",
+ "platform-challenge-sdk 0.1.0",
+ "rand 0.8.5",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -4863,8 +4923,8 @@ dependencies = [
  "bincode",
  "chrono",
  "hex",
- "platform-challenge-sdk",
- "platform-core",
+ "platform-challenge-sdk 0.1.0 (git+https://github.com/PlatformNetwork/platform-v2?branch=main)",
+ "platform-core 0.1.0 (git+https://github.com/PlatformNetwork/platform-v2?branch=main)",
  "rusqlite",
  "serde",
  "sled",
@@ -4879,7 +4939,7 @@ name = "term-challenge-wasm"
 version = "0.1.0"
 dependencies = [
  "bincode",
- "platform-challenge-sdk-wasm",
+ "platform-challenge-sdk-wasm 0.1.0 (git+https://github.com/PlatformNetwork/platform-v2?branch=main)",
  "serde",
 ]
 
@@ -5737,12 +5797,31 @@ dependencies = [
 [[package]]
 name = "wasm-runtime-interface"
 version = "0.1.0"
+dependencies = [
+ "bincode",
+ "chrono",
+ "ipnet",
+ "platform-challenge-sdk-wasm 0.1.0",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tracing",
+ "trust-dns-resolver",
+ "url",
+ "wasmtime 41.0.3",
+]
+
+[[package]]
+name = "wasm-runtime-interface"
+version = "0.1.0"
 source = "git+https://github.com/PlatformNetwork/platform-v2?branch=main#8dd66cddffde4dce9e2dcdf90d8c0dd5341f04cf"
 dependencies = [
  "bincode",
  "chrono",
  "ipnet",
- "platform-challenge-sdk-wasm",
+ "platform-challenge-sdk-wasm 0.1.0 (git+https://github.com/PlatformNetwork/platform-v2?branch=main)",
  "reqwest",
  "serde",
  "serde_json",

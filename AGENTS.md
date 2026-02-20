@@ -30,9 +30,10 @@ term-challenge/
 │       ├── submission.rs       # Named submission registry and version tracking
 │       └── timeout_handler.rs  # Review assignment timeout tracking and replacement
 ├── server/
-│   ├── Cargo.toml      # lib, depends on platform-challenge-sdk (server mode)
+│   ├── Cargo.toml      # lib + bin, depends on platform-challenge-sdk (server mode)
 │   └── src/
 │       ├── lib.rs              # TerminalBenchChallenge implementing ServerChallenge trait
+│       ├── main.rs             # Binary entry point: CLI args, ChallengeServer::builder().run()
 │       ├── server.rs           # ChallengeServerState axum HTTP wrapper
 │       ├── types.rs            # Shared types (std port of wasm/src/types.rs)
 │       ├── scoring.rs          # Aggregate scoring, decay (uses ChallengeDatabase)
