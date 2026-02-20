@@ -20,9 +20,7 @@ use bincode::Options;
 use platform_challenge_sdk_wasm::host_functions::{
     host_consensus_get_epoch, host_http_post, host_storage_get, host_storage_set,
 };
-use platform_challenge_sdk_wasm::{
-    Challenge, EvaluationInput, EvaluationOutput, WasmRouteRequest,
-};
+use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput, WasmRouteRequest};
 
 use crate::scoring::{
     calculate_aggregate, calculate_weights_from_leaderboard, format_summary, to_weight, Leaderboard,
