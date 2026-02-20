@@ -414,6 +414,47 @@ impl Challenge for TermChallengeWasm {
             };
         routes::handle_route_request(&request)
     }
+
+    fn get_weights(&self) -> Vec<u8> {
+        use platform_challenge_sdk_wasm::WeightEntry;
+
+        let mut weights: Vec<WeightEntry> = Vec::new();
+
+        let miners_data = host_storage_get(b"miners_list");
+        let miner_keys: Vec<Vec<u8>> = match miners_data {
+            Ok(data) if !data.is_empty() => bincode::deserialize(&data).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+
+        for (uid, miner_key) in miner_keys.iter().enumerate() {
+            let mut score_key = Vec::from(b"score:" as &[u8]);
+            score_key.extend_from_slice(miner_key);
+            if let Ok(data) = host_storage_get(&score_key) {
+                if data.len() >= 8 {
+                    let mut buf = [0u8; 8];
+                    buf.copy_from_slice(&data[..8]);
+                    let score = f64::from_le_bytes(buf);
+                    let weight = (score.clamp(0.0, 1.0) * u16::MAX as f64) as u16;
+                    if weight > 0 {
+                        weights.push(WeightEntry {
+                            uid: uid as u16,
+                            weight,
+                        });
+                    }
+                }
+            }
+        }
+
+        if weights.is_empty() {
+            return Vec::new();
+        }
+
+        bincode::serialize(&weights).unwrap_or_default()
+    }
+
+    fn validate_storage_write(&self, key: &[u8], _value: &[u8]) -> bool {
+        !key.is_empty()
+    }
 }
 
 platform_challenge_sdk_wasm::register_challenge!(TermChallengeWasm, TermChallengeWasm::new());
