@@ -5006,10 +5006,12 @@ dependencies = [
 name = "term-challenge-server"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "bincode",
  "chrono",
+ "clap",
  "platform-challenge-sdk",
  "rand 0.8.5",
  "reqwest",
@@ -5017,6 +5019,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-subscriber 0.3.22",
  "uuid",
 ]
 
@@ -5067,6 +5070,21 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.22",
+]
+
+[[package]]
+name = "term-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "platform-challenge-sdk",
+ "platform-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

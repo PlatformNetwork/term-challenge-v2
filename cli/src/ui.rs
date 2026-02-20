@@ -47,8 +47,9 @@ fn draw_tabs(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_leaderboard(frame: &mut Frame, area: Rect, app: &App) {
     let header = Row::new(vec![
         Cell::from("Rank"),
-        Cell::from("Miner"),
+        Cell::from("Miner (SS58)"),
         Cell::from("Score"),
+        Cell::from("Weight"),
         Cell::from("Pass Rate"),
         Cell::from("Submissions"),
         Cell::from("Last Submission"),
@@ -66,11 +67,12 @@ fn draw_leaderboard(frame: &mut Frame, area: Rect, app: &App) {
         .skip(app.scroll_offset)
         .take(visible_rows)
         .map(|entry| {
-            let hotkey_display = truncate_hotkey(&entry.miner_hotkey, 8);
+            let hotkey_display = truncate_hotkey(&entry.miner_hotkey, 10);
             Row::new(vec![
                 Cell::from(entry.rank.to_string()),
                 Cell::from(hotkey_display),
                 Cell::from(format!("{:.4}", entry.score)),
+                Cell::from(format!("{:.4}", entry.weight)),
                 Cell::from(format!("{:.1}%", entry.pass_rate * 100.0)),
                 Cell::from(entry.submissions.to_string()),
                 Cell::from(entry.last_submission.clone()),
@@ -81,6 +83,7 @@ fn draw_leaderboard(frame: &mut Frame, area: Rect, app: &App) {
     let widths = [
         Constraint::Length(6),
         Constraint::Length(14),
+        Constraint::Length(10),
         Constraint::Length(10),
         Constraint::Length(12),
         Constraint::Length(12),
@@ -219,6 +222,10 @@ fn draw_submission(frame: &mut Frame, area: Rect, app: &App) {
                     Span::raw(format!("{:.4}", entry.score)),
                 ]));
                 lines.push(Line::from(vec![
+                    Span::styled("Weight: ", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("{:.4}", entry.weight)),
+                ]));
+                lines.push(Line::from(vec![
                     Span::styled("Pass Rate: ", Style::default().fg(Color::Yellow)),
                     Span::raw(format!("{:.1}%", entry.pass_rate * 100.0)),
                 ]));
@@ -257,6 +264,17 @@ fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
         "Disconnected"
     };
 
+    let epoch_progress = if ns.blocks_per_epoch > 0 {
+        format!(
+            "{}/{} ({:.0}%)",
+            ns.block_in_epoch,
+            ns.blocks_per_epoch,
+            ns.progress * 100.0
+        )
+    } else {
+        "N/A".to_string()
+    };
+
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Status:      ", Style::default().fg(Color::Yellow).bold()),
@@ -270,6 +288,10 @@ fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("Phase:       ", Style::default().fg(Color::Yellow).bold()),
             Span::raw(ns.phase.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("Progress:    ", Style::default().fg(Color::Yellow).bold()),
+            Span::raw(epoch_progress),
         ]),
         Line::from(vec![
             Span::styled("Block Height:", Style::default().fg(Color::Yellow).bold()),
@@ -354,12 +376,21 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         .map(|t| t.format("%H:%M:%S UTC").to_string())
         .unwrap_or_else(|| "never".to_string());
 
+    let progress_str = if ns.blocks_per_epoch > 0 {
+        format!("{:.0}%", ns.progress * 100.0)
+    } else {
+        "N/A".to_string()
+    };
+
     let mut spans = vec![
         Span::styled(" Epoch: ", Style::default().fg(Color::Yellow)),
         Span::raw(ns.epoch.to_string()),
         Span::raw(" | "),
         Span::styled("Phase: ", Style::default().fg(Color::Yellow)),
         Span::raw(ns.phase.clone()),
+        Span::raw(" | "),
+        Span::styled("Progress: ", Style::default().fg(Color::Yellow)),
+        Span::raw(progress_str),
         Span::raw(" | "),
         Span::styled("Block: ", Style::default().fg(Color::Yellow)),
         Span::raw(ns.block_height.to_string()),
