@@ -3,6 +3,7 @@
 extern crate alloc;
 
 mod agent_storage;
+mod api;
 mod ast_validation;
 #[path = "core/mod.rs"]
 pub mod challenge_core;
@@ -21,12 +22,14 @@ use bincode::Options;
 use platform_challenge_sdk_wasm::host_functions::{
     host_consensus_get_epoch, host_http_post, host_storage_get, host_storage_set,
 };
-use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput};
+use platform_challenge_sdk_wasm::{
+    Challenge, EvaluationInput, EvaluationOutput, WasmRouteRequest,
+};
 
 use crate::scoring::{calculate_aggregate, format_summary, to_weight};
 use crate::types::{
     AgentLogEntry, AgentLogs, ChallengeParams, DatasetSelection, EvaluationStatus, LlmJudgeRequest,
-    LlmJudgeResponse, Submission, TaskResult, WasmRouteRequest,
+    LlmJudgeResponse, Submission, TaskResult,
 };
 
 const MAX_SUBMISSION_SIZE: u64 = 64 * 1024 * 1024;
@@ -414,7 +417,8 @@ impl Challenge for TermChallengeWasm {
                 Ok(r) => r,
                 Err(_) => return Vec::new(),
             };
-        routes::handle_route_request(&request)
+        let response = routes::handle_route_request(&request);
+        bincode::serialize(&response).unwrap_or_default()
     }
 }
 

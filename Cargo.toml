@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["wasm", "cli"]
+members = [".", "wasm", "cli", "server", "storage"]
 default-members = ["wasm"]
 
 [workspace.package]
@@ -9,3 +9,22 @@ edition = "2021"
 authors = ["Platform Network"]
 license = "Apache-2.0"
 repository = "https://github.com/PlatformNetwork/term-challenge"
+
+[package]
+name = "term-challenge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Term Challenge shared library — HuggingFace dataset handler"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tokio = { version = "1.40", features = ["fs"] }
+tracing = "0.1"
