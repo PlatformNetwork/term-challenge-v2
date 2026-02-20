@@ -74,8 +74,8 @@ impl ChallengeStorage for ChainStorage {
     // ==================== Agents ====================
 
     fn save_agent(&self, agent: &AgentInfo) -> Result<()> {
-        let data = bincode::serialize(agent)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let data =
+            bincode::serialize(agent).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         self.agents_tree
             .insert(agent.hash.as_bytes(), data)
@@ -119,8 +119,8 @@ impl ChallengeStorage for ChainStorage {
 
     fn save_result(&self, result: &EvaluationResult) -> Result<()> {
         let key = format!("{}:{}", result.agent_hash, result.job_id);
-        let data = bincode::serialize(result)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let data =
+            bincode::serialize(result).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         self.results_tree
             .insert(key.as_bytes(), data)
@@ -177,8 +177,8 @@ impl ChallengeStorage for ChainStorage {
 
     fn save_weights(&self, epoch: u64, weights: &[WeightAssignment]) -> Result<()> {
         let key = epoch.to_be_bytes();
-        let data = bincode::serialize(weights)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let data =
+            bincode::serialize(weights).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         self.weights_tree
             .insert(key.as_ref(), data)
@@ -207,8 +207,8 @@ impl ChallengeStorage for ChainStorage {
     // ==================== Key-Value Store ====================
 
     fn kv_set<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
-        let data = bincode::serialize(value)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let data =
+            bincode::serialize(value).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         self.kv_tree
             .insert(key.as_bytes(), data)
@@ -286,9 +286,14 @@ impl ChallengeStorage for ChainStorage {
         score: f64,
         epoch: u64,
     ) -> Result<()> {
-        let key = format!("{}:{}:{}", hex::encode(validator.as_bytes()), agent_hash, epoch);
-        let data = bincode::serialize(&score)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let key = format!(
+            "{}:{}:{}",
+            hex::encode(validator.as_bytes()),
+            agent_hash,
+            epoch
+        );
+        let data =
+            bincode::serialize(&score).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         self.validator_scores_tree
             .insert(key.as_bytes(), data)
@@ -297,17 +302,14 @@ impl ChallengeStorage for ChainStorage {
         Ok(())
     }
 
-    fn get_validator_scores(
-        &self,
-        agent_hash: &str,
-    ) -> Result<Vec<(Hotkey, f64)>> {
+    fn get_validator_scores(&self, agent_hash: &str) -> Result<Vec<(Hotkey, f64)>> {
         let mut scores = Vec::new();
 
         for item in self.validator_scores_tree.iter() {
             let (key, value) = item.map_err(|e| StorageError::Database(e.to_string()))?;
 
-            let key_str = std::str::from_utf8(&key)
-                .map_err(|e| StorageError::InvalidData(e.to_string()))?;
+            let key_str =
+                std::str::from_utf8(&key).map_err(|e| StorageError::InvalidData(e.to_string()))?;
 
             let parts: Vec<&str> = key_str.splitn(3, ':').collect();
             if parts.len() >= 2 && parts[1] == agent_hash {
