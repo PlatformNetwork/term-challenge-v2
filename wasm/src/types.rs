@@ -115,13 +115,6 @@ pub struct AgentLogs {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RouteDefinition {
-    pub method: String,
-    pub path: String,
-    pub description: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubmissionName {
     pub name: String,
     pub owner_hotkey: String,
@@ -319,13 +312,4 @@ pub struct LlmRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LlmResponse {
     pub content: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WasmRouteRequest {
-    pub method: String,
-    pub path: String,
-    pub body: Vec<u8>,
-    #[serde(default)]
-    pub auth_hotkey: Option<String>,
 }
