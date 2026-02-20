@@ -58,10 +58,7 @@ pub trait ChallengeStorage: Send + Sync {
         score: f64,
         epoch: u64,
     ) -> Result<()>;
-    fn get_validator_scores(
-        &self,
-        agent_hash: &str,
-    ) -> Result<Vec<(Hotkey, f64)>>;
+    fn get_validator_scores(&self, agent_hash: &str) -> Result<Vec<(Hotkey, f64)>>;
 
     // ==================== Lifecycle ====================
 

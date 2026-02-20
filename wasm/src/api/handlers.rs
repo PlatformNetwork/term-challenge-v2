@@ -287,8 +287,8 @@ pub fn handle_review_aggregate(request: &WasmRouteRequest) -> WasmRouteResponse 
     if request.body.len() > MAX_ROUTE_BODY_SIZE {
         return empty_response();
     }
-    if let Ok(results) =
-        bincode_options_route_body().deserialize::<Vec<crate::types::LlmReviewResult>>(&request.body)
+    if let Ok(results) = bincode_options_route_body()
+        .deserialize::<Vec<crate::types::LlmReviewResult>>(&request.body)
     {
         let aggregated = llm_review::aggregate_reviews(&results);
         ok_response(bincode::serialize(&aggregated).unwrap_or_default())
@@ -322,8 +322,7 @@ pub fn handle_timeout_check(request: &WasmRouteRequest) -> WasmRouteResponse {
         return bad_request_response();
     }
     if let Ok((submission_id, validator, review_type, timeout_ms)) =
-        bincode_options_route_body()
-            .deserialize::<(String, String, String, u64)>(&request.body)
+        bincode_options_route_body().deserialize::<(String, String, String, u64)>(&request.body)
     {
         let timed_out =
             timeout_handler::check_timeout(&submission_id, &validator, &review_type, timeout_ms);
@@ -338,9 +337,7 @@ pub fn handle_timeout_replace(request: &WasmRouteRequest) -> WasmRouteResponse {
         return unauthorized_response();
     }
     if request.body.len() > MAX_ROUTE_BODY_SIZE {
-        return ok_response(
-            bincode::serialize(&Option::<String>::None).unwrap_or_default(),
-        );
+        return ok_response(bincode::serialize(&Option::<String>::None).unwrap_or_default());
     }
     if let Ok((validators, excluded, seed)) =
         bincode_options_route_body()
