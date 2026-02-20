@@ -1,8 +1,10 @@
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::Write as _;
 use platform_challenge_sdk_wasm::host_functions::{
     host_consensus_get_epoch, host_storage_get, host_storage_set,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::types::{
     DecayParams, Difficulty, DifficultyStats, TaskDefinition, TaskResult, TopAgentState,
@@ -180,4 +182,75 @@ pub fn apply_epoch_decay(weight: f64, params: &DecayParams) -> f64 {
         }
     }
     weight
+}
+
+/// Weight assignment for a miner.
+///
+/// The `hotkey` field is the SS58 address of the miner.
+/// The `weight` field is a normalized f64 value in the range [0.0, 1.0].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WeightAssignment {
+    pub hotkey: String,
+    pub weight: f64,
+}
+
+impl WeightAssignment {
+    pub fn new(hotkey: String, weight: f64) -> Self {
+        Self {
+            hotkey,
+            weight: weight.clamp(0.0, 1.0),
+        }
+    }
+}
+
+/// A single scored entry on the leaderboard.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LeaderboardScore {
+    pub hotkey: String,
+    pub score: f64,
+    pub pass_rate: f64,
+}
+
+/// Leaderboard holding scored entries for all miners.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Leaderboard {
+    pub entries: Vec<LeaderboardScore>,
+}
+
+impl Leaderboard {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn add_entry(&mut self, hotkey: String, score: f64, pass_rate: f64) {
+        self.entries.push(LeaderboardScore {
+            hotkey,
+            score,
+            pass_rate,
+        });
+    }
+
+    /// Convert leaderboard entries to weight assignments with f64 weights
+    /// normalized to [0.0, 1.0].
+    pub fn to_weights(&self) -> Vec<WeightAssignment> {
+        let total: f64 = self.entries.iter().map(|e| e.score).sum();
+        if total <= 0.0 {
+            return Vec::new();
+        }
+        self.entries
+            .iter()
+            .map(|e| WeightAssignment::new(e.hotkey.clone(), e.score / total))
+            .collect()
+    }
+}
+
+/// Calculate weight assignments from a leaderboard.
+///
+/// Returns a `Vec<WeightAssignment>` where each entry's `hotkey` is the SS58
+/// string and `weight` is an f64 in [0.0, 1.0], normalized so all weights
+/// sum to 1.0.
+pub fn calculate_weights_from_leaderboard(leaderboard: &Leaderboard) -> Vec<WeightAssignment> {
+    leaderboard.to_weights()
 }

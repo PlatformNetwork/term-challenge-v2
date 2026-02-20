@@ -40,6 +40,7 @@ pub struct LeaderboardRow {
     pub rank: u32,
     pub miner_hotkey: String,
     pub score: f64,
+    pub weight: f64,
     pub pass_rate: f64,
     pub submissions: u32,
     pub last_submission: String,
@@ -57,6 +58,9 @@ pub struct NetworkStatus {
     pub epoch: u64,
     pub phase: String,
     pub block_height: u64,
+    pub blocks_per_epoch: u64,
+    pub block_in_epoch: u64,
+    pub progress: f64,
     pub validators: usize,
     pub connected: bool,
     pub total_submissions: u64,
@@ -69,6 +73,9 @@ impl Default for NetworkStatus {
             epoch: 0,
             phase: "unknown".to_string(),
             block_height: 0,
+            blocks_per_epoch: 0,
+            block_in_epoch: 0,
+            progress: 0.0,
             validators: 0,
             connected: false,
             total_submissions: 0,
@@ -90,6 +97,7 @@ pub struct App {
     pub tab: Tab,
     pub rpc_url: String,
     pub hotkey: Option<String>,
+    /// Challenge ID (UUID string, e.g. "550e8400-e29b-41d4-a716-446655440000")
     pub challenge_id: Option<String>,
     pub leaderboard: Vec<LeaderboardRow>,
     pub evaluation_progress: Vec<EvalTaskRow>,
@@ -191,11 +199,12 @@ impl App {
 
             match rpc.fetch_stats(&cid).await {
                 Ok(stats) => {
-                    self.network_status.total_submissions = stats
+                    let body = stats.get("body").unwrap_or(&stats);
+                    self.network_status.total_submissions = body
                         .get("total_submissions")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
-                    self.network_status.active_miners = stats
+                    self.network_status.active_miners = body
                         .get("active_miners")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
@@ -282,6 +291,9 @@ impl App {
         self.network_status.epoch = epoch_info.epoch;
         self.network_status.phase = epoch_info.phase;
         self.network_status.block_height = epoch_info.block_height;
+        self.network_status.blocks_per_epoch = epoch_info.blocks_per_epoch;
+        self.network_status.block_in_epoch = epoch_info.block_in_epoch;
+        self.network_status.progress = epoch_info.progress;
 
         match rpc.fetch_validator_count().await {
             Ok(count) => self.network_status.validators = count,
