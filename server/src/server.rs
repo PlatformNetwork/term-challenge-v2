@@ -266,8 +266,7 @@ async fn custom_route_handler<C: ServerChallenge + 'static>(
 fn route_response_to_axum(
     response: RouteResponse,
 ) -> (StatusCode, HeaderMap, Json<serde_json::Value>) {
-    let status =
-        StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     let mut headers = HeaderMap::new();
     for (key, value) in &response.headers {
@@ -331,15 +330,9 @@ mod tests {
             ]
         }
 
-        async fn handle_route(
-            &self,
-            _ctx: &ChallengeContext,
-            req: RouteRequest,
-        ) -> RouteResponse {
+        async fn handle_route(&self, _ctx: &ChallengeContext, req: RouteRequest) -> RouteResponse {
             match (req.method.as_str(), req.path.as_str()) {
-                ("GET", "/leaderboard") => {
-                    RouteResponse::json(json!({"entries": [], "total": 0}))
-                }
+                ("GET", "/leaderboard") => RouteResponse::json(json!({"entries": [], "total": 0})),
                 ("POST", "/submit") => RouteResponse::created(json!({"status": "accepted"})),
                 _ if req.path.starts_with("/agent/") => {
                     let hotkey = req.param("hotkey").unwrap_or("unknown");
@@ -356,11 +349,8 @@ mod tests {
 
     #[test]
     fn test_challenge_server_state_new() {
-        let state = ChallengeServerState::new(
-            MockChallenge,
-            ServerConfig::default(),
-            ChallengeId::new(),
-        );
+        let state =
+            ChallengeServerState::new(MockChallenge, ServerConfig::default(), ChallengeId::new());
 
         assert_eq!(state.challenge.challenge_id(), "mock-challenge");
         assert_eq!(state.config.port, 8080);
@@ -372,7 +362,10 @@ mod tests {
         let id = ChallengeId::from_uuid(uuid);
         let state = ChallengeServerState::new(MockChallenge, ServerConfig::default(), id);
 
-        assert_eq!(state.challenge_id.to_string(), "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(
+            state.challenge_id.to_string(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
     }
 
     #[test]
@@ -429,8 +422,7 @@ mod tests {
 
     #[test]
     fn test_route_response_to_axum_mapping() {
-        let response = RouteResponse::ok(json!({"status": "ok"}))
-            .with_header("X-Custom", "value");
+        let response = RouteResponse::ok(json!({"status": "ok"})).with_header("X-Custom", "value");
 
         let (status, headers, body) = route_response_to_axum(response);
 
@@ -614,21 +606,15 @@ mod tests {
 
     #[test]
     fn test_router_builds_without_panic() {
-        let state = ChallengeServerState::new(
-            MockChallenge,
-            ServerConfig::default(),
-            ChallengeId::new(),
-        );
+        let state =
+            ChallengeServerState::new(MockChallenge, ServerConfig::default(), ChallengeId::new());
         let _router = state.router();
     }
 
     #[tokio::test]
     async fn test_pending_count_tracking() {
-        let state = ChallengeServerState::new(
-            MockChallenge,
-            ServerConfig::default(),
-            ChallengeId::new(),
-        );
+        let state =
+            ChallengeServerState::new(MockChallenge, ServerConfig::default(), ChallengeId::new());
 
         assert_eq!(*state.pending_count.read().await, 0);
 

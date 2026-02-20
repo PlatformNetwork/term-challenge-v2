@@ -313,5 +313,3 @@ pub struct LlmRequest {
 pub struct LlmResponse {
     pub content: String,
 }
-
-
