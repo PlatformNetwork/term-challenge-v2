@@ -4,7 +4,7 @@ use rand::Rng;
 use crate::types::{ReviewAssignment, TimeoutConfig};
 
 fn current_block_number() -> i64 {
-    chrono::Utc::now().timestamp() / 10
+    chrono::Utc::now().timestamp() / 12
 }
 
 pub fn get_timeout_config(db: &ChallengeDatabase) -> TimeoutConfig {

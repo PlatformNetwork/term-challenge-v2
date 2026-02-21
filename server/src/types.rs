@@ -123,8 +123,8 @@ pub struct TimeoutConfig {
 impl Default for TimeoutConfig {
     fn default() -> Self {
         Self {
-            review_timeout_blocks: 30, // 5min * 6 blocks/min
-            judge_timeout_blocks: 12,  // 2min * 6 blocks/min
+            review_timeout_blocks: 25, // 5min * 5 blocks/min (12s/block)
+            judge_timeout_blocks: 10,  // 2min * 5 blocks/min
             max_retries: 2,
         }
     }
@@ -256,6 +256,6 @@ pub struct ReviewAssignment {
 pub const MAX_AGENT_CODE_SIZE: usize = 1_048_576;
 pub const MAX_AGENT_LOGS_SIZE: usize = 262_144;
 pub const MAX_OUTPUT_PREVIEW: usize = 4_096;
-pub const GRACE_PERIOD_BLOCKS: u64 = 43_200;      // 72h * 600 blocks/h (6 blocks/min, 7200 blocks/day)
-pub const DECAY_HALF_LIFE_BLOCKS: u64 = 14_400;   // 24h * 600 blocks/h
+pub const GRACE_PERIOD_BLOCKS: u64 = 21_600;      // 72h * 300 blocks/h (5 blocks/min, 12s/block)
+pub const DECAY_HALF_LIFE_BLOCKS: u64 = 7_200;    // 24h * 300 blocks/h
 pub const SUBMISSION_RATE_LIMIT_EPOCHS: u64 = 3;

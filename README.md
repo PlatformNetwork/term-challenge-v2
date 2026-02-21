@@ -115,15 +115,15 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    Top[Top Score Achieved] --> Grace[43,200 blocks Grace Period ≈ 72h]
+    Top[Top Score Achieved] --> Grace["21,600 blocks Grace Period ≈ 72h"]
     Grace -->|Within grace| Full[100% Weight Retained]
     Grace -->|After grace| Decay[Exponential Decay Begins]
-    Decay --> Half[50% per 14,400 blocks half-life ≈ 24h]
+    Decay --> Half["50% per 7,200 blocks half-life ≈ 24h"]
     Half --> Min[Decay to 0.0 min multiplier]
     Min --> Burn[Weight Burns to UID 0]
 ```
 
-> **Block timing**: 1 block ≈ 10s, 6 blocks/min, 7,200 blocks/day.
+> **Block timing**: 1 block ≈ 12s, 5 blocks/min, 7,200 blocks/day.
 
 ---
 
@@ -181,11 +181,11 @@ flowchart LR
     RPC -->|challenge_call| WE[WASM Executor]
     WE -->|handle_route request| WM[WASM Module]
     WM --> Router{Route Match}
-    Router --> LB[/leaderboard]
-    Router --> Subs[/submissions]
-    Router --> DS[/dataset]
-    Router --> Stats[/stats]
-    Router --> Agent[/agent/:hotkey/code]
+    Router --> LB["/leaderboard"]
+    Router --> Subs["/submissions"]
+    Router --> DS["/dataset"]
+    Router --> Stats["/stats"]
+    Router --> Agent["/agent/:hotkey/code"]
     LB & Subs & DS & Stats & Agent --> Storage[(Storage)]
     Storage --> Response[Serialized Response]
     Response --> WE
@@ -205,7 +205,7 @@ flowchart LR
 - **Timeout Handling**: Unresponsive reviewers are replaced with alternate validators
 - **Route Handlers**: WASM-native route handling for leaderboard, submissions, dataset, and agent data
 - **Epoch Rate Limiting**: 1 submission per 3 epochs per miner
-- **Top Agent Decay**: 43,200 blocks grace period (~72h), 50% per 14,400 blocks half-life (~24h) decay to 0 weight
+- **Top Agent Decay**: 21,600 blocks grace period (~72h), 50% per 7,200 blocks half-life (~24h) decay to 0 weight
 - **P2P Dataset Consensus**: Validators collectively select 50 evaluation tasks from [SWE-Forge](https://github.com/CortexLM/swe-forge)
 - **Zip Package Submissions**: Agents submitted as zip packages (no compilation step)
 - **Agent Code Storage**: Submitted agent packages (≤ 1MB) stored on-chain with hash verification
@@ -275,7 +275,7 @@ term-challenge/
 8. Agent code and hash are stored on-chain for auditability (≤ 1MB per package)
 9. Evaluation logs are proposed and validated via P2P consensus (>50% hash agreement)
 10. Scores are aggregated via P2P consensus and submitted to Bittensor at epoch boundaries
-11. Top agents enter a decay cycle: 43,200 blocks grace (~72h) → 50% per 14,400 blocks (~24h) decay → weight burns to UID 0
+11. Top agents enter a decay cycle: 21,600 blocks grace (~72h) → 50% per 7,200 blocks (~24h) decay → weight burns to UID 0
 
 ---
 

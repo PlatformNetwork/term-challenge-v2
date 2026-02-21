@@ -67,8 +67,8 @@ pub struct DecayParams {
 impl Default for DecayParams {
     fn default() -> Self {
         Self {
-            grace_period_blocks: 43_200,  // 72h * 600 blocks/h (6 blocks/min)
-            half_life_blocks: 14_400,     // 24h * 600 blocks/h
+            grace_period_blocks: 21_600,  // 72h * 300 blocks/h (5 blocks/min, 12s/block)
+            half_life_blocks: 7_200,      // 24h * 300 blocks/h
             min_multiplier: 0.0,
         }
     }
@@ -178,9 +178,9 @@ pub struct TimeoutConfig {
 impl Default for TimeoutConfig {
     fn default() -> Self {
         Self {
-            evaluation_timeout_blocks: 2_160, // 6h * 360 blocks/h (6 blocks/min)
-            llm_review_timeout_blocks: 18,    // 3min * 6 blocks/min
-            ast_review_timeout_blocks: 6,     // 1min * 6 blocks/min
+            evaluation_timeout_blocks: 1_800, // 6h * 300 blocks/h (5 blocks/min, 12s/block)
+            llm_review_timeout_blocks: 15,    // 3min * 5 blocks/min
+            ast_review_timeout_blocks: 5,     // 1min * 5 blocks/min
         }
     }
 }

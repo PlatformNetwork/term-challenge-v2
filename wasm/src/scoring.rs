@@ -11,8 +11,8 @@ use crate::types::{
 };
 
 const TOP_AGENT_KEY: &[u8] = b"top_agent_state";
-const GRACE_BLOCKS: u64 = 43_200;       // 72h * 600 blocks/h (6 blocks/min, 7200 blocks/day)
-const HALF_LIFE_BLOCKS: f64 = 14_400.0; // 24h * 600 blocks/h
+const GRACE_BLOCKS: u64 = 21_600;       // 72h * 300 blocks/h (5 blocks/min, 12s/block)
+const HALF_LIFE_BLOCKS: f64 = 7_200.0;  // 24h * 300 blocks/h
 
 pub struct AggregateScore {
     pub tasks_passed: u32,

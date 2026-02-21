@@ -307,8 +307,8 @@ ChallengeParams {
 }
 
 DecayParams {
-    grace_period_blocks: u64,   // default: 43,200 (~72h at 6 blocks/min)
-    half_life_blocks: u64,      // default: 14,400 (~24h at 6 blocks/min)
+    grace_period_blocks: u64,   // default: 21,600 (~72h at 5 blocks/min, 12s/block)
+    half_life_blocks: u64,      // default: 7,200 (~24h at 5 blocks/min)
     min_multiplier: f64,        // default: 0.0
 }
 
