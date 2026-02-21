@@ -10,8 +10,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use platform_challenge_sdk::routes::{ChallengeRoute, RouteRequest, RouteResponse};
 use platform_challenge_sdk::server::{
-    ChallengeContext, EvaluationRequest, EvaluationResponse, HealthResponse, ServerChallenge,
-    ServerConfig,
+    ChallengeContext, ConfigResponse, EvaluationRequest, EvaluationResponse, HealthResponse,
+    ServerChallenge, ServerConfig, ValidationRequest, ValidationResponse,
 };
 use platform_challenge_sdk::types::ChallengeId;
 use platform_challenge_sdk::ChallengeDatabase;
@@ -74,7 +74,9 @@ impl<C: ServerChallenge + 'static> ChallengeServerState<C> {
 
         Router::new()
             .route("/health", get(health_handler::<C>))
+            .route("/config", get(config_handler::<C>))
             .route("/evaluate", post(evaluate_handler::<C>))
+            .route("/validate", post(validate_handler::<C>))
             .fallback(custom_route_handler::<C>)
             .with_state(state)
     }
@@ -125,6 +127,34 @@ async fn health_handler<C: ServerChallenge + 'static>(
         version: state.challenge.version().to_string(),
         challenge_id: state.challenge_id.to_string(),
     })
+}
+
+// ============================================================================
+// CONFIG HANDLER — SDK ConfigResponse
+// ============================================================================
+
+async fn config_handler<C: ServerChallenge + 'static>(
+    State(state): State<Arc<ChallengeServerState<C>>>,
+) -> Json<ConfigResponse> {
+    Json(state.challenge.config())
+}
+
+// ============================================================================
+// VALIDATE HANDLER — SDK ValidationRequest / ValidationResponse
+// ============================================================================
+
+async fn validate_handler<C: ServerChallenge + 'static>(
+    State(state): State<Arc<ChallengeServerState<C>>>,
+    Json(request): Json<ValidationRequest>,
+) -> Json<ValidationResponse> {
+    match state.challenge.validate(request).await {
+        Ok(response) => Json(response),
+        Err(e) => Json(ValidationResponse {
+            valid: false,
+            errors: vec![e.to_string()],
+            warnings: vec![],
+        }),
+    }
 }
 
 // ============================================================================

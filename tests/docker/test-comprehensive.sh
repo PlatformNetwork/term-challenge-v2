@@ -3,18 +3,20 @@
 # Term Challenge Comprehensive Docker Integration Test
 # =============================================================================
 # Spins up a 3-instance challenge-server network via Docker Compose and runs
-# 44 tests covering:
+# 53 tests covering:
 #
-#   1.  Server health & startup
-#   2.  Challenge configuration
-#   3.  Validation API
-#   4.  Evaluation API & scoring
-#   5.  Custom challenge routes (leaderboard, stats, decay, agent)
-#   6.  Leaderboard & scoring consistency
-#   7.  Multi-instance consistency
-#   8.  Fault tolerance (stop/restart)
-#   9.  Resource & stability checks
-#   10. Edge cases & error handling
+#   1.  Server health & startup (4 tests)
+#   2.  Health response schema (4 tests)
+#   3.  Challenge configuration via /config (4 tests)
+#   4.  Validation API via /validate (5 tests)
+#   5.  Evaluation API & scoring (5 tests)
+#   6.  Custom challenge routes (leaderboard, stats, decay, agent) (5 tests)
+#   7.  Leaderboard & scoring consistency (4 tests)
+#   8.  Multi-instance consistency (4 tests)
+#   9.  Fault tolerance (stop/restart) (4 tests)
+#   10. Resource & stability checks (4 tests)
+#   11. Edge cases & error handling (5 tests)
+#   12. Validate endpoint edge cases (5 tests)
 #
 # Usage:
 #   bash tests/docker/test-comprehensive.sh
@@ -275,7 +277,76 @@ run_test "Health response includes uptime_secs field" test_health_has_uptime_fie
 run_test "Server uptime increases over time" test_health_uptime_increases
 
 # =============================================================================
-# TEST SUITE 3: Validation API (5 tests)
+# TEST SUITE 3: Challenge Configuration via /config (4 tests)
+# =============================================================================
+
+test_config_endpoint_responds() {
+    local response
+    response=$(curl_json "http://localhost:${SERVER_PORTS[0]}/config")
+    if [ -z "${response}" ]; then
+        log_info "No response from /config"
+        return 1
+    fi
+    local name
+    name=$(echo "${response}" | jq -r '.name' 2>/dev/null)
+    if [ -n "${name}" ] && [ "${name}" != "null" ]; then
+        log_info "Config endpoint responds with name=${name}"
+        return 0
+    fi
+    log_info "Config response missing name: ${response}"
+    return 1
+}
+
+test_config_has_challenge_id() {
+    local response
+    response=$(curl_json "http://localhost:${SERVER_PORTS[0]}/config")
+    local cid
+    cid=$(echo "${response}" | jq -r '.challenge_id' 2>/dev/null)
+    if [ "${cid}" = "${CHALLENGE_ID}" ]; then
+        log_info "Config challenge_id matches: ${cid}"
+        return 0
+    fi
+    log_info "Config challenge_id mismatch: got ${cid}, expected ${CHALLENGE_ID}"
+    return 1
+}
+
+test_config_has_features() {
+    local response
+    response=$(curl_json "http://localhost:${SERVER_PORTS[0]}/config")
+    local features_type
+    features_type=$(echo "${response}" | jq 'type' 2>/dev/null)
+    local features
+    features=$(echo "${response}" | jq '.features' 2>/dev/null)
+    if [ "${features}" != "null" ] && [ -n "${features}" ]; then
+        local count
+        count=$(echo "${features}" | jq 'length' 2>/dev/null)
+        log_info "Config has ${count} features: ${features}"
+        return 0
+    fi
+    log_info "Config missing features field: ${response}"
+    return 1
+}
+
+test_config_has_limits() {
+    local response
+    response=$(curl_json "http://localhost:${SERVER_PORTS[0]}/config")
+    local limits
+    limits=$(echo "${response}" | jq '.limits' 2>/dev/null)
+    if [ "${limits}" != "null" ] && [ -n "${limits}" ]; then
+        log_info "Config has limits: ${limits}"
+        return 0
+    fi
+    log_info "Config missing limits field: ${response}"
+    return 1
+}
+
+run_test "GET /config endpoint responds" test_config_endpoint_responds
+run_test "Config contains correct challenge_id" test_config_has_challenge_id
+run_test "Config contains features array" test_config_has_features
+run_test "Config contains limits object" test_config_has_limits
+
+# =============================================================================
+# TEST SUITE 4: Validation API via /validate (5 tests)
 # =============================================================================
 
 test_validate_valid_submission() {
@@ -396,7 +467,7 @@ run_test "Missing required fields rejected" test_validate_missing_required_field
 run_test "Invalid score range (>1.0) rejected" test_validate_invalid_score_range
 
 # =============================================================================
-# TEST SUITE 4: Evaluation API & Scoring (5 tests)
+# TEST SUITE 5: Evaluation API & Scoring (5 tests)
 # =============================================================================
 
 test_eval_all_tasks_passed() {
@@ -565,7 +636,7 @@ run_test "Evaluation returns execution_time_ms" test_eval_returns_execution_time
 run_test "Evaluation echoes back request_id" test_eval_returns_request_id
 
 # =============================================================================
-# TEST SUITE 5: Custom Challenge Routes (5 tests)
+# TEST SUITE 6: Custom Challenge Routes (5 tests)
 # =============================================================================
 
 test_leaderboard_returns_json_array() {
@@ -644,7 +715,7 @@ run_test "GET /agent/:hotkey/score returns 404 for unknown" test_agent_unknown_h
 run_test "GET /agent/:hotkey/submissions returns count" test_agent_submissions_endpoint
 
 # =============================================================================
-# TEST SUITE 6: Leaderboard & Scoring Consistency (4 tests)
+# TEST SUITE 7: Leaderboard & Scoring Consistency (4 tests)
 # =============================================================================
 
 test_leaderboard_has_entries_after_evaluations() {
@@ -725,7 +796,7 @@ run_test "Leaderboard sorted by score descending" test_leaderboard_sorted_by_sco
 run_test "Leaderboard ranks start at 1" test_leaderboard_ranks_sequential
 
 # =============================================================================
-# TEST SUITE 7: Multi-Instance Consistency (4 tests)
+# TEST SUITE 8: Multi-Instance Consistency (4 tests)
 # =============================================================================
 
 test_all_servers_same_version() {
@@ -823,7 +894,7 @@ run_test "All 3 servers healthy simultaneously" test_all_servers_healthy_simulta
 run_test "Independent evaluation produces same score" test_independent_evaluation_on_each_server
 
 # =============================================================================
-# TEST SUITE 8: Fault Tolerance (4 tests)
+# TEST SUITE 9: Fault Tolerance (4 tests)
 # =============================================================================
 
 test_network_survives_single_server_stop() {
@@ -917,7 +988,7 @@ run_test "Restarted server serves requests" test_restarted_server_serves_request
 run_test "All servers recover after restart" test_all_servers_recover_after_restart
 
 # =============================================================================
-# TEST SUITE 9: Resource & Stability (4 tests)
+# TEST SUITE 10: Resource & Stability (4 tests)
 # =============================================================================
 
 test_server_memory_within_limits() {
@@ -993,7 +1064,7 @@ run_test "No panics or fatal errors in logs" test_no_panics_in_logs
 run_test "No crash loops detected" test_no_crash_loops
 
 # =============================================================================
-# TEST SUITE 10: Edge Cases & Error Handling (5 tests)
+# TEST SUITE 11: Edge Cases & Error Handling (5 tests)
 # =============================================================================
 
 test_unknown_route_returns_404() {
@@ -1121,6 +1192,115 @@ run_test "POST to GET-only endpoint fails appropriately" test_post_to_get_endpoi
 run_test "Empty body to /evaluate returns error" test_empty_body_to_evaluate
 run_test "Large evaluation (50 tasks) succeeds" test_large_number_of_task_results
 run_test "Concurrent evaluations all succeed" test_concurrent_evaluations
+
+# =============================================================================
+# TEST SUITE 12: Validate Endpoint Edge Cases (5 tests)
+# =============================================================================
+
+test_validate_endpoint_valid_data() {
+    local response
+    response=$(curl_json_quiet -X POST "http://localhost:${SERVER_PORTS[0]}/validate" \
+        -d '{
+            "data": {
+                "agent_hash": "abc123",
+                "miner_hotkey": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+                "epoch": 1,
+                "task_results": [
+                    {"task_id": "task-1", "passed": true, "score": 0.9, "execution_time_ms": 1000, "test_output": "ok", "agent_output": "done", "error": null}
+                ]
+            }
+        }')
+    local valid
+    valid=$(echo "${response}" | jq -r '.valid' 2>/dev/null)
+    if [ "${valid}" = "true" ]; then
+        log_info "Valid data passes /validate"
+        return 0
+    fi
+    log_info "Valid data rejected by /validate: ${response}"
+    return 1
+}
+
+test_validate_endpoint_null_data() {
+    local response
+    response=$(curl_json_quiet -X POST "http://localhost:${SERVER_PORTS[0]}/validate" \
+        -d '{"data": null}')
+    local valid
+    valid=$(echo "${response}" | jq -r '.valid' 2>/dev/null)
+    if [ "${valid}" = "false" ]; then
+        log_info "Null data correctly fails /validate"
+        return 0
+    fi
+    log_info "Null data not rejected by /validate: ${response}"
+    return 1
+}
+
+test_validate_endpoint_empty_hotkey() {
+    local response
+    response=$(curl_json_quiet -X POST "http://localhost:${SERVER_PORTS[0]}/validate" \
+        -d '{
+            "data": {
+                "agent_hash": "abc123",
+                "miner_hotkey": "",
+                "epoch": 1,
+                "task_results": [
+                    {"task_id": "task-1", "passed": true, "score": 0.9}
+                ]
+            }
+        }')
+    local valid
+    valid=$(echo "${response}" | jq -r '.valid' 2>/dev/null)
+    if [ "${valid}" = "false" ]; then
+        log_info "Empty miner_hotkey correctly fails /validate"
+        return 0
+    fi
+    log_info "Empty miner_hotkey not rejected: ${response}"
+    return 1
+}
+
+test_validate_endpoint_returns_errors_array() {
+    local response
+    response=$(curl_json_quiet -X POST "http://localhost:${SERVER_PORTS[0]}/validate" \
+        -d '{"data": null}')
+    local errors_type
+    errors_type=$(echo "${response}" | jq '.errors | type' 2>/dev/null)
+    if [ "${errors_type}" = '"array"' ]; then
+        local count
+        count=$(echo "${response}" | jq '.errors | length' 2>/dev/null)
+        log_info "Validate returns errors array with ${count} entries"
+        return 0
+    fi
+    log_info "Validate response missing errors array: ${response}"
+    return 1
+}
+
+test_validate_endpoint_returns_warnings_array() {
+    local response
+    response=$(curl_json_quiet -X POST "http://localhost:${SERVER_PORTS[0]}/validate" \
+        -d '{
+            "data": {
+                "agent_hash": "abc123",
+                "miner_hotkey": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+                "epoch": 1,
+                "task_results": [
+                    {"task_id": "task-1", "passed": true, "score": 0.9}
+                ]
+            }
+        }')
+    local warnings_type
+    warnings_type=$(echo "${response}" | jq '.warnings | type' 2>/dev/null)
+    if [ "${warnings_type}" = '"array"' ]; then
+        log_info "Validate returns warnings array"
+        return 0
+    fi
+    log_info "Validate response missing warnings array: ${response}"
+    return 1
+}
+
+run_test "POST /validate accepts valid data" test_validate_endpoint_valid_data
+run_test "POST /validate rejects null data" test_validate_endpoint_null_data
+run_test "POST /validate rejects empty miner_hotkey" test_validate_endpoint_empty_hotkey
+run_test "POST /validate returns errors array" test_validate_endpoint_returns_errors_array
+run_test "POST /validate returns warnings array" test_validate_endpoint_returns_warnings_array
 
 # =============================================================================
 # Collect final logs per server
