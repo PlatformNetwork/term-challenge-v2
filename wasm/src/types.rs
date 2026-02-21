@@ -59,16 +59,16 @@ pub struct DifficultyStats {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DecayParams {
-    pub grace_period_hours: u64,
-    pub half_life_hours: u64,
+    pub grace_period_blocks: u64,
+    pub half_life_blocks: u64,
     pub min_multiplier: f64,
 }
 
 impl Default for DecayParams {
     fn default() -> Self {
         Self {
-            grace_period_hours: 72,
-            half_life_hours: 24,
+            grace_period_blocks: 43_200,  // 72h * 600 blocks/h (6 blocks/min)
+            half_life_blocks: 14_400,     // 24h * 600 blocks/h
             min_multiplier: 0.0,
         }
     }
@@ -170,17 +170,17 @@ pub struct StatsResponse {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TimeoutConfig {
-    pub evaluation_timeout_ms: u64,
-    pub llm_review_timeout_ms: u64,
-    pub ast_review_timeout_ms: u64,
+    pub evaluation_timeout_blocks: u64,
+    pub llm_review_timeout_blocks: u64,
+    pub ast_review_timeout_blocks: u64,
 }
 
 impl Default for TimeoutConfig {
     fn default() -> Self {
         Self {
-            evaluation_timeout_ms: 6 * 60 * 60 * 1000,
-            llm_review_timeout_ms: 3 * 60 * 1000,
-            ast_review_timeout_ms: 60 * 1000,
+            evaluation_timeout_blocks: 2_160, // 6h * 360 blocks/h (6 blocks/min)
+            llm_review_timeout_blocks: 18,    // 3min * 6 blocks/min
+            ast_review_timeout_blocks: 6,     // 1min * 6 blocks/min
         }
     }
 }

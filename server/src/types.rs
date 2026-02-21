@@ -115,16 +115,16 @@ pub struct AstValidationResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeoutConfig {
-    pub review_timeout_ms: u64,
-    pub judge_timeout_ms: u64,
+    pub review_timeout_blocks: u64,
+    pub judge_timeout_blocks: u64,
     pub max_retries: u32,
 }
 
 impl Default for TimeoutConfig {
     fn default() -> Self {
         Self {
-            review_timeout_ms: 300_000,
-            judge_timeout_ms: 120_000,
+            review_timeout_blocks: 30, // 5min * 6 blocks/min
+            judge_timeout_blocks: 12,  // 2min * 6 blocks/min
             max_retries: 2,
         }
     }
@@ -249,13 +249,13 @@ pub struct ReviewAssignment {
     pub submission_id: String,
     pub validator: String,
     pub review_type: String,
-    pub assigned_at_ms: i64,
+    pub assigned_at_block: i64,
     pub timed_out: bool,
 }
 
 pub const MAX_AGENT_CODE_SIZE: usize = 1_048_576;
 pub const MAX_AGENT_LOGS_SIZE: usize = 262_144;
 pub const MAX_OUTPUT_PREVIEW: usize = 4_096;
-pub const GRACE_PERIOD_EPOCHS: u64 = 60;
-pub const DECAY_HALF_LIFE_EPOCHS: u64 = 20;
+pub const GRACE_PERIOD_BLOCKS: u64 = 43_200;      // 72h * 600 blocks/h (6 blocks/min, 7200 blocks/day)
+pub const DECAY_HALF_LIFE_BLOCKS: u64 = 14_400;   // 24h * 600 blocks/h
 pub const SUBMISSION_RATE_LIMIT_EPOCHS: u64 = 3;

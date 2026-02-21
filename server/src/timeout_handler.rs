@@ -3,6 +3,10 @@ use rand::Rng;
 
 use crate::types::{ReviewAssignment, TimeoutConfig};
 
+fn current_block_number() -> i64 {
+    chrono::Utc::now().timestamp() / 10
+}
+
 pub fn get_timeout_config(db: &ChallengeDatabase) -> TimeoutConfig {
     db.kv_get::<TimeoutConfig>("timeout_config")
         .ok()
@@ -24,12 +28,12 @@ pub fn record_assignment(
     validator: &str,
     review_type: &str,
 ) -> bool {
-    let now_ms = chrono::Utc::now().timestamp_millis();
+    let current_block = current_block_number();
     let assignment = ReviewAssignment {
         submission_id: submission_id.to_string(),
         validator: validator.to_string(),
         review_type: review_type.to_string(),
-        assigned_at_ms: now_ms,
+        assigned_at_block: current_block,
         timed_out: false,
     };
     let key = assignment_key(submission_id, validator, review_type);
@@ -41,16 +45,16 @@ pub fn check_timeout(
     submission_id: &str,
     validator: &str,
     review_type: &str,
-    timeout_ms: u64,
+    timeout_blocks: u64,
 ) -> bool {
     let key = assignment_key(submission_id, validator, review_type);
     let assignment = db.kv_get::<ReviewAssignment>(&key).ok().flatten();
 
     match assignment {
         Some(a) => {
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let elapsed = (now_ms - a.assigned_at_ms) as u64;
-            elapsed >= timeout_ms
+            let current_block = current_block_number();
+            let elapsed_blocks = (current_block - a.assigned_at_block) as u64;
+            elapsed_blocks >= timeout_blocks
         }
         None => false,
     }

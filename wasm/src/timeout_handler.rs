@@ -42,7 +42,7 @@ pub fn check_timeout(
     submission_id: &str,
     validator: &str,
     review_type: &str,
-    timeout_ms: u64,
+    timeout_blocks: u64,
 ) -> bool {
     let mut key = Vec::from(b"review_assignment:" as &[u8]);
     key.extend_from_slice(submission_id.as_bytes());
@@ -55,10 +55,10 @@ pub fn check_timeout(
         if data.len() >= 8 {
             let mut buf = [0u8; 8];
             buf.copy_from_slice(&data[..8]);
-            let assigned_time = i64::from_le_bytes(buf);
-            let current_time = host_get_timestamp();
-            let elapsed = (current_time - assigned_time) as u64;
-            return elapsed > timeout_ms;
+            let assigned_block = i64::from_le_bytes(buf);
+            let current_block = host_get_timestamp();
+            let elapsed_blocks = (current_block - assigned_block) as u64;
+            return elapsed_blocks > timeout_blocks;
         }
     }
     false

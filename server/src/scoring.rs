@@ -1,6 +1,6 @@
 use platform_challenge_sdk::ChallengeDatabase;
 
-use crate::types::{LeaderboardEntry, TopAgentState, DECAY_HALF_LIFE_EPOCHS, GRACE_PERIOD_EPOCHS};
+use crate::types::{LeaderboardEntry, TopAgentState, DECAY_HALF_LIFE_BLOCKS, GRACE_PERIOD_BLOCKS};
 
 pub fn calculate_aggregate_score(passed: u32, total: u32) -> f64 {
     if total == 0 {
@@ -97,8 +97,8 @@ pub fn update_leaderboard(
                 hotkey: top.hotkey.clone(),
                 score: top.score,
                 epoch_set: update.current_epoch,
-                grace_period: GRACE_PERIOD_EPOCHS,
-                decay_half_life: DECAY_HALF_LIFE_EPOCHS,
+                grace_period: GRACE_PERIOD_BLOCKS,
+                decay_half_life: DECAY_HALF_LIFE_BLOCKS,
             };
             set_top_agent_state(db, &new_state)?;
         }

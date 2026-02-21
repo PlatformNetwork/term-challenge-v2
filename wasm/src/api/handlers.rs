@@ -321,11 +321,11 @@ pub fn handle_timeout_check(request: &WasmRouteRequest) -> WasmRouteResponse {
     if request.body.len() > MAX_ROUTE_BODY_SIZE {
         return bad_request_response();
     }
-    if let Ok((submission_id, validator, review_type, timeout_ms)) =
+    if let Ok((submission_id, validator, review_type, timeout_blocks)) =
         bincode_options_route_body().deserialize::<(String, String, String, u64)>(&request.body)
     {
         let timed_out =
-            timeout_handler::check_timeout(&submission_id, &validator, &review_type, timeout_ms);
+            timeout_handler::check_timeout(&submission_id, &validator, &review_type, timeout_blocks);
         ok_response(bincode::serialize(&timed_out).unwrap_or_default())
     } else {
         bad_request_response()

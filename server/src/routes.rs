@@ -279,7 +279,7 @@ fn handle_timeout_check(ctx: &ChallengeContext, request: &RouteRequest) -> Route
         submission_id: String,
         validator: String,
         review_type: String,
-        timeout_ms: u64,
+        timeout_blocks: u64,
     }
     let body: CheckBody = match request.parse_body() {
         Ok(b) => b,
@@ -290,7 +290,7 @@ fn handle_timeout_check(ctx: &ChallengeContext, request: &RouteRequest) -> Route
         &body.submission_id,
         &body.validator,
         &body.review_type,
-        body.timeout_ms,
+        body.timeout_blocks,
     );
     RouteResponse::json(timed_out)
 }

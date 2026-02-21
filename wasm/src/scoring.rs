@@ -11,8 +11,8 @@ use crate::types::{
 };
 
 const TOP_AGENT_KEY: &[u8] = b"top_agent_state";
-const GRACE_EPOCHS: u64 = 60;
-const HALF_LIFE_EPOCHS: f64 = 20.0;
+const GRACE_BLOCKS: u64 = 43_200;       // 72h * 600 blocks/h (6 blocks/min, 7200 blocks/day)
+const HALF_LIFE_BLOCKS: f64 = 14_400.0; // 24h * 600 blocks/h
 
 pub struct AggregateScore {
     pub tasks_passed: u32,
@@ -159,10 +159,10 @@ pub fn update_top_agent_state(agent_hash: &str, score: f64, epoch: u64) -> bool 
         let current_epoch = host_consensus_get_epoch();
         if current_epoch >= 0 {
             state.epochs_stale = (current_epoch as u64).saturating_sub(state.achieved_epoch);
-            state.decay_active = state.epochs_stale > GRACE_EPOCHS;
+            state.decay_active = state.epochs_stale > GRACE_BLOCKS;
             if state.decay_active {
-                let decay_epochs = state.epochs_stale.saturating_sub(GRACE_EPOCHS);
-                let multiplier = 0.5f64.powf(decay_epochs as f64 / HALF_LIFE_EPOCHS);
+                let decay_blocks = state.epochs_stale.saturating_sub(GRACE_BLOCKS);
+                let multiplier = 0.5f64.powf(decay_blocks as f64 / HALF_LIFE_BLOCKS);
                 state.current_burn_percent = (1.0 - multiplier) * 100.0;
             }
             if let Ok(data) = bincode::serialize(&state) {

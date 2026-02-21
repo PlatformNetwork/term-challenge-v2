@@ -253,7 +253,7 @@ The ZIP file must be **≤ 1 MB**. Keep your agent lean — avoid bundling large
 
 ```bash
 term-cli submit \
-  --rpc-url http://chain.platform.network:9944 \
+  --rpc-url http://chain.platform.network \
   --hotkey /path/to/hotkey \
   --agent-zip my-agent.zip \
   --name "my-agent"
@@ -263,7 +263,7 @@ term-cli submit \
 
 ```bash
 # Launch the TUI to watch evaluation progress
-term-cli --rpc-url http://chain.platform.network:9944 --tab evaluation
+term-cli --rpc-url http://chain.platform.network --tab evaluation
 ```
 
 ---

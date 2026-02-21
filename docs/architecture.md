@@ -307,9 +307,9 @@ ChallengeParams {
 }
 
 DecayParams {
-    grace_period_hours: u64,   // default: 72
-    half_life_hours: u64,      // default: 24
-    min_multiplier: f64,       // default: 0.0
+    grace_period_blocks: u64,   // default: 43,200 (~72h at 6 blocks/min)
+    half_life_blocks: u64,      // default: 14,400 (~24h at 6 blocks/min)
+    min_multiplier: f64,        // default: 0.0
 }
 
 TaskDefinition {

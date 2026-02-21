@@ -39,7 +39,7 @@ use crate::types::{
 const MAX_SUBMISSION_SIZE: u64 = 64 * 1024 * 1024;
 const MAX_PARAMS_SIZE: u64 = 4 * 1024 * 1024;
 const MAX_ROUTE_REQUEST_SIZE: u64 = 1024 * 1024;
-const MAX_TASKS: usize = 256;
+const MAX_TASKS: usize = 50;
 const EPOCH_RATE_LIMIT: u64 = 3;
 
 fn bincode_options_submission() -> impl Options {

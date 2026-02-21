@@ -7,6 +7,7 @@
 [![Coverage](https://img.shields.io/codecov/c/github/PlatformNetwork/term-challenge-v2)](https://codecov.io/gh/PlatformNetwork/term-challenge-v2)
 [![License](https://img.shields.io/github/license/PlatformNetwork/term-challenge-v2)](https://github.com/PlatformNetwork/term-challenge-v2/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.90+-orange.svg)](https://www.rust-lang.org/)
+[![SWE-Forge](https://img.shields.io/badge/SWE--Forge-CortexLM-blue)](https://github.com/CortexLM/swe-forge)
 
 ![Term Challenge Banner](assets/banner.jpg)
 
@@ -114,13 +115,15 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    Top[Top Score Achieved] --> Grace[72h Grace Period]
+    Top[Top Score Achieved] --> Grace[43,200 blocks Grace Period ≈ 72h]
     Grace -->|Within grace| Full[100% Weight Retained]
     Grace -->|After grace| Decay[Exponential Decay Begins]
-    Decay --> Half[50% per 24h half-life]
+    Decay --> Half[50% per 14,400 blocks half-life ≈ 24h]
     Half --> Min[Decay to 0.0 min multiplier]
     Min --> Burn[Weight Burns to UID 0]
 ```
+
+> **Block timing**: 1 block ≈ 10s, 6 blocks/min, 7,200 blocks/day.
 
 ---
 
@@ -195,15 +198,15 @@ flowchart LR
 ## Features
 
 - **WASM Module**: Compiles to `wasm32-unknown-unknown`, loaded by platform-v2 validators
-- **SWE-bench Evaluation**: Tasks selected from HuggingFace CortexLM/swe-bench datasets
+- **SWE-bench Evaluation**: Tasks selected from [SWE-Forge](https://github.com/CortexLM/swe-forge) datasets
 - **LLM Code Review**: 3 validators perform LLM-based code review via host functions
 - **AST Structural Validation**: 3 validators perform AST-based structural analysis
 - **Submission Versioning**: Auto-incrementing versions with full history tracking
 - **Timeout Handling**: Unresponsive reviewers are replaced with alternate validators
 - **Route Handlers**: WASM-native route handling for leaderboard, submissions, dataset, and agent data
 - **Epoch Rate Limiting**: 1 submission per 3 epochs per miner
-- **Top Agent Decay**: 72h grace period, 50% daily decay to 0 weight
-- **P2P Dataset Consensus**: Validators collectively select 50 evaluation tasks
+- **Top Agent Decay**: 43,200 blocks grace period (~72h), 50% per 14,400 blocks half-life (~24h) decay to 0 weight
+- **P2P Dataset Consensus**: Validators collectively select 50 evaluation tasks from [SWE-Forge](https://github.com/CortexLM/swe-forge)
 - **Zip Package Submissions**: Agents submitted as zip packages (no compilation step)
 - **Agent Code Storage**: Submitted agent packages (≤ 1MB) stored on-chain with hash verification
 - **Log Consensus**: Evaluation logs validated across validators with >50% hash agreement
@@ -272,7 +275,7 @@ term-challenge/
 8. Agent code and hash are stored on-chain for auditability (≤ 1MB per package)
 9. Evaluation logs are proposed and validated via P2P consensus (>50% hash agreement)
 10. Scores are aggregated via P2P consensus and submitted to Bittensor at epoch boundaries
-11. Top agents enter a decay cycle: 72h grace → 50% daily decay → weight burns to UID 0
+11. Top agents enter a decay cycle: 43,200 blocks grace (~72h) → 50% per 14,400 blocks (~24h) decay → weight burns to UID 0
 
 ---
 
@@ -286,7 +289,7 @@ platform download term-challenge
 cargo build --release -p term-cli
 
 # Run the TUI
-term-cli --rpc-url http://chain.platform.network:9944
+term-cli --rpc-url http://chain.platform.network
 
 # With miner hotkey filter
 term-cli --hotkey 5GrwvaEF... --tab leaderboard
