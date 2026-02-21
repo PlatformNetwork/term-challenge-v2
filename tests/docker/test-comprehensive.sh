@@ -3,7 +3,7 @@
 # Term Challenge Comprehensive Docker Integration Test
 # =============================================================================
 # Spins up a 3-instance challenge-server network via Docker Compose and runs
-# 40 tests covering:
+# 44 tests covering:
 #
 #   1.  Server health & startup
 #   2.  Challenge configuration

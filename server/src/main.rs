@@ -7,9 +7,10 @@ use platform_challenge_sdk::database::ChallengeDatabase;
 use platform_challenge_sdk::error::ChallengeError;
 use platform_challenge_sdk::routes::{ChallengeRoute, RouteRequest, RouteResponse};
 use platform_challenge_sdk::server::{
-    ChallengeContext, ChallengeServer, ConfigLimits, ConfigResponse, EvaluationRequest,
-    EvaluationResponse, ServerChallenge, ValidationRequest, ValidationResponse,
+    ChallengeContext, ConfigLimits, ConfigResponse, EvaluationRequest, EvaluationResponse,
+    ServerChallenge, ServerConfig, ValidationRequest, ValidationResponse,
 };
+use term_challenge_server::ChallengeServerState;
 use platform_challenge_sdk::types::ChallengeId;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -522,10 +523,13 @@ async fn main() -> Result<()> {
 
     let challenge = TerminalBenchChallenge::new(challenge_id, &cli.db_path)?;
 
-    ChallengeServer::builder(challenge)
-        .host(&cli.host)
-        .port(cli.port)
-        .build()
+    let config = ServerConfig {
+        host: cli.host.clone(),
+        port: cli.port,
+        ..ServerConfig::default()
+    };
+
+    ChallengeServerState::new(challenge, config, challenge_id)
         .run()
         .await
         .map_err(|e| anyhow::anyhow!("Server error: {}", e))
