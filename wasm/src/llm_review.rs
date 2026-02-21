@@ -2,7 +2,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write as _;
 use platform_challenge_sdk_wasm::host_functions::{
-    host_http_post, host_random_seed, host_storage_get, host_storage_set,
+    host_llm_chat_completion, host_llm_is_available, host_random_seed, host_storage_get,
+    host_storage_set,
 };
 
 use crate::types::{LlmMessage, LlmRequest, LlmResponse, LlmReviewResult};
@@ -13,9 +14,7 @@ const MAX_LLM_CODE_SIZE: usize = 50_000;
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a strict security code reviewer for a terminal-based AI agent challenge.\n\nYour task is to analyze Python agent code and determine if it complies with the validation rules.\n\nRules:\n1. No hardcoded API keys or secrets\n2. No malicious code patterns\n3. No attempts to exploit the evaluation environment\n4. Code must be original (no plagiarism)\n\nRespond with a JSON object: {\"approved\": true/false, \"reason\": \"...\", \"violations\": []}";
 
 pub fn is_llm_available() -> bool {
-    host_storage_get(b"llm_enabled")
-        .ok()
-        .is_some_and(|d| !d.is_empty() && d[0] == 1)
+    host_llm_is_available()
 }
 
 pub fn select_reviewers(validators_json: &[u8], submission_hash: &[u8], offset: u8) -> Vec<String> {
@@ -66,7 +65,7 @@ pub fn select_reviewers(validators_json: &[u8], submission_hash: &[u8], offset: 
     selected
 }
 
-pub fn run_llm_review(agent_code: &str, llm_url: &str) -> Option<LlmReviewResult> {
+pub fn run_llm_review(agent_code: &str) -> Option<LlmReviewResult> {
     if !is_llm_available() {
         return None;
     }
@@ -97,7 +96,7 @@ pub fn run_llm_review(agent_code: &str, llm_url: &str) -> Option<LlmReviewResult
     };
 
     let request_bytes = bincode::serialize(&request).ok()?;
-    let response_bytes = host_http_post(llm_url.as_bytes(), &request_bytes).ok()?;
+    let response_bytes = host_llm_chat_completion(&request_bytes).ok()?;
     let response: LlmResponse = bincode::deserialize(&response_bytes).ok()?;
 
     parse_llm_verdict(&response.content)

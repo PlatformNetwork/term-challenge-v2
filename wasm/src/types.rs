@@ -58,20 +58,6 @@ pub struct DifficultyStats {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LlmJudgeRequest {
-    pub task_id: String,
-    pub instruction: String,
-    pub agent_output: String,
-    pub test_output: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LlmJudgeResponse {
-    pub score: f64,
-    pub reasoning: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DecayParams {
     pub grace_period_hours: u64,
     pub half_life_hours: u64,

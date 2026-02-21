@@ -20,21 +20,24 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use bincode::Options;
 use platform_challenge_sdk_wasm::host_functions::{
-    host_consensus_get_epoch, host_http_post, host_storage_get, host_storage_set,
+    host_consensus_get_epoch, host_llm_chat_completion, host_llm_is_available, host_storage_get,
+    host_storage_set,
 };
-use platform_challenge_sdk_wasm::{Challenge, EvaluationInput, EvaluationOutput, WasmRouteRequest};
+use platform_challenge_sdk_wasm::{
+    Challenge, EvaluationInput, EvaluationOutput, LlmMessage, LlmRequest, LlmResponse,
+    WasmRouteRequest,
+};
 
 use crate::scoring::{
     calculate_aggregate, calculate_weights_from_leaderboard, format_summary, to_weight, Leaderboard,
 };
 use crate::types::{
-    AgentLogEntry, AgentLogs, ChallengeParams, DatasetSelection, EvaluationStatus, LlmJudgeRequest,
-    LlmJudgeResponse, Submission, TaskResult,
+    AgentLogEntry, AgentLogs, ChallengeParams, DatasetSelection, EvaluationStatus, Submission,
+    TaskResult,
 };
 
 const MAX_SUBMISSION_SIZE: u64 = 64 * 1024 * 1024;
 const MAX_PARAMS_SIZE: u64 = 4 * 1024 * 1024;
-const MAX_LLM_RESPONSE_SIZE: u64 = 1024 * 1024;
 const MAX_ROUTE_REQUEST_SIZE: u64 = 1024 * 1024;
 const MAX_TASKS: usize = 256;
 const EPOCH_RATE_LIMIT: u64 = 3;
@@ -49,13 +52,6 @@ fn bincode_options_submission() -> impl Options {
 fn bincode_options_params() -> impl Options {
     bincode::DefaultOptions::new()
         .with_limit(MAX_PARAMS_SIZE)
-        .with_fixint_encoding()
-        .allow_trailing_bytes()
-}
-
-fn bincode_options_llm() -> impl Options {
-    bincode::DefaultOptions::new()
-        .with_limit(MAX_LLM_RESPONSE_SIZE)
         .with_fixint_encoding()
         .allow_trailing_bytes()
 }
@@ -113,6 +109,48 @@ fn store_submission_record(hotkey: &str, epoch: u64, agent_hash: &str) {
     let _ = host_storage_set(&key, agent_hash.as_bytes());
 }
 
+fn parse_judge_score(content: &str) -> Option<f64> {
+    let json_start = content.find('{')?;
+    let json_end = content.rfind('}')? + 1;
+    if json_start >= json_end {
+        return None;
+    }
+    let json_str = &content[json_start..json_end];
+
+    let score_key = "\"score\"";
+    let score_pos = json_str.find(score_key)? + score_key.len();
+    let rest = &json_str[score_pos..];
+    let colon_pos = rest.find(':')?;
+    let after_colon = rest[colon_pos + 1..].trim_start();
+
+    let end = after_colon
+        .find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
+        .unwrap_or(after_colon.len());
+    let score_str = &after_colon[..end];
+
+    let mut score = 0.0f64;
+    let mut decimal = false;
+    let mut decimal_place = 0.1;
+    for b in score_str.bytes() {
+        if b == b'.' {
+            decimal = true;
+        } else if b.is_ascii_digit() {
+            let digit = (b - b'0') as f64;
+            if decimal {
+                score += digit * decimal_place;
+                decimal_place *= 0.1;
+            } else {
+                score = score * 10.0 + digit;
+            }
+        }
+    }
+
+    if !score.is_finite() {
+        return None;
+    }
+    Some(score.clamp(0.0, 1.0))
+}
+
 pub struct TermChallengeWasm;
 
 impl Default for TermChallengeWasm {
@@ -126,36 +164,40 @@ impl TermChallengeWasm {
         Self
     }
 
-    fn try_llm_judge(url: &str, result: &TaskResult, instruction: &str) -> Option<f64> {
-        let request = LlmJudgeRequest {
-            task_id: result.task_id.clone(),
-            instruction: String::from(instruction),
-            agent_output: result.agent_output.clone(),
-            test_output: result.test_output.clone(),
-        };
-
-        let url_bytes = url.as_bytes();
-        let body = match bincode::serialize(&request) {
-            Ok(b) => b,
-            Err(_) => return None,
-        };
-
-        let response_bytes = match host_http_post(url_bytes, &body) {
-            Ok(b) => b,
-            Err(_) => return None,
-        };
-
-        let judge_resp: LlmJudgeResponse = match bincode_options_llm().deserialize(&response_bytes)
-        {
-            Ok(r) => r,
-            Err(_) => return None,
-        };
-
-        if !judge_resp.score.is_finite() {
+    fn try_llm_judge(result: &TaskResult, instruction: &str) -> Option<f64> {
+        if !host_llm_is_available() {
             return None;
         }
 
-        Some(judge_resp.score.clamp(0.0, 1.0))
+        let mut prompt = String::new();
+        let _ = core::fmt::Write::write_fmt(
+            &mut prompt,
+            format_args!(
+                "You are an expert evaluator for a terminal-based AI agent challenge.\n\n\
+                 Task: {}\n\n\
+                 Agent output:\n{}\n\n\
+                 Expected output:\n{}\n\n\
+                 Score the agent's output from 0.0 to 1.0 based on correctness and completeness.\n\
+                 Respond with ONLY a JSON object: {{\"score\": <float>, \"reasoning\": \"...\"}}",
+                instruction, result.agent_output, result.test_output
+            ),
+        );
+
+        let request = LlmRequest {
+            model: String::from("moonshotai/Kimi-K2.5-TEE"),
+            messages: alloc::vec![LlmMessage {
+                role: String::from("user"),
+                content: prompt,
+            }],
+            max_tokens: 1024,
+            temperature: 0.1,
+        };
+
+        let request_bytes = bincode::serialize(&request).ok()?;
+        let response_bytes = host_llm_chat_completion(&request_bytes).ok()?;
+        let response: LlmResponse = bincode::deserialize(&response_bytes).ok()?;
+
+        parse_judge_score(&response.content)
     }
 }
 
@@ -232,17 +274,15 @@ impl Challenge for TermChallengeWasm {
             epoch,
             EvaluationStatus::LlmReview,
         );
-        if let Some(ref url) = params.llm_judge_url {
-            if let Some(review_result) = llm_review::run_llm_review(code_str, url) {
-                let _ = llm_review::store_review_result(&agent_hash, &review_result);
-                if !review_result.approved {
-                    let _ = agent_storage::store_evaluation_status(
-                        &miner_hotkey,
-                        epoch,
-                        EvaluationStatus::Failed,
-                    );
-                    return EvaluationOutput::failure("LLM review rejected submission");
-                }
+        if let Some(review_result) = llm_review::run_llm_review(code_str) {
+            let _ = llm_review::store_review_result(&agent_hash, &review_result);
+            if !review_result.approved {
+                let _ = agent_storage::store_evaluation_status(
+                    &miner_hotkey,
+                    epoch,
+                    EvaluationStatus::Failed,
+                );
+                return EvaluationOutput::failure("LLM review rejected submission");
             }
         }
 
@@ -254,12 +294,12 @@ impl Challenge for TermChallengeWasm {
 
         let _ = submission::submit_versioned(&miner_hotkey, &miner_hotkey, &agent_hash, epoch);
 
-        if let Some(ref url) = params.llm_judge_url {
+        if host_llm_is_available() {
             for (result, task) in results.iter_mut().zip(params.tasks.iter()) {
                 if !result.passed {
                     continue;
                 }
-                if let Some(llm_score) = Self::try_llm_judge(url, result, &task.name) {
+                if let Some(llm_score) = Self::try_llm_judge(result, &task.name) {
                     result.score = llm_score;
                     if llm_score < 0.5 {
                         result.passed = false;
