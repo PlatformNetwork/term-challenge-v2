@@ -8,7 +8,7 @@
 #   1.  Server health & startup (4 tests)
 #   2.  Health response schema (4 tests)
 #   3.  Challenge configuration via /config (4 tests)
-#   4.  Validation API via /validate (5 tests)
+#   4.  Evaluate input validation (5 tests)
 #   5.  Evaluation API & scoring (5 tests)
 #   6.  Custom challenge routes (leaderboard, stats, decay, agent) (5 tests)
 #   7.  Leaderboard & scoring consistency (4 tests)
@@ -346,7 +346,7 @@ run_test "Config contains features array" test_config_has_features
 run_test "Config contains limits object" test_config_has_limits
 
 # =============================================================================
-# TEST SUITE 4: Validation API via /validate (5 tests)
+# TEST SUITE 4: Evaluate Input Validation (5 tests)
 # =============================================================================
 
 test_validate_valid_submission() {
