@@ -14,18 +14,6 @@ pub enum StorageError {
     InvalidData(String),
 }
 
-impl From<tokio_postgres::Error> for StorageError {
-    fn from(err: tokio_postgres::Error) -> Self {
-        StorageError::Database(err.to_string())
-    }
-}
-
-impl From<deadpool_postgres::PoolError> for StorageError {
-    fn from(err: deadpool_postgres::PoolError) -> Self {
-        StorageError::Database(err.to_string())
-    }
-}
-
 impl From<serde_json::Error> for StorageError {
     fn from(err: serde_json::Error) -> Self {
         StorageError::Serialization(err.to_string())

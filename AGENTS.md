@@ -65,15 +65,7 @@ term-challenge/
 │       ├── lib.rs              # Root module, re-exports, From impls for StorageError
 │       ├── traits.rs           # ChallengeStorage trait, StorageError, Result alias
 │       ├── chain.rs            # Chain storage (sled)
-│       ├── local.rs            # Local storage (SQLite)
-│       ├── pg.rs               # PostgreSQL connection pool (deadpool-postgres)
-│       └── postgres/
-│           ├── mod.rs          # Submodule declarations
-│           ├── evaluations.rs  # Evaluation CRUD using EvaluationResult (f64 score, UUID ChallengeId)
-│           ├── leaderboard.rs  # Leaderboard queries using WeightAssignment (f64 weight)
-│           ├── submissions.rs  # Submission storage with ChallengeId (UUID) and Hotkey (SS58)
-│           ├── task_logs.rs    # Task log storage and retrieval
-│           └── validators.rs   # Validator management with Hotkey (SS58 encoding)
+│       └── local.rs            # Local storage (SQLite)
 ├── cli/
 │   ├── Cargo.toml      # native binary, ratatui TUI
 │   └── src/
