@@ -1,0 +1,92 @@
+# Challenge Container Dockerfile
+# For Rust-based challenges that implement the Challenge trait
+#
+# Usage:
+#   docker build -f docker/Dockerfile.challenge \
+#     --build-arg CHALLENGE_NAME=my-challenge \
+#     --build-arg CHALLENGE_DIR=challenges/my-challenge \
+#     -t cortexlm/challenge-my-challenge:v1.0.0 .
+
+# ===== Build Stage =====
+FROM rust:1.92-bookworm as builder
+
+ARG PLATFORM_NIGHTLY_RUSTFLAGS=""
+ARG PLATFORM_LINKER_RUSTFLAGS=""
+ARG INSTALL_FAST_LINKER=auto
+ENV PLATFORM_NIGHTLY_RUSTFLAGS=${PLATFORM_NIGHTLY_RUSTFLAGS}
+ENV PLATFORM_LINKER_RUSTFLAGS=${PLATFORM_LINKER_RUSTFLAGS}
+ENV INSTALL_FAST_LINKER=${INSTALL_FAST_LINKER}
+
+ARG CHALLENGE_NAME=my-challenge
+ARG CHALLENGE_DIR=challenges/my-challenge
+
+WORKDIR /app
+
+# Install dependencies
+RUN apt-get update \
+    && apt-get install -y \
+        pkg-config \
+        libssl-dev \
+        protobuf-compiler \
+        lld \
+    && if [ "$INSTALL_FAST_LINKER" = "mold" ]; then \
+        apt-get install -y mold; \
+    fi \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy mini-chain SDK (challenges depend on it)
+COPY mini-chain/crates/challenge-sdk /app/mini-chain/crates/challenge-sdk
+COPY mini-chain/crates/core /app/mini-chain/crates/core
+COPY mini-chain/Cargo.toml /app/mini-chain/Cargo.toml
+
+# Copy challenge source
+COPY ${CHALLENGE_DIR} /app/challenge
+
+WORKDIR /app/challenge
+
+# Build release binary
+RUN cargo build --release
+
+# ===== Runtime Stage =====
+FROM debian:bookworm-slim
+
+ARG CHALLENGE_NAME=my-challenge
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    docker.io \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create challenge user
+RUN useradd -m -s /bin/bash challenge
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/challenge/target/release/${CHALLENGE_NAME} /app/challenge
+
+# Copy tasks directory if exists
+COPY --from=builder /app/challenge/tasks /app/tasks 2>/dev/null || true
+
+# Create data directories
+RUN mkdir -p /data /app/tasks && chown -R challenge:challenge /data /app
+
+# Environment variables
+ENV RUST_LOG=info
+ENV CHALLENGE_PORT=8080
+ENV DATA_DIR=/data
+ENV TASKS_DIR=/app/tasks
+
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+USER challenge
+
+ENTRYPOINT ["/app/challenge"]

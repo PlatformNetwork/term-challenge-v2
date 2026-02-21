@@ -1,0 +1,1191 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 05e80ff..289dca5 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1930,6 +1930,27 @@ dependencies = [
+  "dirs-sys-next",
+ ]
+ 
++[[package]]
++name = "dirs"
++version = "5.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
++dependencies = [
++ "dirs-sys",
++]
++
++[[package]]
++name = "dirs-sys"
++version = "0.4.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
++dependencies = [
++ "libc",
++ "option-ext",
++ "redox_users",
++ "windows-sys 0.48.0",
++]
++
+ [[package]]
+ name = "dirs-sys-next"
+ version = "0.1.2"
+@@ -4815,6 +4836,12 @@ dependencies = [
+  "vcpkg",
+ ]
+ 
++[[package]]
++name = "option-ext"
++version = "0.2.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
++
+ [[package]]
+ name = "parity-bip39"
+ version = "2.0.1"
+@@ -5123,6 +5150,24 @@ dependencies = [
+  "serde",
+ ]
+ 
++[[package]]
++name = "platform-cli"
++version = "0.1.0"
++dependencies = [
++ "anyhow",
++ "chrono",
++ "clap",
++ "dirs",
++ "reqwest 0.12.25",
++ "semver",
++ "serde",
++ "serde_json",
++ "tokio",
++ "toml 0.8.23",
++ "tracing",
++ "tracing-subscriber 0.3.22",
++]
++
+ [[package]]
+ name = "platform-core"
+ version = "0.1.0"
+diff --git a/Cargo.toml b/Cargo.toml
+index 9ab2961..df08de4 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -18,6 +18,7 @@ members = [
+     "bins/validator-node",
+     "bins/utils",
+     "bins/mock-subtensor",
++    "bins/platform-cli",
+     "tests",
+     "challenges/term-challenge",
+     "challenges/term-challenge-wasm",
+diff --git a/bins/platform-cli/Cargo.toml b/bins/platform-cli/Cargo.toml
+new file mode 100644
+index 0000000..f7e94f0
+--- /dev/null
++++ b/bins/platform-cli/Cargo.toml
+@@ -0,0 +1,23 @@
++[package]
++name = "platform-cli"
++version.workspace = true
++edition.workspace = true
++description = "Platform CLI — download and manage challenge CLIs"
++
++[[bin]]
++name = "platform"
++path = "src/main.rs"
++
++[dependencies]
++clap = { workspace = true }
++reqwest = { workspace = true, features = ["json"] }
++serde = { workspace = true }
++serde_json = { workspace = true }
++tokio = { workspace = true }
++anyhow = { workspace = true }
++tracing = { workspace = true }
++tracing-subscriber = { workspace = true }
++chrono = { workspace = true }
++toml = "0.8"
++dirs = "5"
++semver = { version = "1", features = ["serde"] }
+diff --git a/bins/platform-cli/src/main.rs b/bins/platform-cli/src/main.rs
+new file mode 100644
+index 0000000..d899b3c
+--- /dev/null
++++ b/bins/platform-cli/src/main.rs
+@@ -0,0 +1,633 @@
++//! Platform CLI — download and manage challenge CLIs
++//!
++//! Provides subcommands to download, update, list, run, and configure
++//! challenge CLI binaries from GitHub releases.
++
++use anyhow::{Context, Result};
++use chrono::{DateTime, Utc};
++use clap::{Parser, Subcommand};
++use serde::{Deserialize, Serialize};
++use std::collections::HashMap;
++use std::path::{Path, PathBuf};
++use tracing::{debug, info};
++
++// ==================== Constants ====================
++
++const PLATFORM_DIR_NAME: &str = ".platform";
++const CONFIG_FILE_NAME: &str = "platform.toml";
++const VERSIONS_FILE_NAME: &str = "versions.json";
++const BIN_DIR_NAME: &str = "bin";
++const GITHUB_API_BASE: &str = "https://api.github.com";
++
++// ==================== Config ====================
++
++#[derive(Debug, Serialize, Deserialize)]
++struct PlatformConfig {
++    network: NetworkConfig,
++    #[serde(default)]
++    challenges: HashMap<String, ChallengeConfig>,
++}
++
++#[derive(Debug, Serialize, Deserialize)]
++struct NetworkConfig {
++    rpc_endpoint: String,
++    netuid: u16,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++struct ChallengeConfig {
++    github_repo: String,
++    binary_name: String,
++    command_alias: String,
++    #[serde(default = "default_true")]
++    auto_update: bool,
++}
++
++fn default_true() -> bool {
++    true
++}
++
++impl Default for PlatformConfig {
++    fn default() -> Self {
++        let mut challenges = HashMap::new();
++        challenges.insert(
++            "term-challenge".to_string(),
++            ChallengeConfig {
++                github_repo: "PlatformNetwork/term-challenge".to_string(),
++                binary_name: "term-cli".to_string(),
++                command_alias: "term".to_string(),
++                auto_update: true,
++            },
++        );
++        Self {
++            network: NetworkConfig {
++                rpc_endpoint: "wss://chain.platform.network".to_string(),
++                netuid: 100,
++            },
++            challenges,
++        }
++    }
++}
++
++// ==================== Version Tracking ====================
++
++#[derive(Debug, Serialize, Deserialize)]
++struct VersionInfo {
++    version: String,
++    binary_path: String,
++    installed_at: DateTime<Utc>,
++    github_repo: String,
++}
++
++type VersionStore = HashMap<String, VersionInfo>;
++
++// ==================== GitHub API Types ====================
++
++#[derive(Debug, Deserialize)]
++struct GitHubRelease {
++    tag_name: String,
++    assets: Vec<GitHubAsset>,
++}
++
++#[derive(Debug, Deserialize)]
++struct GitHubAsset {
++    name: String,
++    browser_download_url: String,
++}
++
++// ==================== CLI ====================
++
++#[derive(Parser)]
++#[command(name = "platform")]
++#[command(about = "Platform CLI — download and manage challenge CLIs")]
++struct Cli {
++    #[command(subcommand)]
++    command: Commands,
++}
++
++#[derive(Subcommand)]
++enum Commands {
++    /// Download a challenge CLI binary from GitHub releases
++    Download {
++        /// Name of the challenge to download
++        challenge_name: String,
++    },
++    /// Check for and install updates for a challenge CLI
++    Update {
++        /// Name of the challenge to update
++        challenge_name: String,
++    },
++    /// List installed challenge CLIs
++    List,
++    /// Run an installed challenge CLI
++    Run {
++        /// Name of the challenge to run (or a command alias)
++        challenge_name: String,
++        /// Arguments to forward to the challenge CLI
++        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
++        args: Vec<String>,
++    },
++    /// Show current platform.toml config
++    Config,
++}
++
++// ==================== Path Helpers ====================
++
++fn platform_dir() -> Result<PathBuf> {
++    let home = dirs::home_dir().context("Could not determine home directory")?;
++    Ok(home.join(PLATFORM_DIR_NAME))
++}
++
++fn config_path() -> Result<PathBuf> {
++    Ok(platform_dir()?.join(CONFIG_FILE_NAME))
++}
++
++fn versions_path() -> Result<PathBuf> {
++    Ok(platform_dir()?.join(VERSIONS_FILE_NAME))
++}
++
++fn bin_dir() -> Result<PathBuf> {
++    Ok(platform_dir()?.join(BIN_DIR_NAME))
++}
++
++// ==================== Config I/O ====================
++
++fn load_config() -> Result<PlatformConfig> {
++    let path = config_path()?;
++    if !path.exists() {
++        info!("Config not found at {}, creating default", path.display());
++        let config = PlatformConfig::default();
++        save_config(&config)?;
++        return Ok(config);
++    }
++    let contents = std::fs::read_to_string(&path)
++        .with_context(|| format!("Failed to read config from {}", path.display()))?;
++    let config: PlatformConfig = toml::from_str(&contents)
++        .with_context(|| format!("Failed to parse config at {}", path.display()))?;
++    Ok(config)
++}
++
++fn save_config(config: &PlatformConfig) -> Result<()> {
++    let path = config_path()?;
++    if let Some(parent) = path.parent() {
++        std::fs::create_dir_all(parent)
++            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
++    }
++    let contents = toml::to_string_pretty(config).context("Failed to serialize config")?;
++    std::fs::write(&path, contents)
++        .with_context(|| format!("Failed to write config to {}", path.display()))?;
++    debug!("Config saved to {}", path.display());
++    Ok(())
++}
++
++// ==================== Version Store I/O ====================
++
++fn load_versions() -> Result<VersionStore> {
++    let path = versions_path()?;
++    if !path.exists() {
++        return Ok(HashMap::new());
++    }
++    let contents = std::fs::read_to_string(&path)
++        .with_context(|| format!("Failed to read versions from {}", path.display()))?;
++    let versions: VersionStore = serde_json::from_str(&contents)
++        .with_context(|| format!("Failed to parse versions at {}", path.display()))?;
++    Ok(versions)
++}
++
++fn save_versions(versions: &VersionStore) -> Result<()> {
++    let path = versions_path()?;
++    if let Some(parent) = path.parent() {
++        std::fs::create_dir_all(parent)
++            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
++    }
++    let contents =
++        serde_json::to_string_pretty(versions).context("Failed to serialize versions")?;
++    std::fs::write(&path, contents)
++        .with_context(|| format!("Failed to write versions to {}", path.display()))?;
++    debug!("Versions saved to {}", path.display());
++    Ok(())
++}
++
++// ==================== Platform Detection ====================
++
++fn platform_identifier() -> String {
++    let os = match std::env::consts::OS {
++        "linux" => "linux",
++        "macos" => "darwin",
++        "windows" => "windows",
++        other => other,
++    };
++    let arch = std::env::consts::ARCH;
++    format!("{}-{}", os, arch)
++}
++
++fn find_matching_asset(assets: &[GitHubAsset]) -> Option<&GitHubAsset> {
++    let platform = platform_identifier();
++    debug!("Looking for asset matching platform: {}", platform);
++
++    assets
++        .iter()
++        .find(|asset| asset.name.contains(&platform))
++        .or_else(|| {
++            let os = std::env::consts::OS;
++            let arch = std::env::consts::ARCH;
++            assets
++                .iter()
++                .find(|asset| asset.name.contains(os) && asset.name.contains(arch))
++        })
++}
++
++// ==================== GitHub API ====================
++
++async fn fetch_latest_release(
++    client: &reqwest::Client,
++    github_repo: &str,
++) -> Result<GitHubRelease> {
++    let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, github_repo);
++    debug!("Fetching latest release from {}", url);
++
++    let response = client
++        .get(&url)
++        .header("User-Agent", "platform-cli")
++        .header("Accept", "application/vnd.github.v3+json")
++        .send()
++        .await
++        .with_context(|| format!("Failed to fetch releases from {}", url))?;
++
++    if !response.status().is_success() {
++        let status = response.status();
++        let body = response
++            .text()
++            .await
++            .unwrap_or_else(|_| "<failed to read body>".to_string());
++        anyhow::bail!(
++            "GitHub API returned {} for {}: {}",
++            status,
++            github_repo,
++            body
++        );
++    }
++
++    let release: GitHubRelease = response
++        .json()
++        .await
++        .context("Failed to parse GitHub release response")?;
++
++    Ok(release)
++}
++
++async fn download_binary(client: &reqwest::Client, url: &str, dest: &Path) -> Result<()> {
++    info!("Downloading binary from {}", url);
++
++    let response = client
++        .get(url)
++        .header("User-Agent", "platform-cli")
++        .send()
++        .await
++        .with_context(|| format!("Failed to download from {}", url))?;
++
++    if !response.status().is_success() {
++        let status = response.status();
++        anyhow::bail!("Download failed with status {}", status);
++    }
++
++    if let Some(parent) = dest.parent() {
++        std::fs::create_dir_all(parent)
++            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
++    }
++
++    let bytes = response
++        .bytes()
++        .await
++        .context("Failed to read download response body")?;
++
++    std::fs::write(dest, &bytes)
++        .with_context(|| format!("Failed to write binary to {}", dest.display()))?;
++
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::PermissionsExt;
++        let perms = std::fs::Permissions::from_mode(0o755);
++        std::fs::set_permissions(dest, perms).with_context(|| {
++            format!("Failed to set executable permissions on {}", dest.display())
++        })?;
++    }
++
++    info!("Binary saved to {}", dest.display());
++    Ok(())
++}
++
++// ==================== Challenge Lookup ====================
++
++fn resolve_challenge_name(
++    config: &PlatformConfig,
++    name: &str,
++) -> Option<(String, ChallengeConfig)> {
++    if let Some(challenge) = config.challenges.get(name) {
++        return Some((name.to_string(), challenge.clone()));
++    }
++
++    for (challenge_name, challenge) in &config.challenges {
++        if challenge.command_alias == name {
++            return Some((challenge_name.clone(), challenge.clone()));
++        }
++    }
++
++    None
++}
++
++// ==================== Subcommand Handlers ====================
++
++async fn cmd_download(challenge_name: &str) -> Result<()> {
++    let config = load_config()?;
++    let (canonical_name, challenge) = resolve_challenge_name(&config, challenge_name)
++        .with_context(|| {
++            format!(
++                "Challenge '{}' not found in config. Add it to {} first.",
++                challenge_name,
++                config_path()
++                    .map(|p| p.display().to_string())
++                    .unwrap_or_else(|_| "~/.platform/platform.toml".to_string())
++            )
++        })?;
++
++    info!(
++        "Downloading challenge '{}' from {}",
++        canonical_name, challenge.github_repo
++    );
++
++    let client = reqwest::Client::new();
++    let release = fetch_latest_release(&client, &challenge.github_repo).await?;
++
++    let version = release.tag_name.trim_start_matches('v').to_string();
++    info!("Latest release: v{}", version);
++
++    let asset = find_matching_asset(&release.assets).with_context(|| {
++        let available: Vec<&str> = release.assets.iter().map(|a| a.name.as_str()).collect();
++        format!(
++            "No binary found for platform '{}'. Available assets: {:?}",
++            platform_identifier(),
++            available
++        )
++    })?;
++
++    let dest = bin_dir()?.join(&challenge.binary_name);
++    download_binary(&client, &asset.browser_download_url, &dest).await?;
++
++    let mut versions = load_versions()?;
++    versions.insert(
++        canonical_name.clone(),
++        VersionInfo {
++            version: version.clone(),
++            binary_path: dest.display().to_string(),
++            installed_at: Utc::now(),
++            github_repo: challenge.github_repo.clone(),
++        },
++    );
++    save_versions(&versions)?;
++
++    info!(
++        "Successfully installed {} v{} to {}",
++        canonical_name,
++        version,
++        dest.display()
++    );
++    println!(
++        "✓ {} v{} installed to {}",
++        canonical_name,
++        version,
++        dest.display()
++    );
++
++    Ok(())
++}
++
++async fn cmd_update(challenge_name: &str) -> Result<()> {
++    let config = load_config()?;
++    let (canonical_name, challenge) = resolve_challenge_name(&config, challenge_name)
++        .with_context(|| format!("Challenge '{}' not found in config", challenge_name))?;
++
++    let versions = load_versions()?;
++    let current_version = versions
++        .get(&canonical_name)
++        .map(|v| v.version.clone())
++        .unwrap_or_default();
++
++    info!(
++        "Checking for updates to '{}' (current: {})",
++        canonical_name,
++        if current_version.is_empty() {
++            "not installed"
++        } else {
++            &current_version
++        }
++    );
++
++    let client = reqwest::Client::new();
++    let release = fetch_latest_release(&client, &challenge.github_repo).await?;
++    let latest_version = release.tag_name.trim_start_matches('v').to_string();
++
++    if !current_version.is_empty() {
++        let current = semver::Version::parse(&current_version);
++        let latest = semver::Version::parse(&latest_version);
++
++        match (current, latest) {
++            (Ok(cur), Ok(lat)) if lat <= cur => {
++                println!(
++                    "✓ {} is already up to date (v{})",
++                    canonical_name, current_version
++                );
++                return Ok(());
++            }
++            _ => {}
++        }
++    }
++
++    info!(
++        "Updating {} from v{} to v{}",
++        canonical_name, current_version, latest_version
++    );
++
++    let asset = find_matching_asset(&release.assets)
++        .with_context(|| format!("No binary found for platform '{}'", platform_identifier()))?;
++
++    let dest = bin_dir()?.join(&challenge.binary_name);
++    download_binary(&client, &asset.browser_download_url, &dest).await?;
++
++    let mut versions = load_versions()?;
++    versions.insert(
++        canonical_name.clone(),
++        VersionInfo {
++            version: latest_version.clone(),
++            binary_path: dest.display().to_string(),
++            installed_at: Utc::now(),
++            github_repo: challenge.github_repo.clone(),
++        },
++    );
++    save_versions(&versions)?;
++
++    println!(
++        "✓ {} updated to v{} at {}",
++        canonical_name,
++        latest_version,
++        dest.display()
++    );
++
++    Ok(())
++}
++
++fn cmd_list() -> Result<()> {
++    let versions = load_versions()?;
++
++    if versions.is_empty() {
++        println!("No challenge CLIs installed.");
++        println!("Use 'platform download <challenge-name>' to install one.");
++        return Ok(());
++    }
++
++    let header_installed = "INSTALLED";
++    println!(
++        "{:<20} {:<12} {:<40} {}",
++        "CHALLENGE", "VERSION", "PATH", header_installed
++    );
++    println!("{}", "-".repeat(90));
++
++    let mut entries: Vec<_> = versions.iter().collect();
++    entries.sort_by_key(|(name, _)| (*name).clone());
++
++    for (name, info) in entries {
++        println!(
++            "{:<20} {:<12} {:<40} {}",
++            name,
++            info.version,
++            info.binary_path,
++            info.installed_at.format("%Y-%m-%d %H:%M:%S UTC")
++        );
++    }
++
++    Ok(())
++}
++
++async fn cmd_run(challenge_name: &str, args: &[String]) -> Result<()> {
++    let config = load_config()?;
++    let (canonical_name, challenge) = resolve_challenge_name(&config, challenge_name)
++        .with_context(|| format!("Challenge '{}' not found in config", challenge_name))?;
++
++    let versions = load_versions()?;
++    let version_info = versions.get(&canonical_name).with_context(|| {
++        format!(
++            "Challenge '{}' is not installed. Run 'platform download {}' first.",
++            canonical_name, canonical_name
++        )
++    })?;
++
++    let binary_path = Path::new(&version_info.binary_path);
++    if !binary_path.exists() {
++        anyhow::bail!(
++            "Binary not found at {}. Run 'platform download {}' to reinstall.",
++            binary_path.display(),
++            canonical_name
++        );
++    }
++
++    if challenge.auto_update {
++        let repo = challenge.github_repo.clone();
++        let current_version = version_info.version.clone();
++        let name_for_log = canonical_name.clone();
++        tokio::spawn(async move {
++            match check_for_update_quietly(&repo, &current_version).await {
++                Ok(Some(new_version)) => {
++                    eprintln!(
++                        "ℹ A new version of {} is available: v{} (current: v{}). Run 'platform update {}'",
++                        name_for_log, new_version, current_version, name_for_log
++                    );
++                }
++                Ok(None) => {}
++                Err(e) => {
++                    debug!("Auto-update check failed for {}: {}", name_for_log, e);
++                }
++            }
++        });
++    }
++
++    debug!("Running {} with args: {:?}", binary_path.display(), args);
++
++    let status = std::process::Command::new(binary_path)
++        .args(args)
++        .stdin(std::process::Stdio::inherit())
++        .stdout(std::process::Stdio::inherit())
++        .stderr(std::process::Stdio::inherit())
++        .status()
++        .with_context(|| format!("Failed to execute {}", binary_path.display()))?;
++
++    if !status.success() {
++        let code = status.code().unwrap_or(1);
++        std::process::exit(code);
++    }
++
++    Ok(())
++}
++
++async fn check_for_update_quietly(
++    github_repo: &str,
++    current_version: &str,
++) -> Result<Option<String>> {
++    let client = reqwest::Client::builder()
++        .timeout(std::time::Duration::from_secs(5))
++        .build()?;
++
++    let release = fetch_latest_release(&client, github_repo).await?;
++    let latest_version = release.tag_name.trim_start_matches('v').to_string();
++
++    let current = semver::Version::parse(current_version)?;
++    let latest = semver::Version::parse(&latest_version)?;
++
++    if latest > current {
++        Ok(Some(latest_version))
++    } else {
++        Ok(None)
++    }
++}
++
++fn cmd_config() -> Result<()> {
++    let path = config_path()?;
++    if !path.exists() {
++        info!("No config found, creating default at {}", path.display());
++        let config = PlatformConfig::default();
++        save_config(&config)?;
++    }
++
++    let contents = std::fs::read_to_string(&path)
++        .with_context(|| format!("Failed to read config from {}", path.display()))?;
++
++    println!("# Config: {}", path.display());
++    println!();
++    print!("{}", contents);
++
++    Ok(())
++}
++
++// ==================== Main ====================
++
++#[tokio::main]
++async fn main() -> Result<()> {
++    tracing_subscriber::fmt()
++        .with_env_filter(
++            tracing_subscriber::EnvFilter::try_from_default_env()
++                .unwrap_or_else(|_| "info,platform_cli=debug".into()),
++        )
++        .init();
++
++    let cli = Cli::parse();
++
++    match cli.command {
++        Commands::Download { challenge_name } => cmd_download(&challenge_name).await,
++        Commands::Update { challenge_name } => cmd_update(&challenge_name).await,
++        Commands::List => cmd_list(),
++        Commands::Run {
++            challenge_name,
++            args,
++        } => cmd_run(&challenge_name, &args).await,
++        Commands::Config => cmd_config(),
++    }
++}
+diff --git a/bins/validator-node/src/main.rs b/bins/validator-node/src/main.rs
+index 2b4e798..46236a4 100644
+--- a/bins/validator-node/src/main.rs
++++ b/bins/validator-node/src/main.rs
+@@ -1020,6 +1020,13 @@ async fn handle_network_event(
+                     "Received review result"
+                 );
+             }
++            P2PMessage::AgentLogProposal(msg) => {
++                debug!(
++                    submission_id = %msg.submission_id,
++                    validator = %msg.validator_hotkey.to_hex(),
++                    "Received agent log proposal"
++                );
++            }
+         },
+         NetworkEvent::PeerConnected(peer_id) => {
+             info!("Peer connected: {}", peer_id);
+diff --git a/crates/core/src/message.rs b/crates/core/src/message.rs
+index cea0fd5..270bd9b 100644
+--- a/crates/core/src/message.rs
++++ b/crates/core/src/message.rs
+@@ -53,6 +53,9 @@ pub enum NetworkMessage {
+     /// Real-time task progress update (for evaluation tracking)
+     TaskProgress(TaskProgressMessage),
+ 
++    /// Agent log proposal for consensus validation
++    AgentLogProposal(AgentLogProposalMessage),
++
+     /// Version incompatible - disconnect
+     VersionMismatch {
+         our_version: String,
+@@ -126,6 +129,18 @@ impl TaskProgressMessage {
+     }
+ }
+ 
++/// Agent log proposal message
++#[derive(Clone, Debug, Serialize, Deserialize)]
++pub struct AgentLogProposalMessage {
++    pub submission_id: String,
++    pub challenge_id: String,
++    pub miner_hotkey: String,
++    pub logs_hash: [u8; 32],
++    pub logs_data: Vec<u8>,
++    pub validator_hotkey: String,
++    pub epoch: u64,
++}
++
+ /// Challenge-specific network message
+ /// Contains serialized challenge P2P message that will be routed to the challenge handler
+ #[derive(Clone, Debug, Serialize, Deserialize)]
+@@ -1236,6 +1251,19 @@ mod tests {
+             message_type: ChallengeMessageType::EvaluationResult,
+         });
+ 
++        // TaskProgress (already covered above via TaskProgress variant)
++
++        // AgentLogProposal
++        let _ = NetworkMessage::AgentLogProposal(AgentLogProposalMessage {
++            submission_id: "sub-1".to_string(),
++            challenge_id: "challenge-1".to_string(),
++            miner_hotkey: "miner-1".to_string(),
++            logs_hash: [0u8; 32],
++            logs_data: vec![1, 2, 3],
++            validator_hotkey: "validator-1".to_string(),
++            epoch: 1,
++        });
++
+         // VersionMismatch
+         let _ = NetworkMessage::VersionMismatch {
+             our_version: "0.1.0".to_string(),
+diff --git a/crates/p2p-consensus/src/messages.rs b/crates/p2p-consensus/src/messages.rs
+index efcabd3..55acca2 100644
+--- a/crates/p2p-consensus/src/messages.rs
++++ b/crates/p2p-consensus/src/messages.rs
+@@ -59,6 +59,9 @@ pub enum P2PMessage {
+     ReviewAssignment(ReviewAssignmentMessage),
+     ReviewDecline(ReviewDeclineMessage),
+     ReviewResult(ReviewResultMessage),
++
++    /// Agent log proposal for consensus
++    AgentLogProposal(AgentLogProposalMessage),
+ }
+ 
+ impl P2PMessage {
+@@ -113,6 +116,7 @@ impl P2PMessage {
+             P2PMessage::ReviewAssignment(_) => "ReviewAssignment",
+             P2PMessage::ReviewDecline(_) => "ReviewDecline",
+             P2PMessage::ReviewResult(_) => "ReviewResult",
++            P2PMessage::AgentLogProposal(_) => "AgentLogProposal",
+         }
+     }
+ }
+@@ -689,6 +693,31 @@ pub struct ReviewResultMessage {
+     pub signature: Vec<u8>,
+ }
+ 
++// ============================================================================
++// Agent Log Messages
++// ============================================================================
++
++/// Agent log proposal message for P2P consensus
++#[derive(Clone, Debug, Serialize, Deserialize)]
++pub struct AgentLogProposalMessage {
++    /// Submission ID this log belongs to
++    pub submission_id: String,
++    /// Challenge ID
++    pub challenge_id: String,
++    /// Miner hotkey
++    pub miner_hotkey: String,
++    /// SHA256 hash of the logs data
++    pub logs_hash: [u8; 32],
++    /// Serialized agent logs (max 256KB)
++    pub logs_data: Vec<u8>,
++    /// Validator proposing these logs
++    pub validator_hotkey: Hotkey,
++    /// Epoch when evaluation occurred
++    pub epoch: u64,
++    /// Timestamp
++    pub timestamp: i64,
++}
++
+ // ============================================================================
+ // Signed Message Wrapper
+ // ============================================================================
+diff --git a/crates/p2p-consensus/src/network.rs b/crates/p2p-consensus/src/network.rs
+index 6de620f..5251cb7 100644
+--- a/crates/p2p-consensus/src/network.rs
++++ b/crates/p2p-consensus/src/network.rs
+@@ -718,6 +718,7 @@ fn expected_signer(message: &P2PMessage) -> Option<&Hotkey> {
+         P2PMessage::ReviewAssignment(msg) => Some(&msg.assigner),
+         P2PMessage::ReviewDecline(msg) => Some(&msg.validator),
+         P2PMessage::ReviewResult(msg) => Some(&msg.validator),
++        P2PMessage::AgentLogProposal(msg) => Some(&msg.validator_hotkey),
+     }
+ }
+ 
+diff --git a/crates/p2p-consensus/src/state.rs b/crates/p2p-consensus/src/state.rs
+index 8667cde..3d21549 100644
+--- a/crates/p2p-consensus/src/state.rs
++++ b/crates/p2p-consensus/src/state.rs
+@@ -189,6 +189,15 @@ pub struct ChainState {
+     /// Review assignments per submission
+     #[serde(default)]
+     pub review_assignments: HashMap<String, Vec<ReviewRecord>>,
++    /// Agent logs awaiting consensus (submission_id -> validator_hotkey -> serialized logs)
++    #[serde(default)]
++    pub agent_log_proposals: HashMap<String, HashMap<Hotkey, Vec<u8>>>,
++    /// Consensus-validated agent logs (submission_id -> validated logs)
++    #[serde(default)]
++    pub validated_agent_logs: HashMap<String, Vec<u8>>,
++    /// Stored agent code registry (miner_hotkey -> latest agent code entry)
++    #[serde(default)]
++    pub agent_code_registry: HashMap<Hotkey, AgentCodeEntry>,
+ }
+ 
+ /// Record of a review assignment
+@@ -209,6 +218,15 @@ pub struct ReviewResultEntry {
+     pub timestamp: i64,
+ }
+ 
++/// Registry entry for stored agent code
++#[derive(Clone, Debug, Serialize, Deserialize)]
++pub struct AgentCodeEntry {
++    pub agent_hash: String,
++    pub code_size: u64,
++    pub epoch: u64,
++    pub stored_at: i64,
++}
++
+ impl Default for ChainState {
+     fn default() -> Self {
+         Self {
+@@ -231,6 +249,9 @@ impl Default for ChainState {
+             task_progress: HashMap::new(),
+             challenge_storage_roots: HashMap::new(),
+             review_assignments: HashMap::new(),
++            agent_log_proposals: HashMap::new(),
++            validated_agent_logs: HashMap::new(),
++            agent_code_registry: HashMap::new(),
+         }
+     }
+ }
+@@ -766,6 +787,71 @@ impl ChainState {
+     pub fn get_review_status(&self, submission_id: &str) -> Option<&Vec<ReviewRecord>> {
+         self.review_assignments.get(submission_id)
+     }
++
++    /// Propose agent logs from a validator
++    pub fn propose_agent_logs(
++        &mut self,
++        submission_id: &str,
++        validator: Hotkey,
++        logs_data: Vec<u8>,
++    ) {
++        self.agent_log_proposals
++            .entry(submission_id.to_string())
++            .or_default()
++            .insert(validator, logs_data);
++        self.update_hash();
++    }
++
++    /// Finalize agent logs by consensus (>50% agreement by hash)
++    pub fn finalize_agent_logs(&mut self, submission_id: &str) -> bool {
++        let proposals = match self.agent_log_proposals.get(submission_id) {
++            Some(p) if !p.is_empty() => p,
++            _ => return false,
++        };
++
++        let total_proposals = proposals.len();
++
++        let mut hash_counts: HashMap<[u8; 32], usize> = HashMap::new();
++        let mut hash_to_data: HashMap<[u8; 32], &Vec<u8>> = HashMap::new();
++
++        for logs_data in proposals.values() {
++            let mut hasher = Sha256::new();
++            hasher.update(logs_data);
++            let hash: [u8; 32] = hasher.finalize().into();
++
++            *hash_counts.entry(hash).or_default() += 1;
++            hash_to_data.entry(hash).or_insert(logs_data);
++        }
++
++        let (best_hash, best_count) = hash_counts
++            .iter()
++            .max_by_key(|(_, count)| *count)
++            .map(|(h, c)| (*h, *c))
++            .unwrap_or(([0u8; 32], 0));
++
++        if best_count > total_proposals / 2 {
++            if let Some(data) = hash_to_data.get(&best_hash) {
++                self.validated_agent_logs
++                    .insert(submission_id.to_string(), (*data).clone());
++            }
++            self.agent_log_proposals.remove(submission_id);
++            self.increment_sequence();
++            true
++        } else {
++            false
++        }
++    }
++
++    /// Register agent code entry
++    pub fn register_agent_code(&mut self, miner: Hotkey, entry: AgentCodeEntry) {
++        self.agent_code_registry.insert(miner, entry);
++        self.increment_sequence();
++    }
++
++    /// Get agent code entry for a miner
++    pub fn get_agent_code_entry(&self, miner: &Hotkey) -> Option<&AgentCodeEntry> {
++        self.agent_code_registry.get(miner)
++    }
+ }
+ 
+ /// Thread-safe state manager
+diff --git a/crates/rpc-server/src/jsonrpc.rs b/crates/rpc-server/src/jsonrpc.rs
+index 225e0d8..7c8a8ab 100644
+--- a/crates/rpc-server/src/jsonrpc.rs
++++ b/crates/rpc-server/src/jsonrpc.rs
+@@ -352,6 +352,17 @@ impl RpcHandler {
+             ["epoch", "current"] => self.epoch_current(req.id),
+             ["epoch", "getPhase"] => self.epoch_get_phase(req.id),
+ 
++            // Leaderboard namespace
++            ["leaderboard", "get"] => self.leaderboard_get(req.id, req.params),
++
++            // Evaluation namespace
++            ["evaluation", "getProgress"] => self.evaluation_get_progress(req.id, req.params),
++            ["evaluation", "getLogs"] => self.evaluation_get_logs(req.id, req.params),
++
++            // Agent namespace
++            ["agent", "getCode"] => self.agent_get_code(req.id, req.params),
++            ["agent", "getLogs"] => self.agent_get_logs(req.id, req.params),
++
+             // RPC info
+             ["rpc", "methods"] => self.rpc_methods(req.id),
+ 
+@@ -398,6 +409,12 @@ impl RpcHandler {
+                     "job_list", "job_get",
+                     // Epoch
+                     "epoch_current", "epoch_getPhase",
++                    // Leaderboard
++                    "leaderboard_get",
++                    // Evaluation
++                    "evaluation_getProgress", "evaluation_getLogs",
++                    // Agent
++                    "agent_getCode", "agent_getLogs",
+                     // RPC
+                     "rpc_methods",
+                     // Monitor
+@@ -1322,6 +1339,150 @@ impl RpcHandler {
+         JsonRpcResponse::result(id, json!(phase))
+     }
+ 
++    // ==================== Leaderboard Namespace ====================
++
++    fn leaderboard_get(&self, id: Value, params: Value) -> JsonRpcResponse {
++        let challenge_id = match self.get_param_str(&params, 0, "challenge_id") {
++            Some(c) => c,
++            None => {
++                return JsonRpcResponse::error(
++                    id,
++                    INVALID_PARAMS,
++                    "Missing 'challenge_id' parameter",
++                )
++            }
++        };
++        let limit = self
++            .get_param_u64(&params, 1, "limit")
++            .unwrap_or(100)
++            .min(1000);
++        let offset = self.get_param_u64(&params, 2, "offset").unwrap_or(0);
++
++        let chain = self.chain_state.read();
++
++        let challenge_uuid = chain
++            .challenges
++            .values()
++            .find(|c| c.id.to_string() == challenge_id || c.name == challenge_id)
++            .map(|c| c.id);
++
++        match challenge_uuid {
++            Some(_cid) => JsonRpcResponse::result(
++                id,
++                json!({
++                    "challengeId": challenge_id,
++                    "entries": [],
++                    "total": 0,
++                    "limit": limit,
++                    "offset": offset,
++                }),
++            ),
++            None => JsonRpcResponse::error(
++                id,
++                CHALLENGE_NOT_FOUND,
++                format!("Challenge '{}' not found", challenge_id),
++            ),
++        }
++    }
++
++    // ==================== Evaluation Namespace ====================
++
++    fn evaluation_get_progress(&self, id: Value, params: Value) -> JsonRpcResponse {
++        let submission_id = match self.get_param_str(&params, 0, "submission_id") {
++            Some(s) => s,
++            None => {
++                return JsonRpcResponse::error(
++                    id,
++                    INVALID_PARAMS,
++                    "Missing 'submission_id' parameter",
++                )
++            }
++        };
++
++        JsonRpcResponse::result(
++            id,
++            json!({
++                "submissionId": submission_id,
++                "progress": [],
++                "total": 0,
++            }),
++        )
++    }
++
++    fn evaluation_get_logs(&self, id: Value, params: Value) -> JsonRpcResponse {
++        let submission_id = match self.get_param_str(&params, 0, "submission_id") {
++            Some(s) => s,
++            None => {
++                return JsonRpcResponse::error(
++                    id,
++                    INVALID_PARAMS,
++                    "Missing 'submission_id' parameter",
++                )
++            }
++        };
++
++        JsonRpcResponse::result(
++            id,
++            json!({
++                "submissionId": submission_id,
++                "logs": null,
++                "validated": false,
++            }),
++        )
++    }
++
++    // ==================== Agent Namespace ====================
++
++    fn agent_get_code(&self, id: Value, params: Value) -> JsonRpcResponse {
++        let miner_hotkey = match self.get_param_str(&params, 0, "miner_hotkey") {
++            Some(h) => h,
++            None => {
++                return JsonRpcResponse::error(
++                    id,
++                    INVALID_PARAMS,
++                    "Missing 'miner_hotkey' parameter",
++                )
++            }
++        };
++        let _epoch = self.get_param_u64(&params, 1, "epoch");
++
++        let hk = match platform_core::Hotkey::from_hex(&miner_hotkey) {
++            Some(h) => h,
++            None => return JsonRpcResponse::error(id, INVALID_PARAMS, "Invalid hotkey format"),
++        };
++
++        JsonRpcResponse::result(
++            id,
++            json!({
++                "minerHotkey": miner_hotkey,
++                "entry": null,
++            }),
++        )
++    }
++
++    fn agent_get_logs(&self, id: Value, params: Value) -> JsonRpcResponse {
++        let miner_hotkey = match self.get_param_str(&params, 0, "miner_hotkey") {
++            Some(h) => h,
++            None => {
++                return JsonRpcResponse::error(
++                    id,
++                    INVALID_PARAMS,
++                    "Missing 'miner_hotkey' parameter",
++                )
++            }
++        };
++        let _epoch = self.get_param_u64(&params, 1, "epoch");
++
++        JsonRpcResponse::result(
++            id,
++            json!({
++                "minerHotkey": miner_hotkey,
++                "logs": [],
++                "total": 0,
++            }),
++        )
++    }
++
+     // ==================== Helper Methods ====================
+ 
+     fn get_param_str(&self, params: &Value, index: usize, name: &str) -> Option<String> {
