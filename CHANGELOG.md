@@ -1,5 +1,79 @@
 # Changelog
 
+## [0.3.0](https://github.com/PlatformNetwork/term-challenge-v2/compare/v0.2.3...v0.3.0) (2026-02-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* Remove all legacy server code, CLI, migrations, and Docker infrastructure. The repo is now a workspace with only the `wasm` member crate.
+
+### Features
+
+* add api/handlers.rs using SDK types for all route handlers ([317fb25](https://github.com/PlatformNetwork/term-challenge-v2/commit/317fb25d7c65cb693a508ce674b0fa6f1ecc7b50))
+* add dump_instruction function for LLM review with DB storage ([b562eea](https://github.com/PlatformNetwork/term-challenge-v2/commit/b562eead0d83d7a1a31f7da74c2be5572e266ea5))
+* add HuggingFace dataset handler module ([30d095d](https://github.com/PlatformNetwork/term-challenge-v2/commit/30d095d89cbd07cbd3f01bc44d622a9986c58638))
+* add LLM review instructions API endpoint ([bdb82b2](https://github.com/PlatformNetwork/term-challenge-v2/commit/bdb82b27902f3dffe4fea5dbbcf5b15904db3c65))
+* add migration 035_llm_review_instructions to EMBEDDED_MIGRATIONS ([a4e940d](https://github.com/PlatformNetwork/term-challenge-v2/commit/a4e940df9a12b6658d0263aa95ee4904399bce9a))
+* add missing migrations, write_file tool, submit_verdict guard, dual-write columns ([13cd948](https://github.com/PlatformNetwork/term-challenge-v2/commit/13cd9482609b549e249d80834268571b47b7841c))
+* add platform-challenge-sdk, platform-core and crypto workspace dependencies ([#13](https://github.com/PlatformNetwork/term-challenge-v2/issues/13)) ([98045fe](https://github.com/PlatformNetwork/term-challenge-v2/commit/98045fe1ad3590672f1d6cb60204e91c0ec2288c))
+* add server binary implementing SDK-compatible challenge server ([7d08946](https://github.com/PlatformNetwork/term-challenge-v2/commit/7d08946e0ea02e897e1aaf47812c07988a1fa491))
+* add server workspace member implementing ServerChallenge ([48d2ecd](https://github.com/PlatformNetwork/term-challenge-v2/commit/48d2ecd1147f97c3a6adaf16a63cf8eaa0a6b368))
+* add storage module with chain (sled) and local (SQLite) implementations ([8c38254](https://github.com/PlatformNetwork/term-challenge-v2/commit/8c38254971e0121a8866eb0c4e406bc94f0a4c50))
+* **cli,wasm:** add ratatui TUI monitor and agent storage with logging ([#5](https://github.com/PlatformNetwork/term-challenge-v2/issues/5)) ([ce0b35d](https://github.com/PlatformNetwork/term-challenge-v2/commit/ce0b35daed5ac1df406ebce8ff4dad28a8a4dd31))
+* **cli:** migrate to platform-v2 SDK types and RPC protocol ([#20](https://github.com/PlatformNetwork/term-challenge-v2/issues/20)) ([53ede32](https://github.com/PlatformNetwork/term-challenge-v2/commit/53ede32213505b623c7adc3631713f0a45f03d9f))
+* **core:** add compat.rs re-export layer for platform SDK types ([#19](https://github.com/PlatformNetwork/term-challenge-v2/issues/19)) ([7cc93de](https://github.com/PlatformNetwork/term-challenge-v2/commit/7cc93deb8bb7c412a34b7657ecf90029f4e23cc1))
+* **dataset:** add HuggingFace dataset handler module ([#14](https://github.com/PlatformNetwork/term-challenge-v2/issues/14)) ([884cab4](https://github.com/PlatformNetwork/term-challenge-v2/commit/884cab4de032772df031746f5fa3e181c9544f5d))
+* increase MAX_CONVERSATION_TURNS from 50 to 150 ([350d9d7](https://github.com/PlatformNetwork/term-challenge-v2/commit/350d9d72ca219dcb06bd40912b478c83038f1074))
+* **lib:** add validator-side library crate with SDK type imports ([#18](https://github.com/PlatformNetwork/term-challenge-v2/issues/18)) ([7b22437](https://github.com/PlatformNetwork/term-challenge-v2/commit/7b22437b32bacde7268795901028504d8889c551))
+* multiply task timeout by 3 from config ([2cc59f5](https://github.com/PlatformNetwork/term-challenge-v2/commit/2cc59f5c9fe6780646fd6a698acad9a7ccf20eb4))
+* multiply task timeout by 3 from config ([6a510a8](https://github.com/PlatformNetwork/term-challenge-v2/commit/6a510a87f260d669d609d7c3508bb43d1fbaf1fe))
+* **plagiarism:** exempt original authors from plagiarism detection ([80273d6](https://github.com/PlatformNetwork/term-challenge-v2/commit/80273d689e122b41f11a0a58e1dc9e8950f55d9f))
+* sequential similarity-&gt;rules review, dynamic pool, separate similarity instructions ([3a52e94](https://github.com/PlatformNetwork/term-challenge-v2/commit/3a52e94235e2ec2bbd9af7ee987b1d05ac88d0ec))
+* **server:** add server crate using platform-challenge-sdk types ([#17](https://github.com/PlatformNetwork/term-challenge-v2/issues/17)) ([f15a887](https://github.com/PlatformNetwork/term-challenge-v2/commit/f15a887466fdbb37c1f1e24522a8d25e8b5cb705))
+* **storage:** add PostgreSQL storage module using platform-v2 SDK types ([#21](https://github.com/PlatformNetwork/term-challenge-v2/issues/21)) ([eed6485](https://github.com/PlatformNetwork/term-challenge-v2/commit/eed6485aa944452ca418a6ec264fdb401c4a60dd))
+* **swe_forge:** add SWE-Forge client module for term-executor communication ([d19add1](https://github.com/PlatformNetwork/term-challenge-v2/commit/d19add1214e6df63f928ff1252ee98c2d96639bf))
+* **swe_forge:** implement SWE-Forge evaluation via term-executor and Basilica ([69097f1](https://github.com/PlatformNetwork/term-challenge-v2/commit/69097f1769abe9a632e916cad195147b45123792))
+* **swe_forge:** replace term-benchmark with SWE-Forge integration ([e2bcdcc](https://github.com/PlatformNetwork/term-challenge-v2/commit/e2bcdcceebbae4091ae611dfb6672d9cc6b2cd78))
+* WASM-only architecture with sudo challenge management and P2P distribution ([#9](https://github.com/PlatformNetwork/term-challenge-v2/issues/9)) ([aa1b7fc](https://github.com/PlatformNetwork/term-challenge-v2/commit/aa1b7fc6f03e52b48fefb00c351346bcd3f91b4a))
+* **wasm:** add core module with SDK-aligned type aliases and re-exports ([#15](https://github.com/PlatformNetwork/term-challenge-v2/issues/15)) ([84edea9](https://github.com/PlatformNetwork/term-challenge-v2/commit/84edea952892f59ac080fc948bfa6511e273084d))
+* **wasm:** add decentralized challenge modules with LLM review, AST validation, and route handlers ([#7](https://github.com/PlatformNetwork/term-challenge-v2/issues/7)) ([71c55de](https://github.com/PlatformNetwork/term-challenge-v2/commit/71c55de8f686ed45c9be9f1cb7bdd4d59b5f2853))
+* **wasm:** add WeightAssignment and Leaderboard with f64 weights ([#12](https://github.com/PlatformNetwork/term-challenge-v2/issues/12)) ([d945359](https://github.com/PlatformNetwork/term-challenge-v2/commit/d9453593489dce5d835f802ff79afa410b980cb1))
+* **wasm:** align LLM and route types with platform-v2 SDK ([#16](https://github.com/PlatformNetwork/term-challenge-v2/issues/16)) ([5cd4756](https://github.com/PlatformNetwork/term-challenge-v2/commit/5cd475682f26dcfbfd0e245b374fb9068d9fd282))
+* **wasm:** implement Challenge trait methods for P2P consensus integration ([#11](https://github.com/PlatformNetwork/term-challenge-v2/issues/11)) ([a1b9109](https://github.com/PlatformNetwork/term-challenge-v2/commit/a1b91090f5cf058a89ab2f5ac9a5deed5ed91ffb))
+
+
+### Bug Fixes
+
+* **compilation:** remove bench/container/bollard references after module removal ([f8712e5](https://github.com/PlatformNetwork/term-challenge-v2/commit/f8712e5cf280eab88c05a688cc48b2327ca0c5f4))
+* retry all Chutes API errors (429, 5xx, network) with exponential backoff ([1b8b766](https://github.com/PlatformNetwork/term-challenge-v2/commit/1b8b766ad5f772dfe1a86a5914f43d55d80b1d2b))
+* set manually_validated based on LLM review result (true if approved, false if rejected) ([49059bc](https://github.com/PlatformNetwork/term-challenge-v2/commit/49059bca58b373533b8bdbf02f26872b1ec49cd2))
+* use host_llm_chat_completion for LLM calls instead of host_http_post ([b02d2a8](https://github.com/PlatformNetwork/term-challenge-v2/commit/b02d2a8613239ab0980ad6e0ab9c1ebd91a03fe1))
+* **wasm:** remove dead code and stale documentation ([9c222ee](https://github.com/PlatformNetwork/term-challenge-v2/commit/9c222eef1eb76e0dec6931525942eca30294bdc9))
+
+
+### Code Refactoring
+
+* **docker:** remove Docker dependencies, container/ and bench/ modules ([8f17e15](https://github.com/PlatformNetwork/term-challenge-v2/commit/8f17e1520a5bbdef3ac27be3e04f15b7867e3190))
+* replace server/Docker architecture with WASM challenge module ([#1](https://github.com/PlatformNetwork/term-challenge-v2/issues/1)) ([60533bc](https://github.com/PlatformNetwork/term-challenge-v2/commit/60533bc8b3fc528db36457b76036e20e2440af50))
+* **storage:** remove all PostgreSQL dependencies and code ([6bd5377](https://github.com/PlatformNetwork/term-challenge-v2/commit/6bd5377fef9762760485ebdbf8d670ffc7a0b38c))
+* strip legacy monolith, retain WASM-only challenge module ([#3](https://github.com/PlatformNetwork/term-challenge-v2/issues/3)) ([10f4eee](https://github.com/PlatformNetwork/term-challenge-v2/commit/10f4eee1fb9ccca9291da7ac026a021aa81e05b2))
+* use async tokio::fs in load_json_entries ([1852dfe](https://github.com/PlatformNetwork/term-challenge-v2/commit/1852dfe3608aa4e2a4d942f560e5790fc035bf87))
+
+
+### Documentation
+
+* update AGENTS.md with server binary entry point ([7e0fc92](https://github.com/PlatformNetwork/term-challenge-v2/commit/7e0fc928dc398ab6afb4f888e522571b66435466))
+
+
+### Miscellaneous
+
+* add banner image ([0fb2a38](https://github.com/PlatformNetwork/term-challenge-v2/commit/0fb2a384b4dc788bd8099641ccd1397871097c9f))
+* cluster indexation ([9fd6e6b](https://github.com/PlatformNetwork/term-challenge-v2/commit/9fd6e6b65f404a56989a8892dae22458ca37e296))
+* cluster indexation - AGENTS.md, git hooks, CI workflow, versioning ([c097657](https://github.com/PlatformNetwork/term-challenge-v2/commit/c097657260374573881ca7f5d0b58ac2f7f190b5))
+* remove stale Dockerfile.server after server architecture removal ([e6f673b](https://github.com/PlatformNetwork/term-challenge-v2/commit/e6f673bff85055c4a3a7d37b8dc4b2d4f886214c))
+* remove unused serde_json dep, move OptionalExtension import to top ([3b44635](https://github.com/PlatformNetwork/term-challenge-v2/commit/3b44635c5cd6f4f845b07b680746e47c1e1185bb))
+* update banner image ([89f58dc](https://github.com/PlatformNetwork/term-challenge-v2/commit/89f58dc943f34548bbd31fc330f8c8be742d6edc))
+
 ## [0.2.3](https://github.com/PlatformNetwork/term-challenge/compare/v0.2.2...v0.2.3) (2026-01-18)
 
 
